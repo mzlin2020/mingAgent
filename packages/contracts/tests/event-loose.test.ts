@@ -30,7 +30,7 @@ describe('事件 payload 必须保留未知字段', () => {
   it('payload 里的未知字段在 parse 后仍然存在', () => {
     const parsed = parseStoredEvent({
       ...base,
-      type: 'notice',
+      type: 'notice.posted',
       payload: { level: 'info', code: 'x', message: 'hi', fieldFromFutureVersion: 42 },
     });
 
@@ -40,7 +40,7 @@ describe('事件 payload 必须保留未知字段', () => {
   it('信封层的未知字段同样保留', () => {
     const parsed = parseStoredEvent({
       ...base,
-      type: 'notice',
+      type: 'notice.posted',
       payload: { level: 'info', code: 'x', message: 'hi' },
       envelopeFieldFromFutureVersion: 'keep-me',
     });
@@ -95,14 +95,14 @@ describe('事件 payload 必须保留未知字段', () => {
       sessionId: newSessionId(),
       seq: 3,
       ts: 1,
-      type: 'notice',
+      type: 'notice.posted',
       payload: {},
     });
     expect(parsed.v).toBe(1);
   });
 
   it('seq 必须是正整数', () => {
-    const bad = { ...base, seq: 0, type: 'notice', payload: { level: 'info', code: 'c', message: 'm' } };
+    const bad = { ...base, seq: 0, type: 'notice.posted', payload: { level: 'info', code: 'c', message: 'm' } };
     expect(() => parseStoredEvent(bad)).toThrow();
   });
 });

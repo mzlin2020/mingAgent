@@ -10,7 +10,7 @@ const evt = (seq: number): XmEvent => ({
   sessionId,
   seq,
   ts: 1,
-  type: 'notice',
+  type: 'notice.posted',
   v: 1,
   payload: { level: 'info', code: 'c', message: 'm' },
 });

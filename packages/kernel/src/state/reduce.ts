@@ -215,7 +215,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         lastSeq: e.seq,
       };
 
-    case 'usage':
+    case 'usage.recorded':
       return {
         ...state,
         usage: {
@@ -251,7 +251,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         lastSeq: e.seq,
       };
 
-    case 'notice':
+    case 'notice.posted':
       return {
         ...state,
         notices: [
@@ -266,7 +266,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         lastSeq: e.seq,
       };
 
-    case 'error':
+    case 'error.raised':
       return {
         ...state,
         status: e.payload.fatal ? 'error' : state.status,

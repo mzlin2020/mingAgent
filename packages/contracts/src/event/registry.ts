@@ -63,15 +63,15 @@ export const EVENT_SPECS = {
 
   // ── 上下文与运维 ──
   'context.compacted': { schema: P.ContextCompactedPayload, durability: 'persisted', version: 1 },
-  usage: { schema: P.UsagePayload, durability: 'persisted', version: 1 },
+  'usage.recorded': { schema: P.UsagePayload, durability: 'persisted', version: 1 },
   'checkpoint.created': { schema: P.CheckpointCreatedPayload, durability: 'persisted', version: 1 },
   'checkpoint.restored': {
     schema: P.CheckpointRestoredPayload,
     durability: 'persisted',
     version: 1,
   },
-  notice: { schema: P.NoticePayload, durability: 'persisted', version: 1 },
-  error: { schema: P.ErrorPayload, durability: 'persisted', version: 1 },
+  'notice.posted': { schema: P.NoticePayload, durability: 'persisted', version: 1 },
+  'error.raised': { schema: P.ErrorPayload, durability: 'persisted', version: 1 },
 } as const satisfies Record<string, EventSpec>;
 
 export type XmEventType = keyof typeof EVENT_SPECS;

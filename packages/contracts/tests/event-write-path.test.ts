@@ -32,7 +32,7 @@ describe('createEvent：写入侧的唯一入口', () => {
   it('🔴 payload 写坏了当场失败，而不是等到读回来', () => {
     expect(() =>
       createEvent({
-        type: 'usage',
+        type: 'usage.recorded',
         sessionId: S,
         seq: 1,
         ts: 1,
@@ -44,7 +44,7 @@ describe('createEvent：写入侧的唯一入口', () => {
 
   it('产出的事件能原样通过读取路径', () => {
     const e = createEvent({
-      type: 'notice',
+      type: 'notice.posted',
       sessionId: S,
       seq: 3,
       ts: 2,

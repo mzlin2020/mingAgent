@@ -54,6 +54,34 @@ describe('事件注册表', () => {
   it('ext.* 不属于核心事件类型', () => {
     expect(isKnownEventType('ext.foo.bar')).toBe(false);
     expect(isExtEventType('ext.foo.bar')).toBe(true);
-    expect(isExtEventType('notice')).toBe(false);
+    expect(isExtEventType('notice.posted')).toBe(false);
+  });
+});
+
+/**
+ * 事件命名的护栏。
+ *
+ * 三个裸名（`usage` / `notice` / `error`）在落库前改成了 `usage.recorded` 等
+ * （ADR-0012 ⑪）。但"以后别再写裸名"如果只写在文档里，下一个加事件的人不会看到——
+ * 而这次能纯文本替换，是因为还没有数据落库；下次就要写迁移了。
+ *
+ * 所以把它变成注册表自身的断言：**新增事件类型时，这个测试是唯一会拦住你的东西。**
+ */
+describe('事件命名约定', () => {
+  const NAMING = /^[a-z][a-z0-9]*(\.[a-z][a-z0-9]*)+$/;
+
+  it('🔴 一律 <实体>.<动作>，不允许裸名', () => {
+    for (const type of ALL_EVENT_TYPES) {
+      expect(type, `事件名 "${type}" 缺少前缀`).toMatch(NAMING);
+    }
+  });
+
+  it('前缀分组可用 —— UI 订阅与策略匹配都靠它', () => {
+    const groups = new Set(ALL_EVENT_TYPES.map((t) => t.split('.')[0]));
+    expect(groups).toContain('usage');
+    expect(groups).toContain('notice');
+    expect(groups).toContain('error');
+    // 裸名会让分组退化成事件名本身，这里顺带证明分组数严格小于事件数
+    expect(groups.size).toBeLessThan(ALL_EVENT_TYPES.length);
   });
 });

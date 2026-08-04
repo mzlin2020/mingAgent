@@ -49,7 +49,7 @@ export const XmEvent = z.discriminatedUnion('type', [
     type: z.literal('context.compacted'),
     payload: P.ContextCompactedPayload,
   }),
-  EventEnvelope.extend({ type: z.literal('usage'), payload: P.UsagePayload }),
+  EventEnvelope.extend({ type: z.literal('usage.recorded'), payload: P.UsagePayload }),
   EventEnvelope.extend({
     type: z.literal('checkpoint.created'),
     payload: P.CheckpointCreatedPayload,
@@ -58,8 +58,8 @@ export const XmEvent = z.discriminatedUnion('type', [
     type: z.literal('checkpoint.restored'),
     payload: P.CheckpointRestoredPayload,
   }),
-  EventEnvelope.extend({ type: z.literal('notice'), payload: P.NoticePayload }),
-  EventEnvelope.extend({ type: z.literal('error'), payload: P.ErrorPayload }),
+  EventEnvelope.extend({ type: z.literal('notice.posted'), payload: P.NoticePayload }),
+  EventEnvelope.extend({ type: z.literal('error.raised'), payload: P.ErrorPayload }),
 ]);
 export type XmEvent = z.infer<typeof XmEvent>;
 

@@ -106,7 +106,7 @@ export function sampleEvents(): XmEvent[] {
       payload: { fromSeq: 1, toSeq: 5, summaryRef: blob, tokensBefore: 100, tokensAfter: 20 },
     },
     {
-      type: 'usage',
+      type: 'usage.recorded',
       payload: {
         turnId,
         provider: 'anthropic',
@@ -120,9 +120,9 @@ export function sampleEvents(): XmEvent[] {
       payload: { checkpointId, kind: 'git', ref: 'abc', label: '执行前' },
     },
     { type: 'checkpoint.restored', payload: { checkpointId } },
-    { type: 'notice', payload: { level: 'info', code: 'c', message: 'm' } },
+    { type: 'notice.posted', payload: { level: 'info', code: 'c', message: 'm' } },
     {
-      type: 'error',
+      type: 'error.raised',
       payload: {
         error: { code: 'internal', message: '出错了', retryable: false },
         fatal: false,
