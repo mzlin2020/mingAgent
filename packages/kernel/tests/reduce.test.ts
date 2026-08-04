@@ -18,7 +18,7 @@ describe('reduce：fixture 会话归约出的状态', () => {
   const events = fixture();
   const state = reduceAll(emptySessionState(events[0]!.sessionId), events);
 
-  it('会话元信息来自 session.created / session.title', () => {
+  it('会话元信息来自 session.created / session.renamed', () => {
     expect(state.cwd).toBe('/work/demo');
     expect(state.modelRef).toBe('anthropic/claude-opus-5');
     expect(state.title).toBe('演示会话');

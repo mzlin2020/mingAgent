@@ -14,8 +14,8 @@ import type { XmEventType } from './registry.js';
  */
 export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({ type: z.literal('session.created'), payload: P.SessionCreatedPayload }),
-  EventEnvelope.extend({ type: z.literal('session.title'), payload: P.SessionTitlePayload }),
-  EventEnvelope.extend({ type: z.literal('session.config'), payload: P.SessionConfigPayload }),
+  EventEnvelope.extend({ type: z.literal('session.renamed'), payload: P.SessionRenamedPayload }),
+  EventEnvelope.extend({ type: z.literal('session.configured'), payload: P.SessionConfiguredPayload }),
 
   EventEnvelope.extend({ type: z.literal('turn.start'), payload: P.TurnStartPayload }),
   EventEnvelope.extend({ type: z.literal('turn.end'), payload: P.TurnEndPayload }),

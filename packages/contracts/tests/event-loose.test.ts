@@ -66,10 +66,10 @@ describe('事件 payload 必须保留未知字段', () => {
   it('判别联合在 looseObject 下仍能正确判别，且未知判别值被拒', () => {
     const ok = XmEvent.parse({
       ...base,
-      type: 'session.title',
+      type: 'session.renamed',
       payload: { title: '标题', extra: 1 },
     });
-    expect(ok.type).toBe('session.title');
+    expect(ok.type).toBe('session.renamed');
 
     expect(() => XmEvent.parse({ ...base, type: 'not.a.real.event', payload: {} })).toThrow();
   });

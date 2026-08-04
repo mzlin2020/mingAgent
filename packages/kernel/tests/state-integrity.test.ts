@@ -7,7 +7,7 @@ import { emptySessionState, reduceAll } from '@xm/kernel';
  * 状态完整性：**能影响安全的东西，一律不能只存在于"当时"，必须能从事件流回放出来。**
  *
  * 这里两条都是实测抓到的洞：
- *   · `session.config` 的补丁可以设 `permission.tier = 'yolo'` —— 一条会话事件即提权
+ *   · `session.configured` 的补丁可以设 `permission.tier = 'yolo'` —— 一条会话事件即提权
  *   · `permission.decision(scope=session)` 只清空 pendingPermission，决定本身不落状态
  *     —— 回放出来的会话看不出用户授权过什么
  */
@@ -26,16 +26,16 @@ const ev = (type: Parameters<typeof createEvent>[0]['type'], payload: unknown): 
   });
 
 describe('会话级配置不得提权', () => {
-  it('🔴 session.config 改不动 permission.tier', () => {
+  it('🔴 session.configured 改不动 permission.tier', () => {
     const st = reduceAll(emptySessionState(S), [
-      ev('session.config', { patch: { permission: { tier: 'yolo' } } }),
+      ev('session.configured', { patch: { permission: { tier: 'yolo' } } }),
     ]);
     expect(st.config).not.toHaveProperty('permission');
   });
 
-  it('🔴 session.config 改不动 providers（否则等于能把请求导向任意端点）', () => {
+  it('🔴 session.configured 改不动 providers（否则等于能把请求导向任意端点）', () => {
     const st = reduceAll(emptySessionState(S), [
-      ev('session.config', {
+      ev('session.configured', {
         patch: { providers: { anthropic: { baseUrl: 'https://evil.example' } } },
       }),
     ]);
@@ -44,7 +44,7 @@ describe('会话级配置不得提权', () => {
 
   it('无害的会话覆盖照常生效 —— 限制的是特定键，不是整个机制', () => {
     const st = reduceAll(emptySessionState(S), [
-      ev('session.config', { patch: { logging: { level: 'debug' }, model: { main: 'x/y' } } }),
+      ev('session.configured', { patch: { logging: { level: 'debug' }, model: { main: 'x/y' } } }),
     ]);
     expect(st.config).toEqual({ logging: { level: 'debug' }, model: { main: 'x/y' } });
   });

@@ -38,8 +38,8 @@ export function sampleEvents(): XmEvent[] {
   let seq = 0;
   const rows: { type: XmEventType; payload: unknown }[] = [
     { type: 'session.created', payload: { cwd: '/w', modelRef: 'anthropic/x' } },
-    { type: 'session.title', payload: { title: '标题' } },
-    { type: 'session.config', payload: { patch: { logging: { level: 'debug' } } } },
+    { type: 'session.renamed', payload: { title: '标题' } },
+    { type: 'session.configured', payload: { patch: { logging: { level: 'debug' } } } },
     { type: 'turn.start', payload: { turnId, input: [{ type: 'text', text: '你好' }] } },
     { type: 'message.start', payload: { messageId, role: 'assistant' } },
     {

@@ -26,8 +26,8 @@ export interface EventSpec {
 export const EVENT_SPECS = {
   // ── 会话 ──
   'session.created': { schema: P.SessionCreatedPayload, durability: 'persisted', version: 1 },
-  'session.title': { schema: P.SessionTitlePayload, durability: 'persisted', version: 1 },
-  'session.config': { schema: P.SessionConfigPayload, durability: 'persisted', version: 1 },
+  'session.renamed': { schema: P.SessionRenamedPayload, durability: 'persisted', version: 1 },
+  'session.configured': { schema: P.SessionConfiguredPayload, durability: 'persisted', version: 1 },
 
   // ── 回合 ──
   'turn.start': { schema: P.TurnStartPayload, durability: 'persisted', version: 1 },

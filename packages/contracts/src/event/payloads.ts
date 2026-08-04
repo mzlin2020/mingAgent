@@ -43,11 +43,11 @@ export const SessionCreatedPayload = z.looseObject({
   parentCallId: CallId.optional(),
 });
 
-export const SessionTitlePayload = z.looseObject({
+export const SessionRenamedPayload = z.looseObject({
   title: z.string(),
 });
 
-export const SessionConfigPayload = z.looseObject({
+export const SessionConfiguredPayload = z.looseObject({
   /** 会话内的配置覆盖，语义见 config/schema.ts 的 mergeConfig */
   patch: ConfigPatch,
 });

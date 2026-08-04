@@ -29,7 +29,7 @@ export const EventEnvelope = z.looseObject({
   seq: z.number().int().positive(),
   /** epoch ms。仅供展示与跨会话排序参考，**不是**会话内顺序的依据 */
   ts: z.number().int(),
-  /** 归属回合；会话级事件（如 session.title）无此字段 */
+  /** 归属回合；会话级事件（如 session.renamed）无此字段 */
   turnId: TurnId.optional(),
   type: z.string(),
   /** 该 type 的 payload 版本，用于 upcaster 逐级升版 */

@@ -35,10 +35,10 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         lastSeq: e.seq,
       };
 
-    case 'session.title':
+    case 'session.renamed':
       return { ...state, title: e.payload.title, lastSeq: e.seq };
 
-    case 'session.config':
+    case 'session.configured':
       // 会话补丁不得改权限档位与 Provider 密钥（restrictSessionPatch 的注释说明了原因）。
       // 写入侧本应先拒绝并发 notice；这里是读取侧的兜底——历史数据、被篡改的库、
       // 旧版本写入的事件都从这条路进来，而 reduce 发不了事件，只能静默丢弃。

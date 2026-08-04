@@ -20,13 +20,13 @@ const S = newSessionId();
 describe('createEvent：写入侧的唯一入口', () => {
   it('🔴 v 由注册表决定，调用方无从插手', () => {
     const e = createEvent({
-      type: 'session.title',
+      type: 'session.renamed',
       sessionId: S,
       seq: 1,
       ts: 1,
       payload: { title: '你好' },
     });
-    expect(e.v).toBe(EVENT_SPECS['session.title'].version);
+    expect(e.v).toBe(EVENT_SPECS['session.renamed'].version);
   });
 
   it('🔴 payload 写坏了当场失败，而不是等到读回来', () => {
@@ -60,7 +60,7 @@ describe('版本漂移', () => {
     sessionId: S,
     seq: 1,
     ts: 1,
-    type: 'session.title',
+    type: 'session.renamed',
     v,
     payload: { title: 'x', 未来字段: 1 },
   });
@@ -72,6 +72,6 @@ describe('版本漂移', () => {
   });
 
   it('当前版本正常通过', () => {
-    expect(() => parseStoredEvent(future(EVENT_SPECS['session.title'].version))).not.toThrow();
+    expect(() => parseStoredEvent(future(EVENT_SPECS['session.renamed'].version))).not.toThrow();
   });
 });
