@@ -30,6 +30,18 @@
 | [10-契约设计](./10-契约设计.md) | `@xm/contracts` 的实现级规格：事件 / 工具 / 权限 / 模型 / 配置 schema | **写 M0 第一行代码时** |
 | [adr/](./adr/) | 架构决策记录（一决策一文件，只增不改） | 决策落定后立刻写 |
 
+## 代码现状（2026-08-04）
+
+M0-a 已落地：`packages/contracts`（唯一契约来源，零依赖 6.47KB）与 `packages/kernel`（纯逻辑，零 I/O）。
+136 个测试、6 项故意违规演练全绿。剩余 M0-b（Electron 空壳 / SQLite / headless 冒烟）见 [08 路线图](./08-路线图与里程碑.md)。
+
+```bash
+pnpm install     # 自动断言双编译器工具链装配正确
+pnpm verify      # toolchain + typecheck + lint + test + depcruise + size
+```
+
+各包的"负责什么 / 不负责什么"见包内 README：[`packages/contracts`](../packages/contracts/README.md)、[`packages/kernel`](../packages/kernel/README.md)。
+
 ## 文档约定
 
 1. **决策必须留痕**。任何影响接口、依赖、数据格式的决定，写一份 ADR（模板见 `adr/0000-模板.md`），旧决策被推翻时新写一份并标注 `Supersedes`。
