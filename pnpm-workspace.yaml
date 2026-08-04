@@ -1,0 +1,21 @@
+packages:
+  - 'packages/*'
+  - 'apps/*'
+
+# 只允许这些包跑安装脚本（pnpm 默认全部禁止）。白名单越短越好——
+# 安装脚本是供应链攻击的主要入口，esbuild 是 size-limit 的下载型二进制，必须放行。
+allowBuilds:
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - '@typescript-eslint/eslint-plugin@8.66.0'
+  - '@typescript-eslint/parser@8.66.0'
+  - '@typescript-eslint/project-service@8.66.0'
+  - '@typescript-eslint/scope-manager@8.66.0'
+  - '@typescript-eslint/tsconfig-utils@8.66.0'
+  - '@typescript-eslint/type-utils@8.66.0'
+  - '@typescript-eslint/types@8.66.0'
+  - '@typescript-eslint/typescript-estree@8.66.0'
+  - '@typescript-eslint/utils@8.66.0'
+  - '@typescript-eslint/visitor-keys@8.66.0'
+  - typescript-eslint@8.66.0

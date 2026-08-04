@@ -1,0 +1,4 @@
+#!/bin/sh
+# 由 scripts/install-hooks.mjs 通过 core.hooksPath 生效。
+# 只做一件事：拦住把密钥提交进 git 的手滑。其余检查交给 CI（本地钩子要快）。
+exec node "$(git rev-parse --show-toplevel)/scripts/check-secrets.mjs"

@@ -1,0 +1,8 @@
+{
+  "//": "方案文件（solution tsconfig）：本身不含源码，只声明项目引用。`tsc -b` 从这里出发。",
+  "files": [],
+  "references": [
+    { "path": "./packages/contracts" },
+    { "path": "./packages/kernel" }
+  ]
+}

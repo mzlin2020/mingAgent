@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # ADR-0010：TS 7 与 TS 6 对同样的错误分别退出 1 和 2。
+  # 所有步骤一律只判断"非零"，禁止判断具体退出码。
+  FORCE_COLOR: '1'
+
+jobs:
+  # 类型检查与 lint 分开跑，让总耗时取 max 而不是 sum。
+  # 实测（ADR-0010）：typecheck 8.6s，typed lint 26.4s / 峰值 1.4GB —— lint 是瓶颈。
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 断言双编译器工具链装配正确
+        run: node scripts/assert-toolchain.mjs
+      - run: pnpm exec tsc -b
+      - run: pnpm exec tsc -p tsconfig.tests.json
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec eslint .
+
+  # 三平台矩阵：内核与契约是纯逻辑，理应处处一致。
+  # 这里一旦出现平台差异，说明有人在业务代码里做了平台判断（ADR-0007）。
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc -b
+      - run: pnpm exec vitest run
+
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: 架构守护（内核零 I/O、契约零依赖、无循环依赖）
+        run: pnpm exec depcruise packages --config .dependency-cruiser.cjs
+      - name: 体积预算（契约包自身 < 15KB gzip）
+        run: pnpm exec tsc -b && pnpm exec size-limit
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # 本地 pre-commit 钩子可以被 --no-verify 绕过，CI 这一道不行。
+      # 扫描 PR 的全部改动，而不只是最后一次提交。
+      - name: 密钥扫描
+        run: |
+          git reset --soft ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD~1' }} || git reset --soft HEAD
+          node scripts/check-secrets.mjs

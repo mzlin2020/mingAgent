@@ -1,0 +1,21 @@
+{
+  "name": "@xm/kernel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "小明的纯内核：状态归约 / 权限判定 / 工具注册与截断。零 I/O、零 node:*、可在浏览器里跑",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

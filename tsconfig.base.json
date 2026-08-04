@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    // ── 严格档：全开。原则四"禁止 any、严格校验"的编译期部分 ──
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+
+    // 只允许可擦除语法（禁 enum / namespace / 参数属性）。
+    // 好处有二：产物能被 node --experimental-strip-types 直接跑；
+    // 且我们的枚举一律走 z.enum，不该出现 TS enum。
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+
+    // 不自动引入任何 @types/*。@types/node 一旦对 packages/ 可见，
+    // kernel 里写 `process.cwd()` 就能通过类型检查，"内核零 I/O" 的编译期保证就没了。
+    // 测试与脚本在 tsconfig.tests.json 里单独把 node 类型开回来。
+    "types": [],
+
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "composite": true,
+    "skipLibCheck": true
+  }
+}

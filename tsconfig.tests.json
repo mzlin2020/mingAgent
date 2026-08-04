@@ -1,0 +1,22 @@
+{
+  "//": [
+    "测试与仓库脚本的类型检查。刻意与各包的构建工程分开：",
+    "  · 包工程只 include src/，避免测试代码被编译进 dist",
+    "  · 但测试代码也必须被类型检查，否则 `as any` 之类的东西会在测试里悄悄堆积",
+    "注意：paths 不配 baseUrl —— TS 7 不支持 baseUrl（ADR-0001）。"
+  ],
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "types": ["node"],
+    "paths": {
+      "@xm/contracts": ["./packages/contracts/src/index.ts"],
+      "@xm/kernel": ["./packages/kernel/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/tests/**/*.ts", "packages/*/src/**/*.ts", "vitest.config.ts"]
+}

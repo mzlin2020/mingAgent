@@ -1,0 +1,18 @@
+/**
+ * `@xm/kernel` —— 纯逻辑内核。
+ *
+ * 零 I/O、零 `node:*`、零 electron（dependency-cruiser 在 CI 强制）。
+ * 可以在浏览器、Node、测试里以完全相同的方式运行——这是"内核单测无需网络与
+ * 文件系统"以及"未来换外壳"这两件事共同的前提。
+ */
+
+export * from './state/session-state.js';
+export * from './state/reduce.js';
+export * from './state/seq.js';
+
+export * from './policy/engine.js';
+export * from './policy/defaults.js';
+
+export * from './tool/types.js';
+export * from './tool/registry.js';
+export * from './tool/truncate.js';

@@ -1,0 +1,50 @@
+{
+  "name": "xiaoming",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "小明 · 通用私人 Agent",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@11.20.0",
+  "scripts": {
+    "prepare": "node scripts/assert-toolchain.mjs && node scripts/install-hooks.mjs",
+    "toolchain": "node scripts/assert-toolchain.mjs",
+    "build": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.tests.json",
+    "typecheck:clean": "tsc -b --force",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "depcruise": "depcruise packages --config .dependency-cruiser.cjs",
+    "size": "size-limit",
+    "verify": "node scripts/assert-toolchain.mjs && tsc -b && tsc -p tsconfig.tests.json && eslint . && vitest run && pnpm depcruise && pnpm size",
+    "clean": "tsc -b --clean && rimraf packages/*/dist"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@size-limit/preset-small-lib": "^13.0.3",
+    "@types/node": "^24.13.3",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@vitest/coverage-v8": "^4.1.10",
+    "dependency-cruiser": "^18.1.1",
+    "eslint": "^10.8.0",
+    "rimraf": "^6.1.3",
+    "size-limit": "^13.0.3",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-eslint": "^8.66.0",
+    "vitest": "^4.1.10"
+  },
+  "size-limit": [
+    {
+      "name": "@xm/contracts (自身，不含 zod)",
+      "path": "packages/contracts/dist/index.js",
+      "limit": "15 KB",
+      "ignore": [
+        "zod"
+      ],
+      "gzip": true
+    }
+  ]
+}
