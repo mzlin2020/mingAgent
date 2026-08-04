@@ -3,13 +3,24 @@ import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import { ToolSchemaError } from '@xm/contracts';
 import { ToolInputError, ToolRegistry, defineTool } from '@xm/kernel';
-import type { ToolContext } from '@xm/kernel';
+import type { ToolAvailabilityContext, ToolContext } from '@xm/kernel';
+import { ALL_CAPABILITIES, newSessionId } from '@xm/contracts';
 
 const ctx: ToolContext = {
+  sessionId: newSessionId(),
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd: '/work',
   executor: 'local',
 };
+
+/** 默认可用性上下文：平台什么都支持、什么都没禁用 */
+const availCtx = (over: Partial<ToolAvailabilityContext> = {}): ToolAvailabilityContext => ({
+  cwd: '/work',
+  executor: 'local',
+  platformCapabilities: ALL_CAPABILITIES,
+  disabledTools: [],
+  ...over,
+});
 
 const readTool = () =>
   defineTool({
@@ -128,5 +139,83 @@ describe('ToolRegistry', () => {
     reg.register(readTool());
     expect(reg.unregister('fs.read')).toBe(true);
     expect(reg.size).toBe(0);
+  });
+});
+
+/**
+ * 动态可用性（docs/04 §4.3）。
+ *
+ * 这个字段之前**只存在于文档和注释里**——ADR-0006 的派生约束提它、ToolRegistry
+ * 的注释提它、docs/04 的接口草案写了它，唯独 `ToolSpec` 上没有。于是
+ * "Linux 上 computer 工具从模型视野消失"（ADR-0007 Tier 3）这条根本无法表达。
+ */
+describe('工具可用性过滤', () => {
+  const guiTool = () =>
+    defineTool({
+      name: 'computer.click',
+      group: 'computer',
+      description: '点击屏幕坐标',
+      inputSchema: z.strictObject({ x: z.number(), y: z.number() }),
+      risk: 'high',
+      capabilities: ['gui.input'],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      execute: async function* (): AsyncIterable<ToolProgress> {
+        yield { kind: 'result', forModel: [] };
+      },
+    });
+
+  it('不传上下文时给出全量列表', () => {
+    const r = new ToolRegistry();
+    r.register(guiTool());
+    expect(r.descriptors()).toHaveLength(1);
+  });
+
+  it('🔴 平台不支持所需能力 → 工具不进模型视野', () => {
+    const r = new ToolRegistry();
+    r.register(guiTool());
+    const platformCapabilities = ALL_CAPABILITIES.filter((c) => c !== 'gui.input');
+    expect(r.descriptors(availCtx({ platformCapabilities }))).toHaveLength(0);
+  });
+
+  it('🔴 配置禁用优先于工具自己的判断', () => {
+    const r = new ToolRegistry();
+    r.register(
+      defineTool({
+        name: 'fs.list',
+        group: 'fs',
+        description: '列目录',
+        inputSchema: z.strictObject({ path: z.string() }),
+        risk: 'safe',
+        capabilities: ['fs.read'],
+        // 工具坚称自己永远可用——也拦不住用户关掉它
+        available: () => true,
+        // eslint-disable-next-line @typescript-eslint/require-await
+        execute: async function* (): AsyncIterable<ToolProgress> {
+          yield { kind: 'result', forModel: [] };
+        },
+      }),
+    );
+    expect(r.descriptors(availCtx({ disabledTools: ['fs.list'] }))).toHaveLength(0);
+  });
+
+  it('工具自报不可用（如无 git 仓库）时也不暴露', () => {
+    const r = new ToolRegistry();
+    r.register(
+      defineTool({
+        name: 'git.status',
+        group: 'git',
+        description: '查看仓库状态',
+        inputSchema: z.strictObject({}),
+        risk: 'safe',
+        capabilities: ['fs.read'],
+        available: (ctx) => ctx.cwd.startsWith('/repo'),
+        // eslint-disable-next-line @typescript-eslint/require-await
+        execute: async function* (): AsyncIterable<ToolProgress> {
+          yield { kind: 'result', forModel: [] };
+        },
+      }),
+    );
+    expect(r.descriptors(availCtx({ cwd: '/tmp' }))).toHaveLength(0);
+    expect(r.descriptors(availCtx({ cwd: '/repo/x' }))).toHaveLength(1);
   });
 });

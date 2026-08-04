@@ -12,6 +12,14 @@ export const ResultLimits = z.object({
   maxBytes: z.number().int().positive().default(64 * 1024),
   maxLines: z.number().int().positive().optional(),
   /**
+   * 结果里最多保留几个非文本块（图片 / 文档）。
+   *
+   * `maxBytes` 只约束文本，而一张截图进上下文的代价是上千 token——浏览器自动化和
+   * computer use（M4）一次返回十几张截图是完全正常的用法，不设上限就是"文本抠着算，
+   * 图片随便塞"。超出的块被丢弃并在文本标记里说明丢了几个，同样对模型可见。
+   */
+  maxBlocks: z.number().int().nonnegative().default(4),
+  /**
    * 默认 `middle`：头尾都保留。命令输出的头部有上下文、尾部有错误信息，中间往往是噪音。
    * `head`/`tail` 留给明确知道信息分布的工具。
    */
@@ -21,6 +29,7 @@ export type ResultLimits = z.infer<typeof ResultLimits>;
 
 export const DEFAULT_RESULT_LIMITS: ResultLimits = {
   maxBytes: 64 * 1024,
+  maxBlocks: 4,
   strategy: 'middle',
 };
 

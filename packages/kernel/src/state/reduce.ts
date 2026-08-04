@@ -1,6 +1,6 @@
 import type { ContentBlock, Message, MessageId, XmEvent } from '@xm/contracts';
-import { addUsage, mergeConfig } from '@xm/contracts';
-import type { SessionState } from './session-state.js';
+import { addUsage, mergeConfig, restrictSessionPatch } from '@xm/contracts';
+import type { PermissionGrant, SessionState } from './session-state.js';
 
 /**
  * 事件 → 状态的归约。**纯函数**：不读时间、不取随机数、不碰文件系统。
@@ -39,7 +39,14 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       return { ...state, title: e.payload.title, lastSeq: e.seq };
 
     case 'session.config':
-      return { ...state, config: mergeConfig(state.config, e.payload.patch), lastSeq: e.seq };
+      // 会话补丁不得改权限档位与 Provider 密钥（restrictSessionPatch 的注释说明了原因）。
+      // 写入侧本应先拒绝并发 notice；这里是读取侧的兜底——历史数据、被篡改的库、
+      // 旧版本写入的事件都从这条路进来，而 reduce 发不了事件，只能静默丢弃。
+      return {
+        ...state,
+        config: mergeConfig(state.config, restrictSessionPatch(e.payload.patch).patch),
+        lastSeq: e.seq,
+      };
 
     // ── 回合 ────────────────────────────────────────────────
     case 'turn.start':
@@ -143,13 +150,30 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         lastSeq: e.seq,
       };
 
-    case 'permission.decision':
+    case 'permission.decision': {
+      // scope=once 不留痕（它只对当前这一次调用有效）；session/always 必须进状态，
+      // 否则回放出的会话看不出"用户已经授权过"——见 session-state.ts 的 grants 注释。
+      const { scope, requestId, effect } = e.payload;
+      const pending = state.pendingPermission;
+      const grant: PermissionGrant | undefined =
+        scope !== 'once' && pending?.requestId === requestId
+          ? {
+              requestId,
+              capability: pending.capability,
+              target: pending.target,
+              effect,
+              scope,
+              ts: e.ts,
+            }
+          : undefined;
       return {
         ...state,
         status: state.activeTurn === undefined ? 'idle' : 'running',
         pendingPermission: undefined,
+        grants: grant === undefined ? state.grants : [...state.grants, grant],
         lastSeq: e.seq,
       };
+    }
 
     // ── 任务与子 Agent ────────────────────────────────────────
     case 'todo.updated':

@@ -2,14 +2,23 @@ import { describe, expect, it } from 'vitest';
 import type { Capability, PermissionRequest, PolicyRule, PolicyRuleSet, TrustLevel } from '@xm/contracts';
 import { ALL_CAPABILITIES, IRREVERSIBLE_CAPABILITIES, newRequestId, newSessionId } from '@xm/contracts';
 import {
-  BUILTIN_RULES,
   INJECTION_DOWNGRADE_RULE_ID,
-  RED_LINE_RULES,
   TIER_FALLBACK_RULE_ID,
+  builtinRules,
   composeRules,
   evaluate,
   globMatch,
+  redLineRules,
 } from '@xm/kernel';
+import type { PolicyEnv } from '@xm/kernel';
+
+/**
+ * 红线依赖两个环境事实（家目录、安装目录），所以测试也必须给出它们。
+ * 这正是把 PolicyEnv 做成必填参数的用意：忘了传，编译就不过。
+ */
+const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo' };
+const BUILTIN_RULES = builtinRules(ENV);
+const RED_LINE_RULES = redLineRules(ENV);
 
 const req = (
   capability: Capability,
@@ -137,7 +146,7 @@ describe('PolicyEngine：档位兜底', () => {
     ];
     const v = evaluate({
       request: req('gui.input', { trustLevel: 'untrusted' }),
-      rules: composeRules(userAllowsEverything),
+      rules: composeRules(ENV, userAllowsEverything),
       tier: 'yolo',
     });
     expect(v.effect).toBe('deny');
@@ -268,13 +277,19 @@ describe('红线清单', () => {
     }
   });
 
-  it('数量保持克制 —— 红线一多，用户就会去找绕过的办法', () => {
-    expect(RED_LINE_RULES.length).toBeLessThanOrEqual(8);
+  it('不可撤销能力之外的红线数量保持克制 —— 红线一多，用户就会去找绕过的办法', () => {
+    // 自改红线是一组文件路径，逐条列出反而清晰，不计入这个上限
+    const nonSelfModify = RED_LINE_RULES.filter((r) => r.capability !== 'self.modify');
+    expect(nonSelfModify.length).toBeLessThanOrEqual(8);
   });
 
   it('包含"不许改权限模块自身"这条', () => {
-    const r = RED_LINE_RULES.find((x) => x.id === 'red.self-modify-policy');
-    expect(r).toBeDefined();
-    expect(globMatch(r!.match!.target!, '/repo/packages/kernel/src/policy/defaults.ts')).toBe(true);
+    const v = evaluate({
+      request: req('self.modify', { target: '/repo/packages/kernel/src/policy/defaults.ts' }),
+      rules: BUILTIN_RULES,
+      tier: 'balanced',
+    });
+    expect(v.effect).toBe('deny');
+    expect(v.ruleId).toMatch(/^red\.self-modify-/);
   });
 });

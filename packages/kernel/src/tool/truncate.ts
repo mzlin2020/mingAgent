@@ -17,6 +17,8 @@ export interface TruncateOutcome {
   readonly originalBytes: number;
   readonly originalLines: number;
   readonly keptBytes: number;
+  /** 因超出 `maxBlocks` 被丢弃的非文本块数量（截图 / 文档） */
+  readonly droppedBlocks: number;
 }
 
 /**
@@ -37,7 +39,11 @@ export function truncateResult(
   fullRef?: BlobRef,
 ): TruncateOutcome {
   const texts = blocks.filter((b) => b.type === 'text');
-  const others = blocks.filter((b) => b.type !== 'text');
+  const allOthers = blocks.filter((b) => b.type !== 'text');
+
+  // 非文本块（截图 / 文档）单独限量：它们不占 maxBytes 却是上下文里最贵的东西
+  const others = limits.strategy === 'none' ? allOthers : allOthers.slice(0, limits.maxBlocks);
+  const droppedBlocks = allOthers.length - others.length;
 
   const joined = texts.map((b) => b.text).join('\n');
   const originalBytes = byteLength(joined);
@@ -47,19 +53,20 @@ export function truncateResult(
   const overLines =
     limits.strategy !== 'none' && limits.maxLines !== undefined && originalLines > limits.maxLines;
 
-  if (!overBytes && !overLines) {
+  if (!overBytes && !overLines && droppedBlocks === 0) {
     return {
       blocks: [...blocks],
       truncated: false,
       originalBytes,
       originalLines,
       keptBytes: originalBytes,
+      droppedBlocks: 0,
     };
   }
 
-  const kept = applyLimits(joined, limits);
+  const kept = overBytes || overLines ? applyLimits(joined, limits) : joined;
   const keptBytes = byteLength(kept);
-  const marker = buildMarker(originalBytes - keptBytes, originalLines, fullRef);
+  const marker = buildMarker(originalBytes - keptBytes, originalLines, droppedBlocks, fullRef);
 
   return {
     // 文本被合并成一块。混合结果（文本 + 图片）在实践中罕见，
@@ -69,6 +76,7 @@ export function truncateResult(
     originalBytes,
     originalLines,
     keptBytes,
+    droppedBlocks,
   };
 }
 
@@ -141,11 +149,18 @@ function tailBytes(text: string, maxBytes: number): string {
 const isHighSurrogate = (code: number): boolean => code >= 0xd800 && code <= 0xdbff;
 const isLowSurrogate = (code: number): boolean => code >= 0xdc00 && code <= 0xdfff;
 
-function buildMarker(omittedBytes: number, totalLines: number, fullRef?: BlobRef): string {
+function buildMarker(
+  omittedBytes: number,
+  totalLines: number,
+  droppedBlocks: number,
+  fullRef?: BlobRef,
+): string {
   const ref = fullRef === undefined ? '' : `完整内容: ${formatBlobRef(fullRef)}，`;
+  const blocks =
+    droppedBlocks === 0 ? '' : `另有 ${droppedBlocks.toLocaleString('en-US')} 个图片/文档块被省略。`;
   return (
     `\n[... 已省略约 ${omittedBytes.toLocaleString('en-US')} 字节 ` +
-    `/ 原文共 ${totalLines.toLocaleString('en-US')} 行。` +
+    `/ 原文共 ${totalLines.toLocaleString('en-US')} 行。${blocks}` +
     `${ref}可用 result.expand 工具按行范围读取 ...]\n`
   );
 }

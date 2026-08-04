@@ -84,6 +84,43 @@ export function mergeConfig(base: ConfigPatch, patch: ConfigPatch): ConfigPatch 
   return out;
 }
 
+/**
+ * **会话层不得触碰的配置路径。**
+ *
+ * 分层里"会话覆盖"排在项目级之上，于是 `session.config` 事件的补丁天然能改任何键——
+ * 包括 `permission.tier`。那意味着任何能往事件流里追加一条 session.config 的路径，
+ * 都等于一条提权到 YOLO 的通道；而事件流的写入方将来会包括工具、插件宿主、
+ * 以及小明自己（L4）。**权限档位与规则只能来自用户级/项目级配置文件，不能来自会话内。**
+ *
+ * 密钥同理：会话补丁能改 `providers.*.apiKey` 就等于能把请求导向任意端点。
+ */
+export const SESSION_FORBIDDEN_CONFIG_PATHS: readonly string[] = ['permission', 'providers'];
+
+/**
+ * 过滤会话级补丁里越权的键，**失败关闭**。
+ *
+ * 两个调用点，缺一不可：
+ *   · 运行时写 `session.config` 事件**之前**——这样能把 `rejected` 变成一条 notice 事件，
+ *     用户看得见"你的会话补丁有一部分被拒了"，符合"绝不静默"。
+ *   · `reduce()` 里**再过一次**——历史事件、被篡改的库、旧版本写入的数据都走这条路，
+ *     而 reduce 无法发事件，只能静默丢弃。两处都做，才是"写入侧告知 + 读取侧兜底"。
+ */
+export function restrictSessionPatch(patch: ConfigPatch): {
+  patch: ConfigPatch;
+  rejected: readonly string[];
+} {
+  const out: Record<string, unknown> = {};
+  const rejected: string[] = [];
+  for (const [key, value] of Object.entries(patch)) {
+    if (SESSION_FORBIDDEN_CONFIG_PATHS.includes(key)) {
+      rejected.push(key);
+      continue;
+    }
+    out[key] = value;
+  }
+  return { patch: out, rejected };
+}
+
 /** 按分层顺序依次合并；后者覆盖前者 */
 export const mergeConfigLayers = (...layers: ConfigPatch[]): ConfigPatch =>
   layers.reduce<ConfigPatch>((acc, layer) => mergeConfig(acc, layer), {});

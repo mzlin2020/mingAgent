@@ -4,6 +4,7 @@ import type {
   ResourceClaim,
   ResultLimits,
   RiskLevel,
+  SessionId,
   ToolDescriptor,
   ToolProgress,
 } from '@xm/contracts';
@@ -22,10 +23,28 @@ export interface AbortLike {
 }
 
 export interface ToolContext {
+  /** 归属会话。工具产出的事件、审计记录、子 Agent 派生都要挂在它上面 */
+  readonly sessionId: SessionId;
   readonly signal: AbortLike;
   /** 工作区根目录。工具自己解析相对路径，内核不碰文件系统 */
   readonly cwd: string;
   readonly executor: 'local' | 'container' | 'remote';
+}
+
+/**
+ * `available()` 的判定上下文 —— 只含**不随单次调用变化**的事实。
+ *
+ * 与 `ToolContext` 分开是刻意的：可用性决定的是"工具进不进提示词"，
+ * 而提示词要能被 prompt cache 命中。如果这里能看到 signal 之类的每次调用都不同的东西，
+ * 工具列表就会逐轮抖动，缓存全失效（ADR-0006 的派生约束）。
+ */
+export interface ToolAvailabilityContext {
+  readonly cwd: string;
+  readonly executor: 'local' | 'container' | 'remote';
+  /** 由 PlatformPort 探测得出，如 `computer.input`（Linux 上不可用，ADR-0007） */
+  readonly platformCapabilities: readonly Capability[];
+  /** 配置里显式禁用的工具名（Config.tools.disabled） */
+  readonly disabledTools: readonly string[];
 }
 
 /**
@@ -48,6 +67,18 @@ export interface ToolSpec<I> {
   readonly concurrency?: 'parallel' | 'exclusive';
   readonly resultLimits?: Partial<ResultLimits>;
   readonly source?: ToolDescriptor['source'];
+
+  /**
+   * 动态可用性：不满足条件时该工具**不进模型视野**（docs/04 §4.3）。
+   *
+   * 典型用途：无 git 仓库就不暴露 git 工具集；Linux 上 `computer.*` 探测为不可用，
+   * 工具从提示词里消失、UI 灰显（ADR-0007 Tier 3）。
+   *
+   * ⚠️ 必须是**纯函数且结果稳定**。它的返回值直接决定提示词里的工具列表，
+   * 而工具列表是 prompt cache 稳定前缀的一部分——让它依赖每轮都在变的东西
+   * （时间、随机、上一次调用结果），就等于每轮缓存全失效（ADR-0006）。
+   */
+  available?(ctx: ToolAvailabilityContext): boolean;
 
   /**
    * 声明本次调用会碰到的资源，用于并发冲突检测（ADR-0005）。
@@ -75,4 +106,6 @@ export interface RegisteredTool {
   /** 传入**未校验**的原始入参；内部先 strict parse，不通过则抛 ToolInputError */
   execute(rawInput: unknown, ctx: ToolContext): AsyncIterable<ToolProgress>;
   resources(rawInput: unknown): readonly ResourceClaim[];
+  /** 未声明 `available()` 的工具恒为可用 */
+  available(ctx: ToolAvailabilityContext): boolean;
 }

@@ -5,7 +5,7 @@
 ## 这个包负责什么
 
 - 定义一切**跨进程传输**与**落库**的数据形状
-- 提供纯函数：`redact()`（脱敏）、`assertToolSchema()`（工具入参子集断言）、`toModelSchema()`（JSON Schema 导出）、`parseStoredEvent()`（读库时升版+校验）、`mergeConfig()`（配置合并语义）
+- 提供纯函数：`redact()`（脱敏）、`assertToolSchema()`（工具入参子集断言）、`toModelSchema()`（JSON Schema 导出）、`createEvent()` / `parseStoredEvent()`（事件的写入与读取入口）、`mergeConfig()` / `restrictSessionPatch()`（配置合并与会话层越权过滤）
 
 ## 不负责什么
 
@@ -41,6 +41,14 @@ z.toJSONSchema(schema, { io: 'input', reused: 'inline' })
 
 > ⚠️ 它读的是 Zod 的 `_zod.def`，属**半公开 API**，不受 semver 保护。因此 `zod` 在 `package.json` 里锁的是**精确版本**，升级时 `tests/tool-schema.test.ts` 是回归闸门。
 
+## 🔴 第三条：事件的写入只走 `createEvent()`
+
+读取路径（`parseStoredEvent`）一开始就有校验、upcaster、未知类型报错；写入路径如果是"手工拼一个对象字面量"，`v` 就全靠人记得填对。**事件一旦落库就是永久的**——`v` 写错会让日后的 upcaster 跑在错误的数据上，且要等到几个版本之后才暴露。
+
+`createEvent()` 的 `v` **从注册表取且不接受调用方传入**，payload 当场校验。见 `tests/event-write-path.test.ts`。
+
+对称的一条：`v` 高于本机支持版本的事件**必须抛错**，不能降级解释。`looseObject` 保留未知字段解决的是"字段丢失"，解决不了"字段语义变了"——旧代码按 v1 的理解读 v2 的数据，会得到一个看起来正常、实际错误的状态（ADR-0012 ⑤）。
+
 ## 目录
 
 ```
@@ -52,7 +60,7 @@ src/
 ├── tool/       descriptor 描述符 / result 截断契约 / display 展示契约 / claim 资源声明 / schema 子集断言
 ├── permission/ capability 能力闭集 / request 请求+信任级别 / policy 规则与判定
 ├── model/      request 请求+缓存断点 / chunk 流式块 / usage 用量
-├── config/     secret 密钥引用 / schema 配置树+合并语义
+├── config/     secret 密钥引用 / schema 配置树+合并语义+会话层越权过滤
 └── plugin/     manifest 插件清单
 ```
 

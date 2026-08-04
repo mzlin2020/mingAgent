@@ -1,6 +1,11 @@
 import type { ResourceClaim, ToolDescriptor, ToolProgress, XmError } from '@xm/contracts';
 import { DEFAULT_RESULT_LIMITS, assertToolSchema, toModelSchema, xmError } from '@xm/contracts';
-import type { RegisteredTool, ToolContext, ToolSpec } from './types.js';
+import type {
+  RegisteredTool,
+  ToolAvailabilityContext,
+  ToolContext,
+  ToolSpec,
+} from './types.js';
 
 /** 模型给出的入参没通过 strict 校验。会被转成 tool_result{isError:true} 回灌给模型。 */
 export class ToolInputError extends Error {
@@ -59,6 +64,14 @@ export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
     resources(rawInput: unknown): readonly ResourceClaim[] {
       return spec.resources?.(parse(rawInput)) ?? [];
     },
+    available(ctx: ToolAvailabilityContext): boolean {
+      // 配置里禁用的工具一律不可用，且这条**优先于**工具自己的判断——
+      // 用户关掉一个工具的意思是关掉，不是"由工具自己决定要不要听"
+      if (ctx.disabledTools.includes(spec.name)) return false;
+      // 平台不具备该工具所需的任一能力 → 不暴露（ADR-0007）
+      if (spec.capabilities.some((c) => !ctx.platformCapabilities.includes(c))) return false;
+      return spec.available?.(ctx) ?? true;
+    },
   };
 }
 
@@ -95,12 +108,17 @@ export class ToolRegistry {
   /**
    * 给模型看的工具列表。
    *
+   * 不传 `ctx` = 全量；传了则按 `available()` 过滤（无 git 仓库不暴露 git 工具、
+   * Linux 上不暴露 computer 工具……）。
+   *
    * ⚠️ ADR-0006 的派生约束：动态过滤的结果**不得进入稳定前缀**。
    * 若这个列表逐轮变化，`ModelRequest.cacheBreakpointAfterMessage` 必须置于
    * 变化点之后，否则 prompt cache 每轮全部失效。
    */
-  descriptors(): ToolDescriptor[] {
-    return [...this.#tools.values()].map((t) => t.descriptor);
+  descriptors(ctx?: ToolAvailabilityContext): ToolDescriptor[] {
+    const all = [...this.#tools.values()];
+    const visible = ctx === undefined ? all : all.filter((t) => t.available(ctx));
+    return visible.map((t) => t.descriptor);
   }
 
   get size(): number {

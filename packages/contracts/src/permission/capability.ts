@@ -50,3 +50,23 @@ export const IRREVERSIBLE_CAPABILITIES: readonly Capability[] = [
 ];
 
 export const isIrreversible = (c: Capability): boolean => IRREVERSIBLE_CAPABILITIES.includes(c);
+
+/**
+ * `target` 是**文件系统路径**的能力子集。
+ *
+ * 这不是分类学，是判定行为的分叉点：对这些能力，`PermissionRequest.target` 必须是
+ * **已规范化的绝对路径**，PolicyEngine 会先规范化再匹配，规范化失败**直接拒绝**
+ * （见 kernel/policy/target.ts）。
+ *
+ * 原因是实测出来的：红线写 `~` 而运行时传 `/home/ming`，写 `/` 而运行时传 `/tmp/..`，
+ * 两边都是"路径"却对不上，规则看起来在、实际永不命中。字符串 glob 在安全边界上
+ * 必须配一个规范化契约，否则拼写差异就是绕过手段。
+ */
+export const PATH_CAPABILITIES: readonly Capability[] = [
+  'fs.read',
+  'fs.write',
+  'fs.delete',
+  'self.modify',
+];
+
+export const isPathCapability = (c: Capability): boolean => PATH_CAPABILITIES.includes(c);

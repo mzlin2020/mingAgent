@@ -10,6 +10,7 @@
 | `state/seq.ts` | `seq` 不变量校验（单调、无空洞） |
 | `policy/engine.ts` | 权限判定。纯函数，可穷举测试 |
 | `policy/defaults.ts` | 红线（immutable）与平衡档默认规则 |
+| `policy/target.ts` | 路径目标的词法规范化。安全边界的前置条件，见下方约束三 |
 | `tool/registry.ts` | 工具注册、schema 子集校验、入参类型擦除 |
 | `tool/truncate.ts` | 结果截断与对模型可见的截断标记 |
 
@@ -34,9 +35,20 @@
 不读时间、不取随机数、不碰文件系统。需要 ID 时用事件自身的 `id` 派生（见 `turn.start` 分支）。
 违反这条，回放就不再是回放。
 
-**三、红线规则改不得。**
+**三、红线规则改不得，且必须按"运行时真会传的字符串"测。**
 `policy/defaults.ts` 里 `immutable: true` 的规则任何档位都不可覆盖，YOLO 也一样。
-其中 `red.self-modify-policy` 禁止小明修改这个目录本身——红线能被自己改掉，就等于没有红线。
+`red.self-modify-*` 一组禁止小明修改策略目录、权限契约、密钥契约、脱敏出口、`scripts/`、
+depcruise/eslint 配置、githooks 与 CI workflow——红线能被自己改掉，就等于没有红线。
+
+⚠️ **红线是参数化的**：`builtinRules({ home, appRoot })`，两个参数必填。
+内核零 I/O 拿不到 `homedir()`，就不该假装知道。这不是形式主义——上一版把家目录写成字面量 `~`，
+而运行时传的永远是展开后的 `/home/ming`，那条红线**从写下的那一刻起就没有生效过**（ADR-0012 ①）。
+
+配套的是 `policy/target.ts`：路径类能力先规范化再匹配，**规范化失败直接 deny**
+（判不了就拒绝——ask 的下一步是用户点"允许"）。符号链接解析归运行时的能力网关，那一层才有文件系统。
+
+写这类测试时按"攻击者会怎么拼这个字符串"来写，不要拿规则自己的字面量去测规则——
+那测的是 `globMatch` 会不会用，不是红线会不会拦。见 `tests/policy-redlines.test.ts`。
 
 ## 相关文档
 

@@ -12,6 +12,7 @@ export * from './state/seq.js';
 
 export * from './policy/engine.js';
 export * from './policy/defaults.js';
+export * from './policy/target.js';
 
 export * from './tool/types.js';
 export * from './tool/registry.js';

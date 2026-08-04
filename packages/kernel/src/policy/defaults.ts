@@ -1,4 +1,23 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
+import { normalizedOrThrow } from './target.js';
+
+/**
+ * 红线所需的环境事实。
+ *
+ * **刻意做成必填参数，而不是内置常量。** 上一版红线把家目录写成字面量 `~`，把自改路径
+ * 写成相对 glob——运行时传进来的却永远是展开后的绝对路径，于是两条红线在真实输入下
+ * 一次也不会命中（实测见 tests/policy-redlines.test.ts）。
+ *
+ * 内核零 I/O，拿不到 `os.homedir()`，也就不该假装自己知道。把这两个事实变成
+ * **调用方必须显式提供的入参**，是唯一能保证"红线里的路径和请求里的路径来自同一个
+ * 坐标系"的做法：忘了传，编译不过；传错了，红线测试会红。
+ */
+export interface PolicyEnv {
+  /** 用户主目录的绝对路径，如 `/home/ming`、`C:\Users\ming` */
+  readonly home: string;
+  /** 小明自身仓库/安装目录的绝对路径。L4 自我修改的红线全部相对它计算 */
+  readonly appRoot: string;
+}
 
 /**
  * 内置策略。拼接顺序：**红线 → 平衡档默认 → 用户级 → 项目级**，
@@ -17,7 +36,11 @@ import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
  * "危险但有正当用途"的操作（rm -rf 某个构建目录、git push 到自己的分支）不属于红线，
  * 它们靠 ask + 还原点兜底。
  */
-export const RED_LINE_RULES: readonly PolicyRule[] = [
+export const redLineRules = (env: PolicyEnv): readonly PolicyRule[] => {
+  const home = normalizedOrThrow(env.home);
+  const appRoot = normalizedOrThrow(env.appRoot);
+
+  return [
   {
     id: 'red.fs-delete-filesystem-root',
     effect: 'deny',
@@ -30,7 +53,7 @@ export const RED_LINE_RULES: readonly PolicyRule[] = [
     id: 'red.fs-delete-home-root',
     effect: 'deny',
     capability: 'fs.delete',
-    match: { target: '~' },
+    match: { target: home },
     reason: '删除用户主目录。这不存在任何正当用途。',
     immutable: true,
   },
@@ -58,17 +81,48 @@ export const RED_LINE_RULES: readonly PolicyRule[] = [
     reason: '上下文含不可信内容时安装插件。这是让注入变成持久化后门的路径。',
     immutable: true,
   },
-  {
-    id: 'red.self-modify-policy',
-    effect: 'deny',
-    capability: 'self.modify',
-    match: { target: '**/packages/kernel/src/policy/**' },
-    reason:
-      '修改权限判定与红线清单自身。红线能被自己改掉，就等于没有红线（docs/07 §5）。' +
-      '这类改动只能由人手工进行。',
-    immutable: true,
-  },
+  /*
+   * ── L4 自我修改的红线 ──
+   *
+   * 上一版只护住了 `packages/kernel/src/policy/**`。那是不够的，而且不够的方式很具体：
+   * 判定逻辑改不了，**但判定的输入和护栏可以改**——
+   *
+   *   · 改 `contracts/src/permission/capability.ts` 删掉一个能力词条 → 所有针对它的规则
+   *     变成死规则，PolicyEngine 一行没动却全面失效
+   *   · 改 `scripts/check-secrets.mjs` → 密钥可以随提交外泄
+   *   · 改 `.dependency-cruiser.cjs` / `eslint.config.js` → 架构护栏静默消失
+   *     （ADR-0011 ⑨ 已经演示过一次：includeOnly 一行就让两条核心规则失效且输出全绿）
+   *
+   * 红线要护的从来不是某个文件，是**"改了它就没人拦得住后续改动"的那一组文件**。
+   */
+  ...selfModifyRedLines(appRoot),
+  ];
+};
+
+/** 修改即等于卸掉后续一切防护的文件。改动只能由人手工进行。 */
+const SELF_MODIFY_PROTECTED: readonly { readonly glob: string; readonly why: string }[] = [
+  { glob: 'packages/kernel/src/policy/**', why: '权限判定逻辑与红线清单自身' },
+  { glob: 'packages/contracts/src/permission/**', why: '能力闭集与策略契约——删一个词条即让相关规则全部失效' },
+  { glob: 'packages/contracts/src/config/secret.ts', why: '密钥引用契约' },
+  { glob: 'packages/contracts/src/base/redact.ts', why: '日志与审计的统一脱敏出口' },
+  { glob: 'scripts/**', why: '工具链与密钥扫描等提交前护栏' },
+  { glob: '.dependency-cruiser.cjs', why: '架构依赖护栏' },
+  { glob: 'eslint.config.js', why: '静态检查护栏' },
+  { glob: '.githooks/**', why: '提交前钩子' },
+  { glob: '.github/workflows/**', why: 'CI 流水线——改了它，上面所有护栏都可以不跑' },
 ];
+
+const selfModifyRedLines = (appRoot: string): PolicyRule[] =>
+  SELF_MODIFY_PROTECTED.map((p, i) => ({
+    id: `red.self-modify-${String(i).padStart(2, '0')}`,
+    effect: 'deny' as const,
+    capability: 'self.modify' as const,
+    match: { target: `${appRoot === '/' ? '' : appRoot}/${p.glob}` },
+    reason:
+      `修改${p.why}。这类文件改掉之后，后续改动就没有任何东西拦得住了` +
+      `（docs/07 §5）。只能由人手工进行。`,
+    immutable: true,
+  }));
 
 /**
  * 平衡档的默认规则（ADR-0003）。用户可覆盖。
@@ -160,10 +214,13 @@ export const BALANCED_DEFAULT_RULES: readonly PolicyRule[] = [
  * 内置规则集 = 红线 + 平衡档默认。
  * 用户级与项目级规则拼在它**后面**，从而能覆盖默认但覆盖不了红线。
  */
-export const BUILTIN_RULES: PolicyRuleSet = [...RED_LINE_RULES, ...BALANCED_DEFAULT_RULES];
+export const builtinRules = (env: PolicyEnv): PolicyRuleSet => [
+  ...redLineRules(env),
+  ...BALANCED_DEFAULT_RULES,
+];
 
 /** 拼接分层规则。顺序即优先级：后面的胜。 */
-export const composeRules = (...layers: readonly PolicyRuleSet[]): PolicyRuleSet => [
-  ...BUILTIN_RULES,
+export const composeRules = (env: PolicyEnv, ...layers: readonly PolicyRuleSet[]): PolicyRuleSet => [
+  ...builtinRules(env),
   ...layers.flat(),
 ];
