@@ -3,8 +3,14 @@ import type { EventId, SessionId, TurnId } from '../base/ids.js';
 import { newEventId } from '../base/ids.js';
 import { EventEnvelope } from './envelope.js';
 import * as P from './payloads.js';
-import { EVENT_SPECS, EXT_EVENT_PREFIX, isExtEventType, isKnownEventType } from './registry.js';
-import type { XmEventType } from './registry.js';
+import {
+  EVENT_SPECS,
+  EXT_EVENT_PREFIX,
+  isExtEventType,
+  isKnownEventType,
+  isPersistedType,
+} from './registry.js';
+import type { PersistedEventType, XmEventType } from './registry.js';
 
 /**
  * 核心事件的判别联合。
@@ -65,6 +71,11 @@ export type XmEvent = z.infer<typeof XmEvent>;
 
 /** 按 type 取出对应的事件形状，供 reduce 的分支使用 */
 export type EventOf<T extends XmEventType> = Extract<XmEvent, { type: T }>;
+
+/** 会落库的那一部分事件。存储端口只认它（见 kernel `port/event-store.ts`）。 */
+export type PersistedEvent = Extract<XmEvent, { type: PersistedEventType }>;
+
+export const isPersistedEvent = (e: XmEvent): e is PersistedEvent => isPersistedType(e.type);
 
 /** 插件自定义事件。核心不解释它的 payload。 */
 export const ExtEvent = EventEnvelope.extend({

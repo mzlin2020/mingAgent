@@ -59,7 +59,21 @@ function redactInner(value: unknown, seen: WeakSet<object>, depth: number): unkn
 
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    out[k] = SENSITIVE_KEY.test(k) ? REDACTED : redactInner(v, seen, depth + 1);
+    out[k] = SENSITIVE_KEY.test(k) && canHoldSecret(v) ? REDACTED : redactInner(v, seen, depth + 1);
   }
   return out;
 }
+
+/**
+ * 键名命中还不够，值也得**有可能是**密钥。
+ *
+ * 这条是被 `usage.recorded` 逼出来的：`SENSITIVE_KEY` 里的 `token` 不带边界，
+ * 于是 `inputTokens: 1234` 会命中，整数被换成 `'***'`——事件当场校验失败，
+ * 或者更糟：无校验落库，成本核算永久失真。`context.compacted` 的
+ * `tokensBefore/tokensAfter` 同理。
+ *
+ * 靠调正则区分 `accessToken` 与 `inputTokens` 是做不到的（都以 Token 结尾），
+ * 但从值这边看很清楚：**密钥不可能是数字或布尔**。按值的类型收口，比按键名猜稳。
+ */
+const canHoldSecret = (v: unknown): boolean =>
+  typeof v === 'string' || (typeof v === 'object' && v !== null);

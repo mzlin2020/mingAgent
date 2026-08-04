@@ -76,6 +76,18 @@ export const EVENT_SPECS = {
 
 export type XmEventType = keyof typeof EVENT_SPECS;
 
+/**
+ * 会落库的事件类型，**从 `durability` 标注推导**而来。
+ *
+ * 有了它，"瞬态事件不得写入 EventStore" 就从一条注释变成编译期错误：
+ * `SessionWriter.append` 只接受 `PersistedEvent`，把 `message.delta` 递进去直接不过编译。
+ * 这条约束以前只靠 `tests/persistence-containment.test.ts` 在事后拦，
+ * 现在写入侧当场就拦得住。
+ */
+export type PersistedEventType = {
+  [K in XmEventType]: (typeof EVENT_SPECS)[K]['durability'] extends 'persisted' ? K : never;
+}[XmEventType];
+
 export const ALL_EVENT_TYPES = Object.keys(EVENT_SPECS) as XmEventType[];
 
 export const isKnownEventType = (t: string): t is XmEventType =>

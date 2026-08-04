@@ -13,6 +13,10 @@
 | `policy/target.ts` | 路径目标的词法规范化。安全边界的前置条件，见下方约束三 |
 | `tool/registry.ts` | 工具注册、schema 子集校验、入参类型擦除 |
 | `tool/truncate.ts` | 结果截断与对模型可见的截断标记 |
+| `port/event-store.ts` | 事件存储端口：接口 + 七条不变量 + `SealedEvent`（ADR-0013） |
+| `port/summary-projection.ts` | 会话摘要投影的唯一推进规则 |
+| `port/memory-event-store.ts` | 端口的参考实现，供冒烟/回放/单测使用 |
+| `port/event-store-contract.ts` | 端口一致性用例，任何实现都要全过 |
 
 ## 不负责什么
 
@@ -24,7 +28,7 @@
 之所以要这么克制：内核要能在浏览器、Node、测试里以**完全相同**的方式运行。
 这既是"CLI 与桌面共用同一个引擎"的前提，也是 ADR-0001 里"未来可换外壳"那条退路的实际载体。
 
-## 三条容易被破坏的约束
+## 四条容易被破坏的约束
 
 **一、`reduce` 里瞬态事件必须是空操作。**
 `message.delta` / `tool.progress` 不得改变状态的任何一位，包括 `lastSeq`。
@@ -49,6 +53,16 @@ depcruise/eslint 配置、githooks 与 CI workflow——红线能被自己改掉
 
 写这类测试时按"攻击者会怎么拼这个字符串"来写，不要拿规则自己的字面量去测规则——
 那测的是 `globMatch` 会不会用，不是红线会不会拦。见 `tests/policy-redlines.test.ts`。
+
+**四、进存储的事件必须过 `sealEvent()`，端口契约必须留在 `src/`。**
+`SessionWriter.append` 只收 `SealedEvent`，而 `sealEvent()` 是它唯一的生产者——
+这是 ADR-0012 记下的"`redact()` 有契约、无执行点"的闭合点，绕过它需要显式 `as`。
+`sealEvent` 内部脱敏后**重新校验 schema**：这不是冗余，它当场抓到过 `redact()`
+把 `usage.recorded` 的 `inputTokens` 换成 `'***'`（键名正则里的 `token` 不带边界）。
+
+`event-store-contract.ts` 放在 `src/` 而不是 `tests/`，是为了让 `packages/storage`
+的测试能 import 它——跨包 import 一个 `.test.ts` 走不通。它因此不能依赖 vitest：
+每条用例就是一个抛异常表示失败的 async 函数。
 
 ## 相关文档
 

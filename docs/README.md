@@ -32,9 +32,10 @@
 
 ## 代码现状（2026-08-04）
 
-M0-a 已落地：`packages/contracts`（唯一契约来源，零依赖 6.72KB）与 `packages/kernel`（纯逻辑，零 I/O）。
-167 个测试、6 项故意违规演练全绿。地基复审修掉了安全边界的四处失效，见 [ADR-0012](./adr/0012-地基复审与安全边界修正.md)。
-剩余 M0-b（Electron 空壳 / SQLite / headless 冒烟）见 [08 路线图](./08-路线图与里程碑.md)。
+M0-a 已落地：`packages/contracts`（唯一契约来源，零依赖 6.75KB）与 `packages/kernel`（纯逻辑，零 I/O）。
+183 个测试、6 项故意违规演练全绿。地基复审修掉了安全边界的四处失效，见 [ADR-0012](./adr/0012-地基复审与安全边界修正.md)；
+存储引擎选型与 `EventStore` 端口见 [ADR-0013](./adr/0013-存储引擎选型与EventStore端口.md)。
+剩余 M0-b（Electron 空壳 / SQLite 适配器 / headless 冒烟）见 [08 路线图](./08-路线图与里程碑.md)。
 
 ```bash
 pnpm install     # 自动断言双编译器工具链装配正确
