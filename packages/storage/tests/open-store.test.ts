@@ -23,7 +23,7 @@ afterAll(() => {
 describe('平台路径 → 存储落盘位置 → 红线，是同一份定义', () => {
   it('🔴 真正落盘的审计库路径就是红线保护的那个', async () => {
     const dataDir = join(ROOT, 'data');
-    const platform = nodePlatform({ appRoot: '/code_mine/mingAgent', dataDir });
+    const platform = nodePlatform({ appRoot: '/opt/xiaoming', dataDir });
     const stores = await openStores(platform.paths());
 
     try {
@@ -56,7 +56,7 @@ describe('平台路径 → 存储落盘位置 → 红线，是同一份定义', 
   it('数据目录不存在时自动建，不要求调用方先 mkdir', async () => {
     const dataDir = join(ROOT, 'deep', 'nested', 'data');
     const stores = await openStores(
-      nodePlatform({ appRoot: '/code_mine/mingAgent', dataDir }).paths(),
+      nodePlatform({ appRoot: '/opt/xiaoming', dataDir }).paths(),
     );
     expect(existsSync(dataDir)).toBe(true);
     await stores.close();

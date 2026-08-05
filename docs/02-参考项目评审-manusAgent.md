@@ -1,6 +1,6 @@
 # 02 · 参考项目评审：manusAgent（MoocManus）
 
-评审对象：`/code_mine/manusAgent`，约 10,275 行 Python（FastAPI + DDD 分层）+ Next.js 前端 + Ubuntu 沙箱镜像 + Nginx 网关。
+评审对象：一个本地参考项目（manusAgent），约 10,275 行 Python（FastAPI + DDD 分层）+ Next.js 前端 + Ubuntu 沙箱镜像 + Nginx 网关。
 
 **结论先行**：它的**抽象骨架值得整体继承**（六边形架构、事件驱动 UI 契约、工具集设计），它的**运行时形态必须整体推翻**（Web 多容器服务 → 本地桌面单进程组），它的**Agent 循环需要重写**（僵化状态机 + 非流式 + 单工具调用 → 统一主循环 + 流式 + 并行工具）。
 
@@ -86,7 +86,12 @@ PostgreSQL + Redis + 腾讯云 COS + Docker + Nginx，五个外部依赖才能�
 
 ### 2.6 API Key 明文写进已提交的配置文件 —— 安全事故
 
-`api/config.yaml` 已提交进 git 且包含真实 key（CLAUDE.md 里甚至专门提醒"不要外传"）。
+参考项目把一份**含真实凭据的配置文件提交进了 git**，并在项目说明里专门提醒"不要外传"——
+用一句叮嘱去补一个已经发生的结构性问题。凭据一旦进入 git 历史就等于泄露：改文件不够，
+要重写历史；而只要有人 clone 过，就已经晚了。
+
+> 具体是哪个文件、哪个仓库，本文刻意不写。指出位置对论证没有任何增益，
+> 却会把这份评审本身变成一个指向可用凭据的路标。
 
 → **小明**：所有凭据存操作系统钥匙串（macOS Keychain / Windows Credential Manager，经 Electron `safeStorage` 或 `keytar`）。配置文件里只存**引用**（如 `apiKeyRef: "keychain://anthropic/default"`）。仓库内置 secret 扫描的 pre-commit 钩子。
 

@@ -30,7 +30,7 @@ afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true });
 });
 
-const APP_ROOT = '/code_mine/mingAgent';
+const APP_ROOT = '/opt/xiaoming';
 
 /**
  * headless 冒烟：**无 GUI、无网络、真 SQLite，跑通一轮完整对话。**

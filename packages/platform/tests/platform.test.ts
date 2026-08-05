@@ -4,7 +4,7 @@ import { builtinRules, evaluate, policyEnvFromPaths, xmDataLayout } from '@xm/ke
 import { newRequestId, newSessionId } from '@xm/contracts';
 import { nodePlatform, resolvePaths, withCapabilities } from '@xm/platform';
 
-const APP_ROOT = '/code_mine/mingAgent';
+const APP_ROOT = '/opt/xiaoming';
 
 describe('resolvePaths', () => {
   it('全部是已规范化的绝对路径', () => {
