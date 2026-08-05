@@ -105,20 +105,41 @@ export class SqliteEventStore implements EventStore {
       options.path === ':memory:' ? `mem:${randomUUID()}` : resolve(options.path);
 
     /*
-     * WAL：多读者 + 单写者，正是本架构的形状（不变量四）。
-     * synchronous=NORMAL：WAL 下不等每次 fsync——已提交的事务不会丢，崩溃最多丢掉
-     * 最后一个未提交事务。事件追加是每轮几十到几百次的高频操作，FULL 的代价是真实的。
-     * 内存库不支持 WAL，跳过。
+     * ⚠️ 从这里往下**一律包在 try 里**：句柄已经开了，后面任何一步抛出都必须把它还回去。
+     *
+     * 最现实的那条路是版本闸门——`migrate()` 遇到比本机新的库会抛 `StoreVersionError`，
+     * 那是**设计好的正常拒绝**，不是异常情况。而拒绝之后句柄还开着，就意味着：
+     *
+     *   · Windows 上那个文件被锁住，删不掉也改不了（EBUSY）——用户想备份/挪走都做不到
+     *   · 进程活多久就锁多久，而小明是个常驻应用
+     *
+     * POSIX 上这个泄漏完全看不出来（允许删除仍被打开的文件），所以它一直藏着，
+     * 直到三平台 CI 第一次在 Windows 上跑（2026-08-05）。
      */
-    if (options.path !== ':memory:') {
-      this.#db.pragma('journal_mode = WAL');
+    try {
+      /*
+       * WAL：多读者 + 单写者，正是本架构的形状（不变量四）。
+       * synchronous=NORMAL：WAL 下不等每次 fsync——已提交的事务不会丢，崩溃最多丢掉
+       * 最后一个未提交事务。事件追加是每轮几十到几百次的高频操作，FULL 的代价是真实的。
+       * 内存库不支持 WAL，跳过。
+       */
+      if (options.path !== ':memory:') {
+        this.#db.pragma('journal_mode = WAL');
+      }
+      this.#db.pragma('synchronous = NORMAL');
+      this.#db.pragma('foreign_keys = ON');
+
+      migrate(this.#db);
+
+      this.#st = this.#prepareStatements();
+    } catch (e) {
+      this.#db.close();
+      throw e;
     }
-    this.#db.pragma('synchronous = NORMAL');
-    this.#db.pragma('foreign_keys = ON');
+  }
 
-    migrate(this.#db);
-
-    this.#st = {
+  #prepareStatements(): Statements {
+    return {
       selectSession: this.#db.prepare(`SELECT * FROM sessions WHERE id = ?`),
       upsertSession: this.#db.prepare(`
         INSERT INTO sessions (id, title, parent_session_id, created_at, updated_at, last_seq)
@@ -148,6 +169,7 @@ export class SqliteEventStore implements EventStore {
       dropLease: this.#db.prepare(`DELETE FROM write_leases WHERE session_id = ?`),
     };
   }
+
 
   listSessions(): Promise<readonly SessionSummary[]> {
     this.#assertOpen();

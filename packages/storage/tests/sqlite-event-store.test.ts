@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -15,17 +15,31 @@ import { createEvent, newSessionId } from '@xm/contracts';
 import { SqliteEventStore } from '@xm/storage';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'xm-store-'));
-afterAll(() => {
-  /*
-   * `maxRetries` 在 Windows 上是必须的，不是保险。
-   *
-   * POSIX 允许删除仍被打开的文件，Windows 不允许——better-sqlite3 的句柄
-   * 只要还有一个没关（或者 WAL 的 `-wal` / `-shm` 还挂着），unlink 就是 EBUSY：
-   *   EBUSY: resource busy or locked, unlink '...\\s0.db'
-   * 而 `force: true` 只忽略"不存在"，不忽略"被占用"。
-   *
-   * 这是三平台 CI 首次实跑才暴露的——本地全在 Linux 上跑，这条路径永远走不到。
-   */
+
+/**
+ * 文件工厂建出来的 store 全记在这里，`afterAll` 里统一关。
+ *
+ * ── 为什么关闭的责任在这一层 ──
+ *
+ * `EVENT_STORE_CONTRACT` 里有用例**刻意不关** store —— 「同一会话不能有第二个写者」
+ * 就需要第一个还开着，那正是它要验的东西。所以不能要求契约自己关。
+ *
+ * ── 为什么 `maxRetries` 不够 ──
+ *
+ * 第一版修法是给 `rmSync` 加重试。那是错的：重试只在句柄**即将**被释放时有用，
+ * 而这里 `s0.db` 是**一直开着**的，重试多少次都是 EBUSY。
+ *
+ * POSIX 允许删除仍被打开的文件，于是这个泄漏在 Linux / macOS 上完全看不出来；
+ * Windows 不允许，它把一个真实的资源生命周期问题照了出来（2026-08-05 三平台 CI）。
+ * 重试仍然保留，但它现在只对付 WAL 边车文件（`-wal` / `-shm`）的短暂延迟。
+ */
+const trackedStores: EventStore[] = [];
+
+afterAll(async () => {
+  for (const s of trackedStores) {
+    // close() 是幂等的；用例自己关过的这里再关一次也无妨
+    await s.close();
+  }
   rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
@@ -39,9 +53,14 @@ const tmpDbPath = (): string => join(ROOT, `s${String(n++)}.db`);
  * 的读写行为在它上面根本测不到。只跑内存库，等于漏掉不变量四整条。
  * 所以文件库那一轮不是"顺手也跑一下"，它是这组测试里唯一能覆盖持久化行为的那一轮。
  */
+const track = (s: EventStore): EventStore => {
+  trackedStores.push(s);
+  return s;
+};
+
 const FACTORIES: readonly [string, () => EventStore][] = [
   [':memory:', () => new SqliteEventStore({ path: ':memory:' })],
-  ['文件库', () => new SqliteEventStore({ path: tmpDbPath() })],
+  ['文件库', () => track(new SqliteEventStore({ path: tmpDbPath() }))],
 ];
 
 for (const [label, makeStore] of FACTORIES) {
@@ -84,6 +103,53 @@ describe('SqliteEventStore 专属行为', () => {
     raw.close();
 
     expect(() => new SqliteEventStore({ path })).toThrow(StoreVersionError);
+  });
+
+  /**
+   * 构造函数开了库句柄之后再抛错，句柄必须还回去。
+   *
+   * 版本闸门是**设计好的正常拒绝**，不是异常情况——所以它恰恰是最常走到的那条
+   * "构造失败"路径。而拒绝之后句柄还开着，在 Windows 上意味着那个文件被锁死：
+   * 删不掉、挪不走、备份不了，而小明是个常驻进程，锁多久取决于它活多久。
+   *
+   * POSIX 允许删除仍被打开的文件，所以这个泄漏在 Linux / macOS 上完全看不出来。
+   * 它是被 Windows 上的 `EBUSY` 照出来的（2026-08-05 三平台 CI 首跑）。
+   *
+   * 两半断言各覆盖一个平台：Linux 上数 `/proc/self/fd`（真的能看见泄漏），
+   * Windows 上验"删得掉"（那正是用户会撞到的表现）。
+   */
+  it('🔴 构造失败时把库句柄还回去 —— 否则 Windows 上那个文件就永远删不掉', async () => {
+    const path = tmpDbPath();
+    const store = new SqliteEventStore({ path });
+    await store.close();
+
+    const { default: Database } = await import('better-sqlite3');
+    const raw = new Database(path);
+    raw.prepare(`UPDATE meta SET value = '999' WHERE key = 'schema_version'`).run();
+    raw.close();
+
+    const fdCount = (): number => {
+      try {
+        return readdirSync('/proc/self/fd').length;
+      } catch {
+        return -1; // 非 Linux，这一半跳过
+      }
+    };
+
+    const before = fdCount();
+    for (let i = 0; i < 20; i++) {
+      expect(() => new SqliteEventStore({ path })).toThrow(StoreVersionError);
+    }
+    const after = fdCount();
+
+    if (before !== -1) {
+      // 20 次失败的打开不该留下 20 个句柄。留点余量给 vitest 自己的 I/O。
+      expect(after - before, '构造失败泄漏了库句柄').toBeLessThan(5);
+    }
+
+    // Windows 上的直接表现：句柄没还，这一行就是 EBUSY
+    rmSync(path, { force: true, maxRetries: 5, retryDelay: 100 });
+    expect(existsSync(path)).toBe(false);
   });
 
   it('🔴 第二个连接拿不到写句柄 —— 这条只有文件库测得到', async () => {

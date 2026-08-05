@@ -52,7 +52,7 @@
 | [`packages/runtime`](../packages/runtime/README.md) | 装配层 + headless 冒烟 |
 | [`apps/desktop`](../apps/desktop/README.md) | Electron 三段（[ADR-0015](./adr/0015-进程与IPC边界.md)、[ADR-0016](./adr/0016-原生模块与打包.md)） |
 
-319 个测试、依赖图 127 模块 382 条边零违规、契约包 6.78 kB（预算 15 kB）。
+320 个测试、依赖图 127 模块 382 条边零违规、契约包 6.78 kB（预算 15 kB）。
 
 ```bash
 pnpm install     # 自动断言双编译器工具链装配正确
