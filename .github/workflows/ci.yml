@@ -141,17 +141,22 @@ jobs:
         shell: bash
         run: codesign --force --deep --sign - apps/desktop/release/mac*/小明.app
 
+      # 一律用块标量 `run: |`。写成 `run: "$XM_APP_BIN" --smoke` 会让 YAML
+      # 把开头的引号解析成引用标量，后面的 ` --smoke` 变成非法尾巴——整个
+      # workflow 文件解析失败，所有 job 一个都不跑。踩过一次（run #2）。
       - name: 启动自检 —— 跑打包产物（Linux 需要 xvfb）
         if: matrix.os == 'ubuntu-latest'
         shell: bash
-        run: xvfb-run --auto-servernum "$XM_APP_BIN" --smoke
+        run: |
+          xvfb-run --auto-servernum "$XM_APP_BIN" --smoke
         env:
           XM_SMOKE: '1'
 
       - name: 启动自检 —— 跑打包产物
         if: matrix.os != 'ubuntu-latest'
         shell: bash
-        run: "$XM_APP_BIN" --smoke
+        run: |
+          "$XM_APP_BIN" --smoke
         env:
           XM_SMOKE: '1'
 
