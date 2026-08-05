@@ -1,0 +1,25 @@
+{
+  "//": [
+    "渲染层。lib 里有 DOM 而 types 里**没有 node**：渲染进程没有 Node 权限，",
+    "让 @types/node 在这里可见，就等于让 `import 'node:fs'` 通过类型检查——",
+    "而那正是 contextIsolation 要挡的东西（depcruise 另有一条规则兜底）。",
+    "noEmit：产物由 Vite 出，tsc 只做类型检查（ADR-0010）。"
+  ],
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "paths": {
+      "@xm/contracts": ["../../packages/contracts/src/index.ts"],
+      "@xm/kernel": ["../../packages/kernel/src/index.ts"]
+    }
+  },
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx", "src/renderer/**/*.d.ts", "src/shared/**/*.ts"]
+}

@@ -1,0 +1,38 @@
+{
+  "name": "@xm/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "小明的 Electron 外壳：main / preload / renderer",
+  "main": "./dist/main/index.js",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "electron .",
+    "package": "electron-builder --dir"
+  },
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "@xm/kernel": "workspace:*",
+    "@xm/platform": "workspace:*",
+    "@xm/runtime": "workspace:*",
+    "@xm/storage": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "clsx": "^2.1.1",
+    "electron": "43.3.0",
+    "electron-builder": "^26.15.3",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.3",
+    "tsup": "^8.5.1",
+    "vite": "^8.2.0",
+    "zustand": "^5.0.14"
+  }
+}

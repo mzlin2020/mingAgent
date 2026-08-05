@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      CSP 在这里而不是只靠 Electron 的默认值：渲染层将来要显示模型输出与网页内容，
+      而 `unsafe-inline` 之类的口子一旦开了就很难收回来。connect-src 只留 self —
+      渲染层不许自己发网络请求，所有出网走主进程的能力网关（docs/06 §4.3 出口控制）。
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>小明</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/renderer/main.tsx"></script>
+  </body>
+</html>

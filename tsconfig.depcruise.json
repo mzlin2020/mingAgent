@@ -1,0 +1,32 @@
+{
+  "//": [
+    "dependency-cruiser 专用：只为把 `@xm/*` 解析到 **src** 而存在。",
+    "",
+    "为什么需要它（2026-08-05 反向演练发现）：`@xm/*` 的包 exports 指向 dist/index.js，",
+    "而 .dependency-cruiser.cjs 的 options.exclude 把 `dist/` 整个排除掉了——于是",
+    "**所有跨包的 @xm 依赖边压根不进依赖图**。表现是 depcruise 全绿而下面这些规则",
+    "一次也没生效过：",
+    "  · contracts-不得依赖其它-xm-包",
+    "  · packages-不得依赖-apps",
+    "  · preload-必须保持薄（它拦不住 import '@xm/storage'）",
+    "",
+    "这是本项目第三次撞上同一类失效（前两次：ADR-0011 ⑨ 的 includeOnly、",
+    "以及同日发现的 electron 未安装导致 import 不进图）。规则在、输出全绿、实际没管住。",
+    "",
+    "不复用 tsconfig.tests.json 的原因：那份的用途是类型检查测试代码，",
+    "两者的 include 与 types 迟早会为各自的目的漂移，而共用一份会让漂移悄悄影响护栏。"
+  ],
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "paths": {
+      "@xm/contracts": ["./packages/contracts/src/index.ts"],
+      "@xm/kernel": ["./packages/kernel/src/index.ts"],
+      "@xm/platform": ["./packages/platform/src/index.ts"],
+      "@xm/storage": ["./packages/storage/src/index.ts"],
+      "@xm/runtime": ["./packages/runtime/src/index.ts"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "apps/*/src/**/*.tsx"]
+}

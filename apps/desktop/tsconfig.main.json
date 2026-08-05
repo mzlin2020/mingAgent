@@ -1,0 +1,22 @@
+{
+  "//": [
+    "主进程与 preload。noEmit：真正的产物由 tsup 出（docs/03 §4），",
+    "tsc 在这里只负责类型检查——双编译器纪律见 ADR-0010。"
+  ],
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["node"],
+    "paths": {
+      "@xm/contracts": ["../../packages/contracts/src/index.ts"],
+      "@xm/kernel": ["../../packages/kernel/src/index.ts"],
+      "@xm/platform": ["../../packages/platform/src/index.ts"],
+      "@xm/storage": ["../../packages/storage/src/index.ts"],
+      "@xm/runtime": ["../../packages/runtime/src/index.ts"]
+    }
+  },
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts", "src/shared/**/*.ts"]
+}

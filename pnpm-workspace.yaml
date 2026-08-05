@@ -10,6 +10,11 @@ allowBuilds:
   # 白名单越短越好这条没变——放行它是因为存储引擎选了 SQLite（ADR-0013），
   # 而 node:sqlite 在我们所用的 Electron/Node 版本上还是实验状态。
   better-sqlite3: true
+  # electron 的安装脚本负责下载与本机 ABI 匹配的运行时（ADR-0016）
+  electron: true
+  # 显式拒绝：Windows 安装包的制作由 CI 上的 Windows runner 负责，
+  # 本地开发不需要它跑安装脚本。写 false 而不是删掉，是为了让"看过并决定了"留痕。
+  electron-winstaller: false
 
 minimumReleaseAgeExclude:
   - '@typescript-eslint/eslint-plugin@8.66.0'
@@ -23,3 +28,4 @@ minimumReleaseAgeExclude:
   - '@typescript-eslint/utils@8.66.0'
   - '@typescript-eslint/visitor-keys@8.66.0'
   - typescript-eslint@8.66.0
+  - electron@43.3.0

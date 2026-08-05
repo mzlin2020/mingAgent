@@ -27,7 +27,7 @@ export default tseslint.config(
   // 测试不在各包的构建工程里（那里只 include src/），projectService 找不到它们。
   // 显式指到 tsconfig.tests.json —— 与 `pnpm typecheck` 用的是同一份配置，不会漂移。
   {
-    files: ['packages/*/tests/**/*.ts'],
+    files: ['packages/*/tests/**/*.ts', 'apps/*/tests/**/*.ts'],
     languageOptions: {
       parserOptions: {
         projectService: false,
@@ -37,9 +37,32 @@ export default tseslint.config(
     },
   },
 
+  // apps/desktop 的三段各有各的 lib 与 types，projectService 猜不出来，显式指过去。
+  // 与 `pnpm typecheck` 用的是同一批配置文件，不会漂移。
+  {
+    files: ['apps/desktop/src/main/**/*.ts', 'apps/desktop/src/preload/**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        projectService: false,
+        project: ['./apps/desktop/tsconfig.main.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+  {
+    files: ['apps/desktop/src/renderer/**/*.ts', 'apps/desktop/src/renderer/**/*.tsx', 'apps/desktop/src/shared/**/*.ts'],
+    languageOptions: {
+      parserOptions: {
+        projectService: false,
+        project: ['./apps/desktop/tsconfig.renderer.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
+  },
+
   // ── 全仓库通用（业务代码）──────────────────────────────────
   {
-    files: ['packages/**/*.ts', 'apps/**/*.ts'],
+    files: ['packages/**/*.ts', 'apps/**/*.ts', 'apps/**/*.tsx'],
     rules: {
       // ADR-0007：平台差异一律收敛到 PlatformPort 之后。
       // 注意：docs/03 与 ADR-0007 原写"由 dependency-cruiser 拦截"，但 depcruise 只做
@@ -91,6 +114,34 @@ export default tseslint.config(
     },
   },
 
+  // ── 主进程：窗口还没起来时，控制台与错误框是唯一能告诉用户"为什么起不来"的地方 ──
+  {
+    files: ['apps/desktop/src/main/**/*.ts', 'apps/desktop/scripts/**/*.mjs'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+
+  // ── 渲染层：不许绕过 preload 拿 Node ────────────────────────
+  {
+    files: ['apps/desktop/src/renderer/**/*.ts', 'apps/desktop/src/renderer/**/*.tsx'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        { name: 'require', message: '渲染层没有 Node。所有能力经 preload 暴露的四个具名调用（ADR-0015）。' },
+        { name: 'process', message: '同上：渲染层里不存在 process。' },
+      ],
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'window',
+          property: 'require',
+          message: 'nodeIntegration 是关的；出现这行说明有人打算把它打开（ADR-0015）。',
+        },
+      ],
+    },
+  },
+
   // ── 契约包专属：只导出数据（docs/10 铁律 2）────────────────
   {
     files: ['packages/contracts/src/**/*.ts'],
@@ -139,7 +190,7 @@ export default tseslint.config(
 
   // ── 仓库脚本与配置：不是业务代码，不做类型感知 lint ──────────
   {
-    files: ['scripts/**/*.mjs', '*.js', '*.mjs', '*.cjs', '.*.cjs', '*.config.ts'],
+    files: ['**/scripts/**/*.mjs', '*.js', '*.mjs', '*.cjs', '.*.cjs', '**/*.config.ts'],
     extends: [tseslint.configs.disableTypeChecked],
     rules: {
       'no-console': 'off',

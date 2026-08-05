@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+
+/**
+ * 主题走 CSS 变量，贴近 Claude Code 桌面端的调性：暖白底、低饱和、橙色强调。
+ * 变量而不是硬编码色值，是为了 M1 加深色模式时只改这一处（ADR-0004）。
+ */
+:root {
+  --xm-bg: #faf9f5;
+  --xm-surface: #ffffff;
+  --xm-surface-2: #f2f0e9;
+  --xm-border: #e3e0d6;
+  --xm-fg: #1f1e1b;
+  --xm-fg-muted: #78756c;
+  --xm-accent: #c96442;
+  --xm-danger: #c0392b;
+  --xm-danger-bg: #fdf0ee;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --xm-bg: #1a1917;
+    --xm-surface: #23221f;
+    --xm-surface-2: #2c2b27;
+    --xm-border: #3a3833;
+    --xm-fg: #edeae2;
+    --xm-fg-muted: #9c988c;
+    --xm-accent: #d97757;
+    --xm-danger: #e06c5b;
+    --xm-danger-bg: #33211e;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}

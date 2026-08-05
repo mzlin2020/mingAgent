@@ -1,0 +1,99 @@
+import { ipcMain } from 'electron';
+import type { BrowserWindow } from 'electron';
+import type { z } from 'zod';
+import { CH } from '../shared/channels.js';
+import {
+  CreateSessionRequest,
+  ReadSessionRequest,
+  SendUserMessageRequest,
+} from '../shared/ipc.js';
+import type { Services } from './services.js';
+
+/**
+ * IPC 处理器（ADR-0015）。
+ *
+ * 两条不许破的规矩：
+ *
+ * **一、入参一律先 parse。** 渲染层送上来的东西是不可信的——它将来要渲染模型输出、
+ * 网页内容、插件 UI，而主进程这一侧握着文件系统、数据库与权限闸门。
+ * `contextIsolation` 挡的是"页面直接拿到 Node"，挡不住"页面调用我们自己开的这几个接口"。
+ *
+ * **二、异常不直接扔过 IPC。** Electron 会把它序列化成一个丢了类型、丢了 code、
+ * 只剩字符串的东西，UI 拿它没法给出正确的下一步引导。所以失败也是一个正常返回值
+ * （`{ ok: false, code, message }`）——contracts 里区分 policy_denied / user_rejected /
+ * permission_denied，就是为了 UI 能说出"改策略 / 重新审批 / 改系统权限"这三句不同的话。
+ */
+export function registerIpc(services: Services, windows: () => BrowserWindow[]): void {
+  handle(CH.listSessions, undefined, async () => {
+    const list = await services.stores.events.listSessions();
+    return list.map((s) => ({
+      sessionId: s.sessionId,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      lastSeq: s.lastSeq,
+      ...(s.title === undefined ? {} : { title: s.title }),
+    }));
+  });
+
+  handle(CH.createSession, CreateSessionRequest, async (req) => ({
+    sessionId: await services.createSession(req.title),
+  }));
+
+  handle(CH.sendUserMessage, SendUserMessageRequest, async (req) => ({
+    reason: await services.sendUserMessage(req.sessionId, req.text),
+  }));
+
+  handle(CH.readSession, ReadSessionRequest, async (req) => {
+    const out = [];
+    const options = req.fromSeq === undefined ? undefined : { fromSeq: req.fromSeq };
+    for await (const e of services.stores.events.read(req.sessionId, options)) out.push(e);
+    return out;
+  });
+
+  /*
+   * 事件推送。**订阅在总线上，不在存储上**（ADR-0013 不变量五）：
+   * 存储不做发布订阅，追加成功之后由 runtime 发出来，这里只是把它转给窗口。
+   *
+   * 窗口没了就别发——`isDestroyed()` 之后 `send` 会抛，而那个异常会顺着
+   * `publish` 冒到追加路径上。总线本身吞订阅者的异常，这里再挡一道是因为
+   * "窗口关闭"是常态而不是异常。
+   */
+  services.bus.subscribe((event) => {
+    for (const win of windows()) {
+      if (!win.isDestroyed()) win.webContents.send(CH.event, event);
+    }
+  });
+}
+
+function handle<S extends z.ZodType | undefined>(
+  channel: string,
+  schema: S,
+  run: (input: S extends z.ZodType ? z.infer<S> : undefined) => Promise<unknown>,
+): void {
+  ipcMain.handle(channel, async (_event, raw: unknown) => {
+    let input: unknown;
+    if (schema === undefined) {
+      input = undefined;
+    } else {
+      const parsed = schema.safeParse(raw);
+      if (!parsed.success) {
+        return {
+          ok: false as const,
+          code: 'invalid_input',
+          message: `IPC 入参不合法：${parsed.error.issues.map((i) => i.message).join('；')}`,
+        };
+      }
+      input = parsed.data;
+    }
+
+    try {
+      return { ok: true as const, data: await run(input as never) };
+    } catch (e) {
+      return {
+        ok: false as const,
+        code: e instanceof Error ? e.name : 'internal',
+        message: e instanceof Error ? e.message : String(e),
+      };
+    }
+  });
+}

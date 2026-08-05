@@ -74,9 +74,49 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: 架构守护（内核零 I/O、契约零依赖、无循环依赖）
-        run: pnpm exec depcruise packages --config .dependency-cruiser.cjs
+        run: pnpm exec depcruise packages apps --config .dependency-cruiser.cjs
       - name: 体积预算（契约包自身 < 15KB gzip）
         run: pnpm exec tsc -b && pnpm exec size-limit
+
+  # 桌面产物。与 test 分开，因为它慢（要下 Electron 与打包工具链）且失败原因是另一类。
+  #
+  # ⚠️ 它验的是「能构建、能打包」，**不是**「能启动」。
+  # 启动验证需要 GUI 依赖（libgtk / libatk / xvfb），本地开发容器里通常没有——
+  # M0-b 就卡在这里，见 ADR-0016 的遗留。CI 的 runner 有这些库，所以启动自检
+  # 放在这里跑：Linux 上用 xvfb-run，它是三平台里唯一需要额外准备的。
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc -b
+      - name: 类型检查主进程与渲染层（两套 lib / types，必须分开）
+        run: |
+          pnpm exec tsc -p apps/desktop/tsconfig.main.json
+          pnpm exec tsc -p apps/desktop/tsconfig.renderer.json
+      - name: 构建三段产物
+        run: pnpm --filter @xm/desktop build
+      - name: 打包（不签名、不公证，M0-b 只验证产物能出来）
+        run: pnpm --filter @xm/desktop exec electron-builder --dir
+      - name: 启动自检（Linux 需要 xvfb）
+        if: matrix.os == 'ubuntu-latest'
+        run: xvfb-run --auto-servernum pnpm --filter @xm/desktop exec electron . --smoke
+        env:
+          XM_SMOKE: '1'
+      - name: 启动自检
+        if: matrix.os != 'ubuntu-latest'
+        run: pnpm --filter @xm/desktop exec electron . --smoke
+        env:
+          XM_SMOKE: '1'
 
   secrets:
     runs-on: ubuntu-latest

@@ -1,0 +1,28 @@
+appId: com.xiaoming.desktop
+productName: 小明
+directories:
+  output: release
+  buildResources: build
+
+# 只带产物与运行时依赖。源码、tsconfig、测试都不进包。
+files:
+  - dist/**/*
+  - package.json
+
+# ⚠️ **原生模块必须解包出 asar。**
+# better-sqlite3 的 `.node` 走 `require()` 加载真实文件路径，而 asar 里的路径不是
+# 真实路径——打进 asar 的表现是应用启动时"找不到 better_sqlite3.node"，
+# 而开发模式下永远不会出现（那时没有 asar）。启动自检就是拦这一类的。
+asarUnpack:
+  - '**/node_modules/better-sqlite3/**'
+
+# M0-b 只验证"能产出安装包"。签名与公证是 M1+：
+# 没有证书时强行开启会让本地构建直接失败，而那与本轮要验的东西无关。
+mac:
+  target: dir
+  identity: null
+win:
+  target: dir
+linux:
+  target: dir
+  category: Development

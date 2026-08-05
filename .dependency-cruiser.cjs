@@ -65,6 +65,42 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: '渲染层禁-node-与-electron',
+      comment:
+        'contextIsolation / nodeIntegration:false 的承诺在依赖图上的形态（ADR-0015）。' +
+        '渲染层拿不到 Node，也不该直接碰 electron——它与主进程之间只有 preload 那四个具名调用。' +
+        '这条与 tsconfig.renderer.json 的 `types: []` 是同一件事的两道锁：' +
+        '类型那道防的是写代码时，这道防的是"从某个第三方库间接引进来"。',
+      severity: 'error',
+      from: { path: '^apps/desktop/src/renderer' },
+      to: { dependencyTypes: ['core'] },
+    },
+    {
+      name: '渲染层不得直接依赖-electron',
+      severity: 'error',
+      from: { path: '^apps/desktop/src/renderer' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
+      name: 'preload-必须保持薄',
+      comment:
+        'preload 是 contextIsolation 唯一的缺口，缺口的大小等于它的表面积（ADR-0015）。' +
+        '只许依赖 electron 与 shared/channels.ts（纯常量）——不许 zod、不许 @xm/*、' +
+        '不许存储。一个"顺手"在这里做的转换，就是页面能间接影响主进程状态的地方。',
+      severity: 'error',
+      from: { path: '^apps/desktop/src/preload' },
+      to: {
+        pathNot: ['^apps/desktop/src/preload', '^apps/desktop/src/shared/channels', 'node_modules/electron'],
+      },
+    },
+    {
+      name: 'packages-不得依赖-apps',
+      comment: '分层方向：apps 是装配的终点，不是任何人的依赖。',
+      severity: 'error',
+      from: { path: '^packages/[^/]+/src' },
+      to: { path: '^apps/' },
+    },
+    {
       name: '禁止无法解析的依赖',
       comment:
         '2026-08-05 的反向演练发现的洞：在 kernel/runtime 里写 `import "electron"`，' +
@@ -89,7 +125,7 @@ module.exports = {
       severity: 'warn',
       from: {
         orphan: true,
-        pathNot: ['\\.d\\.ts$', '(^|/)index\\.ts$', '(^|/)tests?/', '\\.test\\.ts$'],
+        pathNot: ['\\.d\\.ts$', '(^|/)index\\.ts$', '(^|/)tests?/', '\\.test\\.ts$', '\\.config\\.ts$'],
       },
       to: {},
     },
@@ -106,11 +142,11 @@ module.exports = {
     // 只看源码。dist 是产物，扫它只会产生噪音（每个 .js 都是孤儿）。
     exclude: { path: '(^|/)(dist|coverage)/' },
     tsPreCompilationDeps: true,
-    tsConfig: { fileName: 'tsconfig.base.json' },
+    tsConfig: { fileName: 'tsconfig.depcruise.json' },
     enhancedResolveOptions: {
       exportsFields: ['exports'],
       conditionNames: ['import', 'require', 'node', 'default', 'types'],
-      extensions: ['.ts', '.js', '.mts', '.mjs'],
+      extensions: ['.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs'],
     },
     // ⚠️ 这里刻意**不设** includeOnly。
     // 曾经写过 includeOnly: '^(packages|apps)/'，结果是 node 核心模块与 node_modules
