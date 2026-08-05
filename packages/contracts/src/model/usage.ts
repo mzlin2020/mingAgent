@@ -26,6 +26,15 @@ export const StopReason = z.enum([
   'stop_sequence',
   'aborted',
   'error',
+  /**
+   * 达到本回合的模型往返上限（Turn 循环的 `maxIterations`），**不是**模型自己停的。
+   *
+   * 单列一个值是因为它和 `max_tokens` 的处置完全相反：`max_tokens` 说的是单条回复被
+   * 输出长度截断，处置是调大 `maxOutputTokens`；这个说的是 Agent 在反复调工具收敛不了，
+   * 处置是去看它到底在循环什么。此前这里复用 `max_tokens`，等于把"跑飞了"记成
+   * "回复太长"——而 `turn.end.reason` 正是 UI 提示与将来评测集分类的依据。
+   */
+  'max_iterations',
 ]);
 export type StopReason = z.infer<typeof StopReason>;
 

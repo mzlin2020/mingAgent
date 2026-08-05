@@ -103,6 +103,17 @@ export interface ToolSpec<I> {
 export interface RegisteredTool {
   readonly descriptor: ToolDescriptor;
   readonly inputSchema: z.ZodType;
+  /**
+   * 只校验、不执行。不通过抛 `ToolInputError`。
+   *
+   * 存在的理由是**权限判定必须看到工具真正会执行的那个值**：入参 schema 允许
+   * `.default()`，原始 JSON 与校验后的对象因此可能不同，而 `targetOf()` 从中取
+   * 判权用的 target。拿未校验的原始值去判、拿校验后的值去执行，两者分叉就是
+   * 权限判定上的 TOCTOU（turn.ts 的 `dispatchCall` 因此先调它）。
+   *
+   * 返回 `unknown` 而不是 `I`：注册表已经把入参类型擦除了（见本接口顶部注释）。
+   */
+  parseInput(rawInput: unknown): unknown;
   /** 传入**未校验**的原始入参；内部先 strict parse，不通过则抛 ToolInputError */
   execute(rawInput: unknown, ctx: ToolContext): AsyncIterable<ToolProgress>;
   resources(rawInput: unknown): readonly ResourceClaim[];

@@ -58,6 +58,10 @@ export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
   return {
     descriptor,
     inputSchema: spec.inputSchema,
+    parseInput: parse,
+    // 这里仍然再 parse 一次，即便 turn.ts 已经先校验过：`execute` 是公开入口，
+    // 不能假设每个调用方都记得先校验。允许的 schema 子集里 `.transform()` 被禁掉了，
+    // 所以重复校验是幂等的，不会把已校验的值再变一次形。
     execute(rawInput: unknown, ctx: ToolContext): AsyncIterable<ToolProgress> {
       return spec.execute(parse(rawInput), ctx);
     },

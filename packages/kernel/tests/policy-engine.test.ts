@@ -283,8 +283,16 @@ describe('红线清单', () => {
   });
 
   it('不可撤销能力之外的红线数量保持克制 —— 红线一多，用户就会去找绕过的办法', () => {
-    // 自改红线是一组文件路径，逐条列出反而清晰，不计入这个上限
-    const nonSelfModify = RED_LINE_RULES.filter((r) => r.capability !== 'self.modify');
+    /*
+     * 自改红线是一组文件路径，逐条列出反而清晰，不计入这个上限。
+     *
+     * ⚠️ 按 **rule id 前缀**分组，不能按 `capability !== 'self.modify'` 分组。
+     * 那个写法把"能力"当成了"是不是自改红线"的代理，而自改保护现在同时挂在
+     * `self.modify` / `fs.write` / `fs.delete` 三个能力上——正因为只挂 `self.modify`
+     * 时，一个声明 `fs.write` 的普通写文件工具就能整体绕过它。
+     * 代理一旦不成立，这条测试就会在一次**正确**的加固上报红。
+     */
+    const nonSelfModify = RED_LINE_RULES.filter((r) => !r.id.startsWith('red.self-modify-'));
     expect(nonSelfModify.length).toBeLessThanOrEqual(8);
   });
 
@@ -296,5 +304,65 @@ describe('红线清单', () => {
     });
     expect(v.effect).toBe('deny');
     expect(v.ruleId).toMatch(/^red\.self-modify-/);
+  });
+});
+
+/**
+ * ── YOLO 跳过 ask，不跳过 deny（docs/09 C5 定稿）──
+ *
+ * 复审前：YOLO 的判定排在**普通 deny 之前**，于是它连用户自己写下的 deny 规则
+ * 一起忽略掉了。实测 `deny fs.delete /home/ming/work/prod/**`：
+ * balanced 档 DENY，yolo 档 ALLOW。
+ *
+ * 那个语义站不住：YOLO 的意思是"别再问我了"，不是"忘掉我说过不许碰的地方"。
+ * 前者省的是确认框，后者删掉的是用户唯一能表达"这里绝对不行"的手段——
+ * 而且恰好在最危险的时候失效，因为用户开 YOLO 正是为了放手让它长时间自己跑。
+ */
+describe('YOLO 档的边界', () => {
+  const ENV = {
+    home: '/home/ming',
+    appRoot: '/repo',
+    dataDir: '/home/ming/.local/share/xiaoming',
+  };
+  const USER_DENY = {
+    id: 'user.protect-prod',
+    effect: 'deny' as const,
+    capability: 'fs.delete' as const,
+    match: { target: '/home/ming/work/prod/**' },
+    reason: '用户自己写的：这个目录不许动',
+    immutable: false,
+  };
+  const RULES = [...builtinRules(ENV), USER_DENY];
+
+  const ask = (capability: Capability, target: string, tier: 'balanced' | 'yolo') =>
+    evaluate({
+      request: {
+        requestId: newRequestId(),
+        sessionId: newSessionId(),
+        capability,
+        target,
+        risk: 'high',
+        reason: '测试',
+        trustLevel: 'model',
+      },
+      rules: RULES,
+      tier,
+    });
+
+  it('用户自己写的 deny 在 YOLO 下依然拦得住', () => {
+    const target = '/home/ming/work/prod/db';
+    expect(ask('fs.delete', target, 'balanced').ruleId).toBe('user.protect-prod');
+    expect(ask('fs.delete', target, 'yolo').effect).toBe('deny');
+    expect(ask('fs.delete', target, 'yolo').ruleId).toBe('user.protect-prod');
+  });
+
+  it('红线在 YOLO 下依然拦得住', () => {
+    expect(ask('fs.delete', '/home/ming', 'yolo').effect).toBe('deny');
+    expect(ask('fs.write', '/repo/scripts/check-secrets.mjs', 'yolo').effect).toBe('deny');
+  });
+
+  it('但 ask 确实被跳过 —— 否则 YOLO 就没有存在意义了', () => {
+    expect(ask('fs.delete', '/home/ming/work/scratch/tmp', 'balanced').effect).toBe('ask');
+    expect(ask('fs.delete', '/home/ming/work/scratch/tmp', 'yolo').effect).toBe('allow');
   });
 });

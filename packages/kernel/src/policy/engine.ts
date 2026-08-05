@@ -40,7 +40,8 @@ export const INVALID_TARGET_RULE_ID = 'builtin.invalid-target';
  * 求值顺序：`deny(immutable)` → `deny` → `ask` → `allow`，同优先级内**后定义者胜**
  * （所以项目配置能覆盖用户配置：拼接时放在后面即可）。
  *
- * 无匹配规则时由档位兜底。红线（immutable）**不受档位影响**，YOLO 也一样。
+ * 无匹配规则时由档位兜底。**YOLO 只跳过 ask，跳不过任何 deny**——红线不行，
+ * 用户自己写的普通 deny 也不行（docs/09 C5）。
  *
  * 之所以做成纯函数：它是安全边界，必须能被穷举测试。任何 I/O 都会让"把规则优先级
  * 的所有组合跑一遍"变成不可能，而那正是唯一能证明它对的方式。
@@ -75,19 +76,32 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
   const immutableDeny = lastWhere(matched, (r) => r.effect === 'deny' && r.immutable);
   if (immutableDeny !== undefined) return denyOf(immutableDeny);
 
-  // YOLO 只跳过后续的普通规则，跳不过红线
-  if (tier === 'yolo') {
-    return downgradeIfUntrusted(
-      { effect: 'allow', ruleId: TIER_FALLBACK_RULE_ID, reason: 'YOLO 档：默认放行' },
-      request,
-    );
-  }
-
   // 2) 普通 deny
   const deny = lastWhere(matched, (r) => r.effect === 'deny');
   if (deny !== undefined) return denyOf(deny);
 
-  // 3) ask —— 同样要过降级：默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
+  /*
+   * 3) YOLO —— **跳过 ask，不跳过 deny**（docs/09 C5 定稿）。
+   *
+   * 这一步之前排在普通 deny 前面，效果是 YOLO 把**用户自己写下的 deny 规则**
+   * 也一并忽略了。实测：用户写 `deny fs.delete /home/ming/work/prod/**`，
+   * balanced 档 DENY，yolo 档 ALLOW。
+   *
+   * 那个语义站不住。YOLO 的意思是"别再问我了"，不是"忘掉我说过不许碰的地方"——
+   * 前者省的是确认框，后者删的是用户唯一能表达"这里绝对不行"的手段。
+   * 而且它恰好在最危险的时候失效：用户开 YOLO 正是因为要放手让它长时间自己跑。
+   *
+   * 所以 YOLO 现在只吞掉 ask（连同档位兜底的 ask）。红线在上面第 1 步就拦住了，
+   * 用户的 deny 在上面第 2 步拦住了，剩下的才默认放行。
+   */
+  if (tier === 'yolo') {
+    return downgradeIfUntrusted(
+      { effect: 'allow', ruleId: TIER_FALLBACK_RULE_ID, reason: 'YOLO 档：默认放行（不越过 deny 规则）' },
+      request,
+    );
+  }
+
+  // 4) ask —— 同样要过降级：默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
   //    不在这里过一遍，注入降级就永远碰不到最该拦的那批操作
   const ask = lastWhere(matched, (r) => r.effect === 'ask');
   if (ask !== undefined) {
@@ -97,7 +111,7 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
     );
   }
 
-  // 4) allow
+  // 5) allow
   const allow = lastWhere(matched, (r) => r.effect === 'allow');
   if (allow !== undefined) {
     return downgradeIfUntrusted(
@@ -106,7 +120,7 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
     );
   }
 
-  // 5) 档位兜底
+  // 6) 档位兜底
   return downgradeIfUntrusted(tierFallback(tier, request.risk), request);
 }
 
@@ -229,6 +243,15 @@ export function globMatch(pattern: string, value: string, caseInsensitive = fals
   return globToRegExp(pattern, caseInsensitive).test(value);
 }
 
+/**
+ * 编译缓存。**有上限** —— 小明是个跑几周不重启的常驻进程，而模块级的 Map 只增不减
+ * 就是一条内存泄漏。pattern 来自规则，规则会随着切项目、装插件、接 MCP server 不断换新：
+ * 今天规则数量是常数，不代表明天是，而"安全边界上的缓存"恰恰是最不该无界增长的东西。
+ *
+ * 满了整体清空，不做 LRU：规则集的访问模式是"一批规则反复用"，清空后一轮就重新暖起来，
+ * 而 LRU 要在热路径上多维护一份链表状态，不值得。
+ */
+const GLOB_CACHE_MAX = 1024;
 const GLOB_CACHE = new Map<string, RegExp>();
 
 function globToRegExp(pattern: string, caseInsensitive: boolean): RegExp {
@@ -259,6 +282,7 @@ function globToRegExp(pattern: string, caseInsensitive: boolean): RegExp {
   out += '$';
 
   const re = new RegExp(out, caseInsensitive ? 'i' : '');
+  if (GLOB_CACHE.size >= GLOB_CACHE_MAX) GLOB_CACHE.clear();
   GLOB_CACHE.set(cacheKey, re);
   return re;
 }

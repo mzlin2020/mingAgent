@@ -49,6 +49,20 @@ export interface SessionState {
    */
   readonly grants: readonly PermissionGrant[];
 
+  /**
+   * 本会话的上下文是否已被外部内容污染，以及是被什么污染的。
+   *
+   * **由事件流算出，不由调用方填**（reduce.ts 的 `tool.start` 分支）。
+   * 这是 `PermissionRequest.trustLevel` 的唯一来源——在此之前它被硬编码成 `'model'`，
+   * 导致注入降级与三条 `red.*-untrusted` 红线全是死代码。
+   *
+   * **粘性的：一旦置上就不会自动清除。** 不可信内容进了 `messages` 就一直在里面，
+   * 回合结束并不会把它从模型上下文里拿走——按回合清空等于"上一轮读的网页，
+   * 这一轮就不算数了"，而跨回合正是注入最自然的形状（读网页 / 下一轮再让你 push）。
+   * 清除只能由用户显式操作（M1 的解除入口，见 docs/09）。
+   */
+  readonly untrustedContext: UntrustedContext | undefined;
+
   readonly todos: readonly Todo[];
   readonly runningCalls: ReadonlyMap<CallId, RunningCall>;
   /** turn.end 时仍在 runningCalls 里的调用 —— 崩溃恢复时它们要被标记为中断 */
@@ -84,6 +98,16 @@ export interface PermissionGrant {
   readonly effect: 'allow' | 'deny';
   readonly scope: 'session' | 'always';
   readonly ts: number;
+}
+
+/** 上下文被外部内容污染的出处。留够信息让 UI 能说清"因为哪一次调用" */
+export interface UntrustedContext {
+  /** 引入不可信内容的那次工具调用 */
+  readonly callId: CallId;
+  readonly toolName: string;
+  /** 触发标记的能力（UNTRUSTED_CONTENT_CAPABILITIES 之一） */
+  readonly viaCapability: Capability;
+  readonly since: number;
 }
 
 export interface ActiveMessage {
@@ -150,6 +174,7 @@ export const emptySessionState = (id: SessionId): SessionState => ({
   activeMessage: undefined,
   pendingPermission: undefined,
   grants: [],
+  untrustedContext: undefined,
   todos: [],
   runningCalls: new Map(),
   interruptedCalls: [],

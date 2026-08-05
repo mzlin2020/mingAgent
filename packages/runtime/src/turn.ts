@@ -101,7 +101,7 @@ export async function runTurn(deps: TurnDeps, userText: string): Promise<StopRea
             message: `本回合达到 ${String(maxIterations)} 次模型往返上限，已停止。`,
           },
         });
-        reason = 'max_tokens';
+        reason = 'max_iterations';
       }
     }
   } finally {
@@ -237,8 +237,42 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     return;
   }
 
-  const input = parseArgs(call.argsJson);
+  /*
+   * 入参**先校验，再判权限**。顺序是有理由的，而且有两条：
+   *
+   * 一、`targetOf` 拿到的必须是工具真正会执行的那个对象。工具 schema 允许 `.default()`
+   *     （`.transform()` 被 assertToolSchema 禁掉了），于是原始 JSON 与校验后的值可能
+   *     不是同一个东西——判定看着 A、执行的是 B，就是权限判定上的 TOCTOU。
+   * 二、参数根本不合法的调用不该惊动用户。之前的顺序会先发出 permission.request、
+   *     弹一个审批框，等用户点了"允许"才在执行时因为 invalid_input 失败。
+   *     审批噪音会直接转化成"下次顺手点允许"。
+   */
+  let input: unknown;
+  try {
+    input = tool.parseInput(parseArgs(call.argsJson));
+  } catch (e) {
+    await failCall(
+      deps,
+      turnId,
+      call,
+      e instanceof ToolInputError
+        ? e.asXmError
+        : xmError('invalid_input', e instanceof Error ? e.message : String(e)),
+    );
+    return;
+  }
+
   const target = deps.targetOf?.(call.name, input) ?? '';
+
+  /*
+   * 信任级别是**算出来的，不是填的**。
+   *
+   * 它此前在这里被硬编码成 `'model'`，而那是唯一的赋值点——于是整套注入降级
+   * （allow→ask、ask→deny）与三条 `red.*-untrusted` 红线从写下起一次也没触发过。
+   * 现在它来自事件流：本会话跑过带 `net.fetch` / `browser.control` / `gui.capture`
+   * 的工具之后，`untrustedContext` 就被置上，此后所有判定按不可信走（reduce.ts）。
+   */
+  const trustLevel = deps.runtime.state.untrustedContext === undefined ? 'model' : 'untrusted';
 
   /*
    * 权限闸门。**必须在执行之前，且没有旁路。**
@@ -255,7 +289,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       target,
       risk: tool.descriptor.risk,
       reason: `工具 ${call.name} 需要「${capability}」`,
-      trustLevel: 'model',
+      trustLevel,
     };
 
     const verdict = evaluate({
@@ -279,7 +313,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
         target,
         risk: request.risk,
         reason: verdict.reason,
-        trustLevel: 'model',
+        trustLevel,
       },
     });
 

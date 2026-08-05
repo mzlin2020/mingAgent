@@ -52,6 +52,38 @@ export const IRREVERSIBLE_CAPABILITIES: readonly Capability[] = [
 export const isIrreversible = (c: Capability): boolean => IRREVERSIBLE_CAPABILITIES.includes(c);
 
 /**
+ * **把外部内容带进上下文**的能力子集 —— 提示词注入的入口。
+ *
+ * 这个子集存在的理由，是 M0-b 复审时实测出来的一个洞：`PermissionRequest.trustLevel`
+ * 在整个代码库里只被硬编码成过 `'model'`，没有任何一条路径会产出 `'untrusted'`。
+ * 于是三条 `red.*-untrusted` 红线与整套注入降级（allow→ask、ask→deny）**一次也不会触发**。
+ * 判定逻辑是对的、测试是绿的、防御是不存在的——本项目第七次「规则存在 ≠ 规则生效」。
+ *
+ * 修法的关键是**别让人去记**。`trustLevel` 不该由调用方填，而应该从事件流里**算**出来：
+ * 一旦本会话执行过带这些能力的工具，上下文里就有了外部内容，此后一律按不可信处理
+ * （见 kernel/state/reduce.ts 的 `untrustedContext`）。工具声明了能力就自动生效，
+ * 装配方忘不了，因为根本没有让它填的地方。
+ *
+ * ── 为什么是这三个，不多也不少 ──
+ *
+ * 多了会自毁：`fs.read` 也可能读到别人写的文件，但它在平衡档默认放行且几乎每轮都发生，
+ * 把它算进来等于会话一开始就永久不可信，用户会直接关掉整道防御——那才是真的没有防御。
+ * 少了会漏：`gui.capture` 看似只是截图，但截的如果是一个浏览器窗口，
+ * 它和 `net.fetch` 拿回来的是同一段攻击载荷，只是换了条路进来。
+ *
+ * ⚠️ 已知不覆盖的两条路，见 docs/09：MCP 工具若不声明 `net.fetch` 就标不出来；
+ * 子 Agent 的不可信标记目前不会传染回父会话。
+ */
+export const UNTRUSTED_CONTENT_CAPABILITIES: readonly Capability[] = [
+  'net.fetch',
+  'browser.control',
+  'gui.capture',
+];
+
+export const isUntrustedContentSource = (c: Capability): boolean =>
+  UNTRUSTED_CONTENT_CAPABILITIES.includes(c);
+
+/**
  * `target` 是**文件系统路径**的能力子集。
  *
  * 这不是分类学，是判定行为的分叉点：对这些能力，`PermissionRequest.target` 必须是

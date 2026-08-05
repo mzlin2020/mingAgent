@@ -173,17 +173,46 @@ const SELF_MODIFY_PROTECTED: readonly { readonly glob: string; readonly why: str
   { glob: '.github/workflows/**', why: 'CI 流水线——改了它，上面所有护栏都可以不跑' },
 ];
 
+/**
+ * 每条受保护路径要挂的能力。
+ *
+ * ⚠️ **只挂 `self.modify` 是不够的，而且不够的方式很具体。** M0-b 复审实测：
+ *
+ * ```
+ * self.modify 改 <appRoot>/packages/kernel/src/policy/defaults.ts → DENY [red.self-modify-00]
+ * fs.write    改同一个文件                                        → ASK  [def.fs-write]
+ * ```
+ *
+ * 能力是**工具自己声明**的。一个通用写文件工具声明的是 `fs.write`，它压根不知道
+ * 自己正在改的是判定逻辑——于是九条自改红线被一个最普通的工具整体绕过，
+ * 降级成一个用户会顺手点掉的确认框。
+ *
+ * 同一份代码里的审计库红线写对了（挂在 `fs.write` / `fs.delete` 上），
+ * 自改红线写错了。这不是疏忽的两种，是同一个教训只学了一半：
+ * **红线要按"目标是什么"来写，不能按"调用方自称在做什么"来写。**
+ */
+const SELF_MODIFY_GUARDED_CAPABILITIES = [
+  { capability: 'self.modify' as const, suffix: '', verb: '修改' },
+  { capability: 'fs.write' as const, suffix: '-fs-write', verb: '写入' },
+  { capability: 'fs.delete' as const, suffix: '-fs-delete', verb: '删除' },
+];
+
 const selfModifyRedLines = (appRoot: string): PolicyRule[] =>
-  SELF_MODIFY_PROTECTED.map((p, i) => ({
-    id: `red.self-modify-${String(i).padStart(2, '0')}`,
-    effect: 'deny' as const,
-    capability: 'self.modify' as const,
-    match: { target: `${appRoot === '/' ? '' : appRoot}/${p.glob}` },
-    reason:
-      `修改${p.why}。这类文件改掉之后，后续改动就没有任何东西拦得住了` +
-      `（docs/07 §5）。只能由人手工进行。`,
-    immutable: true,
-  }));
+  SELF_MODIFY_PROTECTED.flatMap((p, i) => {
+    const target = `${appRoot === '/' ? '' : appRoot}/${p.glob}`;
+    const n = String(i).padStart(2, '0');
+
+    return SELF_MODIFY_GUARDED_CAPABILITIES.map(({ capability, suffix, verb }) => ({
+      id: `red.self-modify-${n}${suffix}`,
+      effect: 'deny' as const,
+      capability,
+      match: { target },
+      reason:
+        `${verb}${p.why}。这类文件改掉之后，后续改动就没有任何东西拦得住了` +
+        `（docs/07 §5）。只能由人手工进行。`,
+      immutable: true,
+    }));
+  });
 
 /**
  * 平衡档的默认规则（ADR-0003）。用户可覆盖。

@@ -205,3 +205,57 @@ describe('注入降级：ask → deny', () => {
       .toBe('ask');
   });
 });
+
+/**
+ * ── 自改红线不能只挂在 `self.modify` 上 ──
+ *
+ * M0-b 复审实测出来的洞：九条自改红线全部只声明 `capability: 'self.modify'`，
+ * 而能力是**工具自报的**。一个通用写文件工具报的是 `fs.write`，它根本不知道
+ * 自己正在改的是权限判定逻辑——于是九条红线被最普通的一个工具整体绕过，
+ * 降级成 `def.fs-write` 的一个确认框。
+ *
+ * 同一份 defaults.ts 里的审计库红线写对了（挂在 fs.write / fs.delete 上）。
+ * 所以这不是"想不到"，是同一个教训只学了一半：
+ * **红线要按"目标是什么"写，不能按"调用方自称在做什么"写。**
+ */
+describe('自改红线：按目标而不是按自报能力', () => {
+  const PROTECTED = [
+    '/repo/packages/kernel/src/policy/defaults.ts',
+    '/repo/packages/contracts/src/permission/capability.ts',
+    '/repo/packages/contracts/src/base/redact.ts',
+    '/repo/scripts/check-secrets.mjs',
+    '/repo/.dependency-cruiser.cjs',
+    '/repo/eslint.config.js',
+    '/repo/.githooks/pre-commit',
+    '/repo/.github/workflows/ci.yml',
+  ];
+
+  it.each(PROTECTED)('%s：三种能力一律 deny，不是 ask', (path) => {
+    for (const cap of ['self.modify', 'fs.write', 'fs.delete'] as const) {
+      const v = verdict(cap, path);
+      expect(v.effect, `${cap} → ${path}`).toBe('deny');
+      expect(v.ruleId, `${cap} → ${path}`).toMatch(/^red\.self-modify-/);
+    }
+  });
+
+  it('绕过手法一：换等价写法拼路径', () => {
+    for (const raw of [
+      '/repo/packages/kernel/src/policy/../policy/defaults.ts',
+      '/repo/./scripts/check-secrets.mjs',
+      '/repo//scripts//check-secrets.mjs',
+    ]) {
+      expect(verdict('fs.write', raw).effect, raw).toBe('deny');
+    }
+  });
+
+  it('绕过手法二：Windows 上改大小写（需运行时打开 pathCaseInsensitive）', () => {
+    const p = '/repo/Scripts/Check-Secrets.mjs';
+    expect(verdict('fs.write', p, false).effect, '大小写敏感：本就不该命中').toBe('ask');
+    expect(verdict('fs.write', p, true).effect, '大小写不敏感：必须命中').toBe('deny');
+  });
+
+  it('保护范围之外的文件不受影响 —— 红线不能宽到让人去找绕过的办法', () => {
+    expect(verdict('fs.write', '/repo/packages/runtime/src/turn.ts').effect).toBe('ask');
+    expect(verdict('fs.write', '/repo/README.md').effect).toBe('ask');
+  });
+});
