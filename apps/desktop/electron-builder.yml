@@ -16,6 +16,16 @@ files:
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
 
+# 不让 electron-builder 内部再跑一次 @electron/rebuild。
+# ADR-0016 已经实测清楚：better-sqlite3 13 随包发**全平台 N-API 预编译产物**
+# （8 个 `prebuilds/*.node`），Node 与 Electron 共用同一份，本来就不需要重编。
+# 而那一步在交叉打包时会直接失败——它会尝试为目标架构从源码 build，
+# 于是 `node-gyp does not support cross-compiling native modules from source.`
+#
+# 换句话说：这一步在本机打包时是空转，在交叉打包时是纯阻塞。
+# ⚠️ 引入**非 N-API** 的原生依赖那天，这行必须删掉并连同 ADR-0016 决策一一起重评。
+npmRebuild: false
+
 # M0-b 只验证"能产出安装包"。签名与公证是 M1+：
 # 没有证书时强行开启会让本地构建直接失败，而那与本轮要验的东西无关。
 mac:
