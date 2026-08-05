@@ -192,6 +192,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      # `scripts/check-secrets.mjs` 零依赖（只用 node: 内置模块），这个 job 其实不需要 pnpm。
+      # 但 `actions/setup-node@v5` 会读 package.json 的 `packageManager` 字段**自动开启缓存**，
+      # 于是它去找 pnpm、找不到，7 秒就挂在 setup 步骤上：
+      #   Error: Unable to locate executable file: pnpm.
+      # 六个 job 里只有这一个没装 pnpm，也只有这一个红——差异本身就是 bug 的来源。
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
           node-version: 22

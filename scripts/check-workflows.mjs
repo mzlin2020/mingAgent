@@ -48,7 +48,31 @@ for (const file of files) {
   }
 
   for (const [jobName, job] of Object.entries(jobs)) {
-    for (const step of job?.steps ?? []) {
+    const steps = job?.steps ?? [];
+
+    /*
+     * ── 三、`setup-node` 之前必须先装 pnpm ──
+     *
+     * `actions/setup-node@v5` 会读 package.json 的 `packageManager` 字段**自动开启缓存**，
+     * 于是它会去找 pnpm。找不到就直接失败：
+     *   Error: Unable to locate executable file: pnpm.
+     *
+     * 首跑时六个 job 里只有 `secrets` 没装 pnpm（它零依赖，看起来"不需要"），
+     * 也只有它挂在这一步——**差异本身就是 bug 的来源**，而这种差异靠读 YAML 很难看出来：
+     * 每个 job 单独看都合理，只有并排比才发现少了一行。
+     */
+    const usesIdx = (prefix) => steps.findIndex((s) => String(s?.uses ?? '').startsWith(prefix));
+    const nodeIdx = usesIdx('actions/setup-node');
+    const pnpmIdx = usesIdx('pnpm/action-setup');
+    if (nodeIdx !== -1 && (pnpmIdx === -1 || pnpmIdx > nodeIdx)) {
+      problems.push(
+        `${path} · job "${jobName}" 在 actions/setup-node 之前没有 pnpm/action-setup。\n` +
+          `    setup-node@v5 会按 package.json 的 packageManager 自动开缓存并去找 pnpm，\n` +
+          `    找不到就直接失败（Unable to locate executable file: pnpm）。`,
+      );
+    }
+
+    for (const step of steps) {
       const run = typeof step?.run === 'string' ? step.run : '';
       if (run === '') continue;
 
