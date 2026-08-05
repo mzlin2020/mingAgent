@@ -107,14 +107,51 @@ jobs:
         run: pnpm --filter @xm/desktop build
       - name: 打包（不签名、不公证，M0-b 只验证产物能出来）
         run: pnpm --filter @xm/desktop exec electron-builder --dir
-      - name: 启动自检（Linux 需要 xvfb）
+      # ── 启动自检 ────────────────────────────────────────────────
+      #
+      # ⚠️ 跑的必须是**打包产物**，不能是 `electron .`。
+      #
+      # 这一步之前写的是 `pnpm --filter @xm/desktop exec electron .`，而
+      # apps/desktop/package.json 的 main 指向 `./dist/main/index.js`——那是源码树，
+      # **根本没有 asar**。于是这个 job 唯一无法覆盖的，恰好就是它声称要覆盖的那一类：
+      # `.node` 被打进 asar、`files` 漏了 `prebuilds/`。
+      #
+      # main/index.ts 的注释与 ADR-0016 当时都写着"这里跑的是 asar 里的产物"。
+      # 两处都写了，CI 里没有一处是那么做的——本项目第九次「规则存在 ≠ 规则生效」。
+      #
+      # 先断言产物存在再跑：路径拼错时要当场报"文件不在"，
+      # 而不是回退到某个碰巧能跑起来的东西上，那等于把这一格又打了个假勾。
+      - name: 定位打包产物
+        shell: bash
+        run: |
+          case "${{ matrix.os }}" in
+            ubuntu-latest)  BIN="apps/desktop/release/linux-unpacked/xiaoming" ;;
+            windows-latest) BIN="apps/desktop/release/win-unpacked/xiaoming.exe" ;;
+            macos-latest)   BIN=$(echo apps/desktop/release/mac*/小明.app/Contents/MacOS/xiaoming) ;;
+          esac
+          test -f "$BIN" || { echo "❌ 打包产物不存在：$BIN"; ls -R apps/desktop/release | head -50; exit 1; }
+          echo "XM_APP_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "✓ 打包产物：$BIN"
+
+      # 未签名的 arm64 产物在 Apple Silicon 上不给运行，而 electron-builder 改写过
+      # 二进制、Electron 自带的签名已经失效。identity: null 是 M0-b 刻意的（无证书），
+      # 所以这里补一个 ad-hoc 签名——与用户在自己 Mac 上要做的是同一件事。
+      - name: macOS ad-hoc 签名
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: codesign --force --deep --sign - apps/desktop/release/mac*/小明.app
+
+      - name: 启动自检 —— 跑打包产物（Linux 需要 xvfb）
         if: matrix.os == 'ubuntu-latest'
-        run: xvfb-run --auto-servernum pnpm --filter @xm/desktop exec electron . --smoke
+        shell: bash
+        run: xvfb-run --auto-servernum "$XM_APP_BIN" --smoke
         env:
           XM_SMOKE: '1'
-      - name: 启动自检
+
+      - name: 启动自检 —— 跑打包产物
         if: matrix.os != 'ubuntu-latest'
-        run: pnpm --filter @xm/desktop exec electron . --smoke
+        shell: bash
+        run: "$XM_APP_BIN" --smoke
         env:
           XM_SMOKE: '1'
 

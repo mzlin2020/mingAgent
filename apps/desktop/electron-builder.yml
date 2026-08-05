@@ -1,5 +1,17 @@
 appId: com.xiaoming.desktop
 productName: 小明
+
+# 可执行文件名单独定，**不跟 productName 走**。
+#
+# 不定的后果是三平台各不相同：Windows 得到 `小明.exe`、macOS 得到 `小明.app`，
+# 而 Linux 拿到的是 `@xmdesktop`——非 ASCII 的 productName 在 Linux 上不能直接当
+# 可执行名，electron-builder 悄悄回退到了包名。于是"启动打包产物"这件事在
+# CI 脚本里没有一个跨平台写法，而这正是 desktop job 之前绕开它、
+# 改跑源码树的直接诱因（见 ADR-0016 补记二）。
+#
+# 用户看到的名字仍然是「小明」：窗口标题、Finder / 开始菜单里的应用名走 productName。
+executableName: xiaoming
+
 directories:
   output: release
   buildResources: build
