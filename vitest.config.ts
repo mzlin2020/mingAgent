@@ -21,6 +21,7 @@ export default defineConfig({
       '@xm/kernel': fileURLToPath(new URL('./packages/kernel/src/index.ts', import.meta.url)),
       '@xm/platform': fileURLToPath(new URL('./packages/platform/src/index.ts', import.meta.url)),
       '@xm/storage': fileURLToPath(new URL('./packages/storage/src/index.ts', import.meta.url)),
+      '@xm/runtime': fileURLToPath(new URL('./packages/runtime/src/index.ts', import.meta.url)),
     },
   },
 });

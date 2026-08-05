@@ -65,6 +65,19 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: '禁止无法解析的依赖',
+      comment:
+        '2026-08-05 的反向演练发现的洞：在 kernel/runtime 里写 `import "electron"`，' +
+        'depcruise 全绿。原因是 electron 当时还没装，import 解析不到，那条边压根不进依赖图——' +
+        '于是四条"不得依赖 electron"的规则**只在 electron 已安装时才生效**，' +
+        '而最该拦的恰恰是"某个包偷偷 import 了自己没声明的依赖"这种情况。\n' +
+        '这与 ADR-0011 ⑨ 的 includeOnly 是同一类失效：规则在、输出全绿、实际没管住。\n' +
+        '本条兜底：解析不到就是错，不管是打错字还是引了未声明的包。',
+      severity: 'error',
+      from: { path: '^(packages|apps)/[^/]+/src' },
+      to: { couldNotResolve: true },
+    },
+    {
       name: '禁止循环依赖',
       severity: 'error',
       from: {},

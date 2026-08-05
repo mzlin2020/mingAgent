@@ -72,6 +72,18 @@ importers:
         specifier: ^3.0.0
         version: 3.0.0
 
+  packages/runtime:
+    dependencies:
+      '@xm/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@xm/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+
   packages/storage:
     dependencies:
       '@xm/contracts':

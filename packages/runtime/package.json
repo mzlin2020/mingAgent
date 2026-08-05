@@ -1,0 +1,22 @@
+{
+  "name": "@xm/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "装配层：把内核、存储、Provider、工具拼成可运行的 headless 引擎。不依赖 electron",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "@xm/kernel": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

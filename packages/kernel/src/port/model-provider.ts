@@ -1,4 +1,5 @@
 import type { ModelChunk, ModelRequest } from '@xm/contracts';
+import type { AbortLike } from '../tool/types.js';
 
 /**
  * 模型提供商端口（把 docs/04 §4.1 的草案落成实现级接口）。
@@ -35,21 +36,6 @@ export interface ModelInfo {
   readonly capabilities: ModelCapabilities;
 }
 
-/**
- * `AbortSignal` 的结构化最小面。
- *
- * 内核的 `lib` 只有 ES2023、`types` 是空数组（见 tsconfig.base.json），所以 `AbortSignal`
- * 这个名字在内核里根本不存在。把 `"DOM"` 加进 lib 能让它出现，但同时会把 `fetch`、
- * `localStorage` 一并带进来——"内核零 I/O"的编译期保证就是这么一点点漏掉的。
- *
- * 真实的 `AbortSignal` 结构上满足这个接口，调用方直接传即可。
- */
-export interface CancelSignal {
-  readonly aborted: boolean;
-  addEventListener(type: 'abort', listener: () => void): void;
-  removeEventListener(type: 'abort', listener: () => void): void;
-}
-
 export interface ModelProvider {
   /** 稳定标识，如 `"anthropic"`。进事件与配置，不要改 */
   readonly id: string;
@@ -62,7 +48,12 @@ export interface ModelProvider {
    */
   capabilities(model: string): ModelCapabilities;
 
-  stream(req: ModelRequest, signal: CancelSignal): AsyncIterable<ModelChunk>;
+  /**
+   * 取消信号用 `AbortLike`（定义在 `tool/types.ts`），不是 `AbortSignal`：
+   * 后者来自 DOM lib 或 @types/node，把任一个引进内核都会削弱"零 I/O"的编译期保证。
+   * 真实的 `AbortSignal` 结构上兼容，适配层直接传即可。
+   */
+  stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk>;
 
   /** 可选：能精确计数的家提供，其余由内核用估算器兜底 */
   countTokens?(req: ModelRequest): Promise<number>;
