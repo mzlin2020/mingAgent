@@ -30,6 +30,8 @@ export interface Services {
   readonly tools: ToolRegistry;
   createSession(title?: string): Promise<SessionId>;
   sendUserMessage(sessionId: SessionId, text: string): Promise<string>;
+  /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
+  clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -121,6 +123,15 @@ export async function startServices(): Promise<Services> {
         },
         text,
       );
+    },
+
+    /**
+     * 解除不可信标记。外壳这一层**只做转发**——判断与事件都在 `SessionRuntime` 里，
+     * 那样 CLI（M3）与 headless 走的是同一段代码，而不是同一段注释。
+     */
+    async clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean> {
+      const runtime = await runtimeFor(sessionId);
+      return runtime.clearUntrusted(reason);
     },
 
     async close(): Promise<void> {

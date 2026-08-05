@@ -90,6 +90,14 @@ export function sampleEvents(): XmEvent[] {
       payload: { requestId, effect: 'allow', scope: 'once', by: 'user' },
     },
     {
+      type: 'trust.cleared',
+      payload: {
+        by: 'user',
+        cleared: { callId, toolName: 'web.fetch', viaCapability: 'net.fetch', since: 1 },
+        reason: '这几个网页是我自己的',
+      },
+    },
+    {
       type: 'todo.updated',
       payload: { todos: [{ id: '1', content: '做事', status: 'pending' }] },
     },

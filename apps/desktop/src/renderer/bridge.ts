@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  ClearUntrustedResult,
   CreateSessionResult,
   IpcEnvelope,
   ListSessionsResult,
@@ -24,6 +25,7 @@ interface XmBridge {
   createSession(req: unknown): Promise<unknown>;
   sendUserMessage(req: unknown): Promise<unknown>;
   readSession(req: unknown): Promise<unknown>;
+  clearUntrusted(req: unknown): Promise<unknown>;
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -68,6 +70,12 @@ export const api = {
     call(bridge().sendUserMessage({ sessionId, text }), SendUserMessageResult),
   readSession: (sessionId: string) =>
     call(bridge().readSession({ sessionId }), ReadSessionResult),
+
+  clearUntrusted: (sessionId: string, reason?: string) =>
+    call(
+      bridge().clearUntrusted(reason === undefined ? { sessionId } : { sessionId, reason }),
+      ClearUntrustedResult,
+    ),
 
   /**
    * 事件推送。**解析不了的事件原样忽略并继续**，不让整条流断掉——

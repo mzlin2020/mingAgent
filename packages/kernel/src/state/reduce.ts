@@ -180,6 +180,20 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       };
     }
 
+    /*
+     * 用户显式解除不可信标记。
+     *
+     * **解除的作用域是"到下一次引入不可信内容为止"，不是整个会话永久解除。**
+     * 这里不需要为此加任何机制：置回 undefined 之后，下一次带 `net.fetch` /
+     * `browser.control` / `gui.capture` 的 `tool.start` 会被 `taintOf()` 重新标上。
+     *
+     * 永久解除是个很容易顺手写出来的实现（加一个 `everCleared` 标志就行），
+     * 而它的后果是：用户为了推一次代码解除了一次，此后这个会话读多少网页都不再有防御——
+     * 恰恰是长会话、读过很多外部内容的那种会话，风险最高的那种。
+     */
+    case 'trust.cleared':
+      return { ...state, untrustedContext: undefined, lastSeq: e.seq };
+
     // ── 任务与子 Agent ────────────────────────────────────────
     case 'todo.updated':
       return { ...state, todos: e.payload.todos, lastSeq: e.seq };

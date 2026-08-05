@@ -114,6 +114,50 @@ export class SessionRuntime {
     return event;
   }
 
+  /**
+   * 用户显式解除本会话的不可信标记 —— **G1 的唯一入口**。
+   *
+   * ── 为什么必须有它 ──
+   *
+   * `PolicyEngine` 在注入降级把 ask 打成 deny 时，原话是"请显式解除本轮的不可信标记后重试"。
+   * 在这个方法存在之前，那句话是**一句无法兑现的承诺**：`untrustedContext` 一旦置上就是终身的。
+   * 后果不是"防御太严"，是"防御会被整体放弃"——任何查过一次资料的会话都永久做不了
+   * 不可撤销的操作，用户唯一的出路是新建会话，而他从中学到的经验是"别用这个功能"。
+   *
+   * ── 为什么在 runtime 而不是在桌面外壳 ──
+   *
+   * 桌面、CLI（M3）、headless 冒烟走同一条路。解除是安全决定，它只能有一个实现。
+   *
+   * ── 为什么工具调不到它 ──
+   *
+   * `ToolContext` 是 `{ sessionId, signal, cwd, executor }`——**工具拿不到 runtime，
+   * 也拿不到任何记录事件的入口**。所以"读了网页的模型让工具把自己解除掉"这条路
+   * 不是靠约定挡住的，是结构上不存在。`tests/untrusted-clear.test.ts` 盯着这条，
+   * 防止将来有人为了方便往 `ToolContext` 上挂一个 `record`。
+   *
+   * @returns 是否真的解除了。当前没有标记时**不记事件**——无意义的审计条目就是审计噪音，
+   *          而审计的价值恰恰在于每一条都值得看。
+   */
+  async clearUntrusted(reason?: string): Promise<boolean> {
+    const ctx = this.#state.untrustedContext;
+    if (ctx === undefined) return false;
+
+    await this.record({
+      type: 'trust.cleared',
+      payload: {
+        by: 'user',
+        cleared: {
+          callId: ctx.callId,
+          toolName: ctx.toolName,
+          viaCapability: ctx.viaCapability,
+          since: ctx.since,
+        },
+        ...(reason === undefined ? {} : { reason }),
+      },
+    });
+    return true;
+  }
+
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;

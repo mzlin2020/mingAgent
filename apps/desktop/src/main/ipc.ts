@@ -3,6 +3,7 @@ import type { BrowserWindow } from 'electron';
 import type { z } from 'zod';
 import { CH } from '../shared/channels.js';
 import {
+  ClearUntrustedRequest,
   CreateSessionRequest,
   ReadSessionRequest,
   SendUserMessageRequest,
@@ -49,6 +50,10 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
     for await (const e of services.stores.events.read(req.sessionId, options)) out.push(e);
     return out;
   });
+
+  handle(CH.clearUntrusted, ClearUntrustedRequest, async (req) => ({
+    cleared: await services.clearUntrusted(req.sessionId, req.reason),
+  }));
 
   /*
    * 事件推送。**订阅在总线上，不在存储上**（ADR-0013 不变量五）：

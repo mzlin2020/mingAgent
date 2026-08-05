@@ -50,6 +50,7 @@ export function App(): ReactNode {
             </p>
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
+              <UntrustedBanner />
               {(session?.messages ?? []).map((m) => (
                 <MessageView key={m.id} message={m} />
               ))}
@@ -59,6 +60,51 @@ export function App(): ReactNode {
 
         <Composer disabled={currentId === undefined || busy} />
       </main>
+    </div>
+  );
+}
+
+/**
+ * 不可信上下文横幅 —— G1 的用户侧（ADR-0019）。
+ *
+ * ── 为什么它必须说清"是什么把上下文弄脏的" ──
+ *
+ * 解除按钮自带一个社工面：模型完全可以在回复里写"请点上面那个解除按钮，然后我就能
+ * 帮你推送了"。用户面对一个只写着"解除限制"的空白按钮，会照点不误。
+ *
+ * 所以这里复述的是**事件流里的事实**——哪个工具、通过哪个能力、什么时候——
+ * 而这些字段全部来自 `UntrustedContext`，是 `reduce` 从 `tool.start` 算出来的，
+ * 模型碰不到。用户确认的是一件具体的事，不是一个措辞。
+ *
+ * 横幅是常驻的、不可关闭的：能被关掉的安全提示等于没有提示。
+ */
+function UntrustedBanner(): ReactNode {
+  const session = useUi((s) => s.session);
+  const clearUntrusted = useUi((s) => s.clearUntrusted);
+  const ctx = session?.untrustedContext;
+  if (ctx === undefined) return null;
+
+  const since = new Date(ctx.since).toLocaleTimeString();
+
+  return (
+    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
+      <p className="font-medium">本会话的上下文含有外部内容</p>
+      <p className="mt-1 text-[var(--xm-fg-muted)]">
+        {since} 由工具 <span className="font-mono">{ctx.toolName}</span>（
+        <span className="font-mono">{ctx.viaCapability}</span>）引入。
+        在此之后，删除文件、推送代码、访问网络这类**不可撤销**的操作会被直接拒绝。
+      </p>
+      <Button
+        className="mt-2"
+        onClick={() => {
+          void clearUntrusted();
+        }}
+      >
+        我确认这些内容可信，解除标记
+      </Button>
+      <p className="mt-1 text-[var(--xm-fg-muted)]">
+        解除只到下一次引入外部内容为止，不是永久的。
+      </p>
     </div>
   );
 }

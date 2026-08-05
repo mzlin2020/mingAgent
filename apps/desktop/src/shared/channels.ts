@@ -16,6 +16,8 @@ export const CH = {
   createSession: 'xm:create-session',
   sendUserMessage: 'xm:send-user-message',
   readSession: 'xm:read-session',
+  /** 解除本会话的不可信标记。**只有人能按**，见 ADR-0019 */
+  clearUntrusted: 'xm:clear-untrusted',
   /** 主进程 → 渲染层，单向推送 */
   event: 'xm:event',
 } as const;

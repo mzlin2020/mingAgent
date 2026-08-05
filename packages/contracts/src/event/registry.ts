@@ -56,6 +56,8 @@ export const EVENT_SPECS = {
     version: 1,
   },
 
+  'trust.cleared': { schema: P.TrustClearedPayload, durability: 'persisted', version: 1 },
+
   // ── 任务与子 Agent ──
   'todo.updated': { schema: P.TodoUpdatedPayload, durability: 'persisted', version: 1 },
   'subagent.start': { schema: P.SubagentStartPayload, durability: 'persisted', version: 1 },

@@ -36,6 +36,7 @@ interface UiState {
   readonly newSession: () => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
   readonly send: (text: string) => Promise<void>;
+  readonly clearUntrusted: () => Promise<void>;
   readonly applyEvent: (event: PushedEvent) => void;
 }
 
@@ -92,6 +93,24 @@ export const useUi = create<UiState>((set, get) => ({
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       set({ busy: false });
+    }
+  },
+
+  /**
+   * 解除不可信标记。**不在这里改状态**——发出去就完了，状态由主进程推回来的
+   * `trust.cleared` 事件经 `reduce` 得出（ADR-0015）。
+   *
+   * 在这里顺手 `set({ session: { ...session, untrustedContext: undefined } })` 会快一帧，
+   * 代价是 UI 上的"已解除"与事件流里的"已解除"变成两件事——而如果主进程那一侧失败了，
+   * 用户看到的是解除成功、实际仍被拒绝。安全状态尤其不能乐观更新。
+   */
+  clearUntrusted: async () => {
+    const id = get().currentId;
+    if (id === undefined) return;
+    try {
+      await api.clearUntrusted(id);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 

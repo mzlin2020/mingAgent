@@ -150,6 +150,43 @@ export const PermissionDecisionPayload = z.looseObject({
   ruleId: z.string().optional(),
 });
 
+/**
+ * 用户显式解除了本会话的不可信标记。
+ *
+ * ── 为什么它必须是一条事件，而不是一个内存标志 ──
+ *
+ * 会话状态完全由事件流决定（原则二）。而这一条恰恰是最不该丢的那种状态：
+ * 它是一次**安全决定**——事后追责要查、崩溃恢复要续、评测回放要复现。
+ * 一个"重启之后就忘了自己被解除过"的标记，和一个假的标记没有区别。
+ *
+ * ── `by` 为什么是 literal 而不是枚举 ──
+ *
+ * 解除不可信标记是提示词注入唯一想要的那个动作。这个字段里出现 `'model'` 或 `'tool'`
+ * 的那一天，整套注入防御就归零了。写成 `z.literal('user')`，多一个取值就要改契约、
+ * 改测试、并且必须写一份 ADR 说明为什么——那正是它该有的代价。
+ *
+ * 真正的保证不在这个字段上（字段是可以填的）：`ToolContext` 里根本没有记录事件的入口，
+ * 工具在**结构上**发不出这条事件。字段只是把那条结构性事实写在契约里。
+ */
+export const TrustClearedPayload = z.looseObject({
+  by: z.literal('user'),
+  /**
+   * 被解除的那个标记的出处，照抄自 `UntrustedContext`。
+   *
+   * 冗余是刻意的：审计与 UI 都需要说清"你解除的到底是什么"，而它们不该为此去
+   * 反向扫描事件流找那次 `tool.start`。更要紧的是 UI——模型完全可以在回复里写
+   * "请点上面那个解除按钮"，用户面对一个空白确认框会照点不误。
+   */
+  cleared: z.looseObject({
+    callId: CallId,
+    toolName: z.string(),
+    viaCapability: Capability,
+    since: z.number().int(),
+  }),
+  /** 用户填的理由，可选。留着是为了事后能看懂当时在想什么 */
+  reason: z.string().optional(),
+});
+
 // ── 任务与子 Agent ─────────────────────────────────────────────────
 
 export const TodoUpdatedPayload = z.looseObject({

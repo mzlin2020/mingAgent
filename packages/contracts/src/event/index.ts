@@ -47,6 +47,8 @@ export const XmEvent = z.discriminatedUnion('type', [
     payload: P.PermissionDecisionPayload,
   }),
 
+  EventEnvelope.extend({ type: z.literal('trust.cleared'), payload: P.TrustClearedPayload }),
+
   EventEnvelope.extend({ type: z.literal('todo.updated'), payload: P.TodoUpdatedPayload }),
   EventEnvelope.extend({ type: z.literal('subagent.start'), payload: P.SubagentStartPayload }),
   EventEnvelope.extend({ type: z.literal('subagent.end'), payload: P.SubagentEndPayload }),

@@ -49,6 +49,19 @@ export const ReadSessionRequest = z.strictObject({
 });
 export const ReadSessionResult = z.array(EventEnvelope);
 
+/**
+ * 解除本会话的不可信标记（ADR-0019）。
+ *
+ * 载荷里**没有**"解除者"字段：解除者永远是人，而这条 IPC 的到达本身就是"人点了按钮"
+ * 的唯一含义。让渲染层报出自己是谁，等于给一个将来可能被 XSS 或插件 UI 驱动的进程
+ * 一个可以撒谎的字段。事件里的 `by: 'user'` 由主进程填。
+ */
+export const ClearUntrustedRequest = z.strictObject({
+  sessionId: SessionId,
+  reason: z.string().max(500).optional(),
+});
+export const ClearUntrustedResult = z.object({ cleared: z.boolean() });
+
 /** 主进程 → 渲染层的事件推送 */
 export const PushedEvent = EventEnvelope;
 export type PushedEvent = z.infer<typeof PushedEvent>;
