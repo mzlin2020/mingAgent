@@ -84,21 +84,66 @@ export const isUntrustedContentSource = (c: Capability): boolean =>
   UNTRUSTED_CONTENT_CAPABILITIES.includes(c);
 
 /**
- * `target` 是**文件系统路径**的能力子集。
+ * `PermissionRequest.target` 的语义 —— **每个能力恰好一种**（ADR-0020，定案 docs/09 C4）。
  *
- * 这不是分类学，是判定行为的分叉点：对这些能力，`PermissionRequest.target` 必须是
- * **已规范化的绝对路径**，PolicyEngine 会先规范化再匹配，规范化失败**直接拒绝**
- * （见 kernel/policy/target.ts）。
+ * 契约里 target 是一个 `string`，判定统一走 glob。但各能力的 target 根本不是同一种东西：
+ * `fs.*` 是路径、`net.fetch` 是网络目的地、`shell.exec` 是命令行、`secrets.read` 是键名。
+ * 用同一套字面量匹配去管四种东西，结果是**其中三种上的规则只是看起来在生效**。
  *
- * 原因是实测出来的：红线写 `~` 而运行时传 `/home/ming`，写 `/` 而运行时传 `/tmp/..`，
- * 两边都是"路径"却对不上，规则看起来在、实际永不命中。字符串 glob 在安全边界上
- * 必须配一个规范化契约，否则拼写差异就是绕过手段。
+ * 路径这一种在 ADR-0012 ① 已经付过一次学费（红线写 `~`、请求传 `/home/ming`，永不命中），
+ * 修法是规范化 + 失败关闭。这张表把那个修法推广到其余三种，并且把「哪一种还没有契约」
+ * 变成一件写在类型里、拿得出来说的事：
+ *
+ *   · `path`    已规范化的绝对路径。规范化失败 → **deny**（kernel/policy/target.ts）
+ *   · `host`    http(s) URL，归一成 `host[:port]`。归一失败 → **deny**（host-target.ts）
+ *   · `command` **契约尚未落地**。带非空 target 的判定一律 deny，
+ *                带 `match.target` 的规则在构造期抛错。见 ADR-0020 决策三
+ *   · `opaque`  自由字符串（键名、远端名、设置项）。**不是安全边界**，
+ *                只能当便利过滤——红线不许建立在它上面，由 builtinRules 构造期断言
+ *
+ * 写成 `Record<Capability, TargetKind>` 而不是几个数组：**新增能力时不做这个决定就
+ * 编译不过**。与 `CAPABILITY_LABELS` 同一个手法，理由也相同——闭集的价值全在
+ * "漏掉一个会当场炸"上，一旦退化成"漏掉一个就默认按某种处理"，闭集就白设了。
  */
-export const PATH_CAPABILITIES: readonly Capability[] = [
-  'fs.read',
-  'fs.write',
-  'fs.delete',
-  'self.modify',
-];
+export type TargetKind = 'path' | 'host' | 'command' | 'opaque';
 
-export const isPathCapability = (c: Capability): boolean => PATH_CAPABILITIES.includes(c);
+const TARGET_KINDS: Readonly<Record<Capability, TargetKind>> = {
+  'fs.read': 'path',
+  'fs.write': 'path',
+  'fs.delete': 'path',
+  'self.modify': 'path',
+
+  'net.fetch': 'host',
+  'browser.control': 'host',
+
+  'shell.exec': 'command',
+  'process.spawn': 'command',
+
+  /*
+   * `net.listen` 刻意**不是** host。它的 target 是本机的绑定地址（`0.0.0.0:8080`），
+   * 与"要访问哪个远端"是相反方向的东西，塞进 URL 归一里只会得到一个错误的答案。
+   * 绑定地址自己的规范化契约要等到真有监听类工具时再定。
+   */
+  'net.listen': 'opaque',
+  'git.write': 'opaque',
+  'git.push': 'opaque',
+  'env.read': 'opaque',
+  'secrets.read': 'opaque',
+  'gui.capture': 'opaque',
+  'gui.input': 'opaque',
+  'package.install': 'opaque',
+  'system.settings': 'opaque',
+  'plugin.install': 'opaque',
+};
+
+export const targetKindOf = (c: Capability): TargetKind => TARGET_KINDS[c];
+
+/**
+ * `target` 是文件系统路径的能力子集。**从上表推导**，不另外维护一份列表——
+ * 两份列表必然分叉，而分叉的表现是某个能力悄悄换了判定语义。
+ */
+export const PATH_CAPABILITIES: readonly Capability[] = ALL_CAPABILITIES.filter(
+  (c) => TARGET_KINDS[c] === 'path',
+);
+
+export const isPathCapability = (c: Capability): boolean => targetKindOf(c) === 'path';

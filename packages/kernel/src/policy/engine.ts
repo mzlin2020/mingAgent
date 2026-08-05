@@ -6,9 +6,10 @@ import type {
   PolicyRuleSet,
   PolicyVerdict,
   RiskLevel,
+  TargetKind,
 } from '@xm/contracts';
-import { isIrreversible, isPathCapability } from '@xm/contracts';
-import { normalizePathTarget } from './target.js';
+import { isIrreversible, targetKindOf } from '@xm/contracts';
+import { normalizeTarget } from './normalize.js';
 
 export type Executor = 'local' | 'container' | 'remote';
 
@@ -50,27 +51,29 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
   const { request, rules, tier } = input;
 
   /*
-   * 0) 路径目标先规范化，**失败关闭**。
+   * 0) 目标先规范化，**失败关闭**。
    *
-   * 必须排在红线之前：红线是按规范化后的绝对路径写的，拿未规范化的字符串去匹配，
+   * 必须排在红线之前：规则是按规范化后的形式写的，拿未规范化的字符串去匹配，
    * 命中与否取决于调用方怎么拼这个串——那就不是安全边界，是巧合。
    *
    * 判不了就 deny，不降级成 ask：ask 的下一步是用户点"允许"。
+   *
+   * 这里以前只管路径（`if (isPathCapability(...))`），其余能力的 target 原样进 glob。
+   * 现在按能力的 target 语义分派（ADR-0020）：路径、网络目的地各有各的规范化，
+   * 命令行明确地"还没有契约"因而失败关闭，opaque 明确地"不是安全边界"。
    */
-  let target = request.target;
-  if (isPathCapability(request.capability)) {
-    const normalized = normalizePathTarget(request.target);
-    if (!normalized.ok) {
-      return {
-        effect: 'deny',
-        ruleId: INVALID_TARGET_RULE_ID,
-        reason: `无法判定该路径的权限：${normalized.reason}`,
-      };
-    }
-    target = normalized.value;
+  const kind = targetKindOf(request.capability);
+  const normalized = normalizeTarget(request.capability, request.target);
+  if (!normalized.ok) {
+    return {
+      effect: 'deny',
+      ruleId: INVALID_TARGET_RULE_ID,
+      reason: `无法判定该操作的权限：${normalized.reason}`,
+    };
   }
+  const target = normalized.value;
 
-  const matched = rules.filter((r) => matches(r, input, target));
+  const matched = rules.filter((r) => matches(r, input, target, kind));
 
   // 1) 红线：不可覆盖
   const immutableDeny = lastWhere(matched, (r) => r.effect === 'deny' && r.immutable);
@@ -194,7 +197,12 @@ const denyOf = (r: PolicyRule): PolicyVerdict => ({
   reason: r.reason,
 });
 
-function matches(rule: PolicyRule, input: EvaluateInput, target: string): boolean {
+function matches(
+  rule: PolicyRule,
+  input: EvaluateInput,
+  target: string,
+  kind: TargetKind,
+): boolean {
   const { request, executor } = input;
 
   if (rule.capability !== '*' && rule.capability !== request.capability) return false;
@@ -202,7 +210,7 @@ function matches(rule: PolicyRule, input: EvaluateInput, target: string): boolea
 
   if (
     rule.match.target !== undefined &&
-    !globMatch(rule.match.target, target, input.pathCaseInsensitive ?? false)
+    !globMatch(rule.match.target, target, input.pathCaseInsensitive ?? false, kind)
   ) {
     return false;
   }
@@ -236,11 +244,24 @@ function lastWhere<T>(items: readonly T[], pred: (item: T) => boolean): T | unde
  * 于是**匹配不到 `/prod` 目录本身**——"禁止写 /prod 下的一切"这条规则，对 `/prod`
  * 自己失效。目录本身往往正是最该拦的那个目标（删目录 = 删掉它下面的一切）。
  *
+ * `kind === 'host'` 时多一条：**开头的 `*.` 也匹配域名自身**。
+ *
+ *   `*.evil.com` 命中 `evil.com`、`x.evil.com`，不命中 `notevil.com`
+ *
+ * 这与上面 `/**` 那一条是同一个坑的同一个决定：朴素实现里 `*.evil.com` 展开成
+ * `[^/]*\.evil\.com`，于是"禁止 evil.com 及其子域"这条规则**对 evil.com 自己失效**——
+ * 而顶级域名恰恰是最该拦的那个目标。写规则的人不会想到还要单独再写一条。
+ *
  * 注意：这是**安全边界**上的匹配。语义越少越好——花哨的 glob 特性（`{a,b}`、`!`）
  * 会让"这条规则到底管不管这个路径"变得难以推理，而推理错误在这里等于放行。
  */
-export function globMatch(pattern: string, value: string, caseInsensitive = false): boolean {
-  return globToRegExp(pattern, caseInsensitive).test(value);
+export function globMatch(
+  pattern: string,
+  value: string,
+  caseInsensitive = false,
+  kind: TargetKind = 'opaque',
+): boolean {
+  return globToRegExp(pattern, caseInsensitive, kind).test(value);
 }
 
 /**
@@ -254,13 +275,20 @@ export function globMatch(pattern: string, value: string, caseInsensitive = fals
 const GLOB_CACHE_MAX = 1024;
 const GLOB_CACHE = new Map<string, RegExp>();
 
-function globToRegExp(pattern: string, caseInsensitive: boolean): RegExp {
-  const cacheKey = `${caseInsensitive ? 'i' : 's'} ${pattern}`;
+function globToRegExp(pattern: string, caseInsensitive: boolean, kind: TargetKind): RegExp {
+  const cacheKey = `${caseInsensitive ? 'i' : 's'} ${kind} ${pattern}`;
   const cached = GLOB_CACHE.get(cacheKey);
   if (cached !== undefined) return cached;
 
   let out = '^';
-  for (let i = 0; i < pattern.length; i++) {
+  let start = 0;
+  // host 语义下开头的 `*.`：子域可有可无，域名自身也算命中（见上方说明）
+  if (kind === 'host' && pattern.startsWith('*.')) {
+    out += '(?:[^.]+\\.)*';
+    start = 2;
+  }
+
+  for (let i = start; i < pattern.length; i++) {
     const ch = pattern[i] ?? '';
     if (ch === '/' && pattern[i + 1] === '*' && pattern[i + 2] === '*' && i + 3 === pattern.length) {
       // 结尾的 `/**`：目录自身也算命中

@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import type { Capability, PermissionRequest, PolicyRule, PolicyRuleSet, TrustLevel } from '@xm/contracts';
-import { ALL_CAPABILITIES, IRREVERSIBLE_CAPABILITIES, newRequestId, newSessionId } from '@xm/contracts';
+import type {
+  Capability,
+  PermissionRequest,
+  PolicyRule,
+  PolicyRuleSet,
+  TargetKind,
+  TrustLevel,
+} from '@xm/contracts';
+import {
+  ALL_CAPABILITIES,
+  IRREVERSIBLE_CAPABILITIES,
+  newRequestId,
+  newSessionId,
+  targetKindOf,
+} from '@xm/contracts';
 import {
   INJECTION_DOWNGRADE_RULE_ID,
   TIER_FALLBACK_RULE_ID,
@@ -25,6 +38,22 @@ const ENV: PolicyEnv = {
 const BUILTIN_RULES = builtinRules(ENV);
 const RED_LINE_RULES = redLineRules(ENV);
 
+/**
+ * 默认 target **随能力的 target 语义而变**（ADR-0020）。
+ *
+ * 以前这里对所有能力都写死 `'/work/a.ts'`，包括 `net.fetch` 与 `shell.exec`——
+ * 一个路径当网络目的地、当命令行用，判定照样跑得通，因为那时根本没有规范化契约。
+ * 契约落地后这批 fixture 当场全红，而这正是它该有的效果：
+ * **测试里能拿路径冒充 URL，说明生产里也能。**
+ */
+const DEFAULT_TARGETS: Readonly<Record<TargetKind, string>> = {
+  path: '/work/a.ts',
+  host: 'https://example.com/x',
+  // 命令行契约未落地，带 target 一律判不了；空 target 表示"这次请求没有 target"
+  command: '',
+  opaque: 'whatever',
+};
+
 const req = (
   capability: Capability,
   overrides: Partial<PermissionRequest> = {},
@@ -32,7 +61,7 @@ const req = (
   requestId: newRequestId(),
   sessionId: newSessionId(),
   capability,
-  target: '/work/a.ts',
+  target: DEFAULT_TARGETS[targetKindOf(capability)],
   risk: 'medium',
   reason: '测试',
   trustLevel: 'model',

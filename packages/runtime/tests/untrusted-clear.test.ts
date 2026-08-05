@@ -82,6 +82,14 @@ const callChunks = (name: string, args: string) => {
   ];
 };
 
+/** `net.fetch` 的 target 必须是 http(s) URL，否则规范化不过直接 deny（ADR-0020） */
+const targetOf = (name: string, input: unknown): string => {
+  const o = input as { url?: string; remote?: string };
+  if (name === 'web.fetch') return o.url ?? '';
+  if (name === 'git.push') return o.remote ?? '';
+  return '';
+};
+
 const END = { chunks: [{ kind: 'stop', reason: 'end_turn' }] as never };
 
 async function harness(extra?: ReturnType<typeof spyTool>) {
@@ -105,6 +113,7 @@ async function harness(extra?: ReturnType<typeof spyTool>) {
     rules: builtinRules(ENV),
     tier: 'balanced' as const,
     model: 'scripted-1',
+    targetOf,
     // ask 一律放行：防御失效时 push 会真的跑起来，用例才拦得住回归
     decide: () => Promise.resolve('allow' as const),
   };

@@ -66,6 +66,18 @@ const callChunks = (name: string, args: string) => {
   ];
 };
 
+/**
+ * `targetOf` 现在**必须**给对形状的 target（ADR-0020）：`net.fetch` 的 target 是
+ * http(s) URL，规范化不过就是 deny。契约落地那天这个文件当场全红，理由很实在——
+ * 在此之前这里传的是空串，也就是说这套端到端用例从来没有验过 target 那一半。
+ */
+const targetOf = (name: string, input: unknown): string => {
+  const o = input as { url?: string; remote?: string };
+  if (name === 'web.fetch') return o.url ?? '';
+  if (name === 'git.push') return o.remote ?? '';
+  return '';
+};
+
 async function harness() {
   const store = new MemoryEventStore();
   const bus = new EventBus();
@@ -129,6 +141,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         rules: builtinRules(ENV),
         tier: 'balanced',
         model: 'scripted-1',
+        targetOf,
         // ask 一律放行：这样如果防御失效，push 就会真的执行 —— 用例才拦得住回归
         decide: () => Promise.resolve('allow'),
       },
@@ -157,6 +170,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
       rules,
       tier: 'balanced' as const,
       model: 'scripted-1',
+      targetOf,
       decide: () => Promise.resolve('allow' as const),
     };
 
@@ -209,6 +223,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         rules: builtinRules(ENV),
         tier: 'balanced',
         model: 'scripted-1',
+        targetOf,
         decide: () => Promise.resolve('allow'),
       },
       '推上去',

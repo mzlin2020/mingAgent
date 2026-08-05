@@ -1,4 +1,5 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
+import { targetKindOf } from '@xm/contracts';
 import type { XmPaths } from '../port/platform.js';
 import { xmDataLayout } from '../port/platform.js';
 import { normalizedOrThrow } from './target.js';
@@ -301,13 +302,53 @@ export const BALANCED_DEFAULT_RULES: readonly PolicyRule[] = [
 ];
 
 /**
+ * 规则集的**构造期**闸门（ADR-0020 决策三、四）。
+ *
+ * 两条，都是"写得出来就等于以为它生效了"那一类问题的唯一治法——在规则被**写下来的
+ * 那一刻**炸掉，而不是等到某次判定悄悄不命中。
+ *
+ * ── 一、红线不得建立在没有规范化契约的 target 上 ──
+ *
+ * docs/09 G3：`path` 与 `host` 有规范化 + 失败关闭，`opaque` 只是个自由字符串。
+ * 在 `opaque` 上写红线，看起来和写在路径上一模一样，实际是一条靠拼写巧合生效的规则。
+ * **红线是最不能靠巧合的那一类规则**——它不可覆盖，用户没有别的手段兜底。
+ *
+ * ── 二、命令类能力不得用 glob 匹配 target ──
+ *
+ * `deny process.spawn "rm -rf /*"` 是 docs/06 里真写过的那种规则，而
+ * `rm  -rf /`（两个空格）、`rm -fr /`、`/bin/rm -rf /`、`sh -c 'rm -rf /'` 全都绕得过去。
+ * 契约落地之前，这种规则一条也不许存在——存在一条，就有人以为这里防住了。
+ */
+function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
+  for (const r of rules) {
+    if (r.match?.target === undefined || r.capability === '*') continue;
+    const kind = targetKindOf(r.capability);
+
+    if (kind === 'command') {
+      throw new Error(
+        `规则 "${r.id}" 用 target 匹配命令类能力 "${r.capability}"，这不允许：` +
+          `同一条命令有无数种等价写法，glob 挡不住任何一种（docs/09 C4 / ADR-0020 决策三）。` +
+          `真正的防线是执行器沙箱。`,
+      );
+    }
+
+    if (r.immutable && kind !== 'path' && kind !== 'host') {
+      throw new Error(
+        `红线 "${r.id}" 建立在能力 "${r.capability}" 的 target 上，而这类 target 没有规范化契约` +
+          `（kind=${kind}）——它只是个自由字符串，改一下拼写就绕过去了。` +
+          `红线不可覆盖、用户没有兜底手段，因此它只能建立在有规范化契约的 target 上（ADR-0020 决策四）。`,
+      );
+    }
+  }
+  return rules;
+}
+
+/**
  * 内置规则集 = 红线 + 平衡档默认。
  * 用户级与项目级规则拼在它**后面**，从而能覆盖默认但覆盖不了红线。
  */
-export const builtinRules = (env: PolicyEnv): PolicyRuleSet => [
-  ...redLineRules(env),
-  ...BALANCED_DEFAULT_RULES,
-];
+export const builtinRules = (env: PolicyEnv): PolicyRuleSet =>
+  assertRules([...redLineRules(env), ...BALANCED_DEFAULT_RULES]);
 
 /**
  * `PlatformPort.paths()` → `PolicyEnv` 的**唯一**转换点。
@@ -322,8 +363,12 @@ export const policyEnvFromPaths = (paths: XmPaths): PolicyEnv => ({
   dataDir: paths.data,
 });
 
-/** 拼接分层规则。顺序即优先级：后面的胜。 */
-export const composeRules = (env: PolicyEnv, ...layers: readonly PolicyRuleSet[]): PolicyRuleSet => [
-  ...builtinRules(env),
-  ...layers.flat(),
-];
+/**
+ * 拼接分层规则。顺序即优先级：后面的胜。
+ *
+ * 用户级与项目级规则**同样过构造期闸门**——它们才是最可能写出"看起来在防、其实没防"
+ * 的那一批（内置规则至少经过评审）。宁可让用户的配置文件在加载时报错，
+ * 也不要让他以为自己已经挡住了 `rm -rf /`。
+ */
+export const composeRules = (env: PolicyEnv, ...layers: readonly PolicyRuleSet[]): PolicyRuleSet =>
+  assertRules([...builtinRules(env), ...layers.flat()]);
