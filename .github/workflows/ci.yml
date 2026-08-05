@@ -124,14 +124,39 @@ jobs:
       - name: 定位打包产物
         shell: bash
         run: |
+          # macOS 的 .app 目录名跟着 executableName 走（`xiaoming.app`），
+          # **不是** productName —— 只有 Contents/Frameworks 下的 Helper 仍叫「小明 Helper」。
+          # 所以这里用 `*.app` 通配，不写死名字：Helper 都在 Frameworks/ 下，不会误匹配。
           case "${{ matrix.os }}" in
             ubuntu-latest)  BIN="apps/desktop/release/linux-unpacked/xiaoming" ;;
             windows-latest) BIN="apps/desktop/release/win-unpacked/xiaoming.exe" ;;
-            macos-latest)   BIN=$(echo apps/desktop/release/mac*/小明.app/Contents/MacOS/xiaoming) ;;
+            macos-latest)   BIN=$(echo apps/desktop/release/mac*/*.app/Contents/MacOS/xiaoming) ;;
           esac
-          test -f "$BIN" || { echo "❌ 打包产物不存在：$BIN"; ls -R apps/desktop/release | head -50; exit 1; }
+          if [ ! -f "$BIN" ]; then
+            echo "❌ 打包产物不存在：$BIN"
+            # `ls -R | head` 在 `-o pipefail` 下会因 SIGPIPE 报 "ls: stdout: Undefined error: 0"，
+            # 让诊断信息本身变成第二个错误。用 find + || true 避开。
+            find apps/desktop/release -maxdepth 5 -print 2>/dev/null | head -60 || true
+            exit 1
+          fi
           echo "XM_APP_BIN=$BIN" >> "$GITHUB_ENV"
           echo "✓ 打包产物：$BIN"
+
+      # Electron 的 chrome-sandbox 必须 root:root + 4755，否则它宁可 abort 也不肯
+      # 裸奔运行（日志：The SUID sandbox helper binary was found, but is not configured correctly）。
+      #
+      # ⚠️ **刻意不用 `--no-sandbox` 绕过去。** 那是最省事的一行，也正是 ADR-0015
+      # 点名的那种"为了方便关掉隔离"——而这个 job 要验的恰恰是产物在真实隔离下能不能起来。
+      # 用 --no-sandbox 换来的绿，证明不了任何用户会遇到的场景。
+      - name: Linux · 让 Electron 的 SUID sandbox 可用
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          sudo chown root:root apps/desktop/release/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 apps/desktop/release/linux-unpacked/chrome-sandbox
+          # Ubuntu 24.04 起默认限制非特权用户命名空间，Chromium 的 sandbox 会因此起不来。
+          # 失败不致命（旧镜像上没这个 key），所以 || true。
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
       # 未签名的 arm64 产物在 Apple Silicon 上不给运行，而 electron-builder 改写过
       # 二进制、Electron 自带的签名已经失效。identity: null 是 M0-b 刻意的（无证书），
@@ -139,7 +164,8 @@ jobs:
       - name: macOS ad-hoc 签名
         if: matrix.os == 'macos-latest'
         shell: bash
-        run: codesign --force --deep --sign - apps/desktop/release/mac*/小明.app
+        run: |
+          codesign --force --deep --sign - apps/desktop/release/mac*/*.app
 
       # 一律用块标量 `run: |`。写成 `run: "$XM_APP_BIN" --smoke` 会让 YAML
       # 把开头的引号解析成引用标量，后面的 ` --smoke` 变成非法尾巴——整个

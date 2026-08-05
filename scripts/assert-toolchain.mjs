@@ -31,6 +31,22 @@ function compilerVersion() {
     cwd: root,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    /*
+     * ⚠️ Windows 上**必须** `shell: true`，否则 `spawnSync pnpm.cmd EINVAL`。
+     *
+     * Node 从 18.20.2 / 20.12.2 起（修 CVE-2024-27980）**禁止 execFile/spawn 直接执行
+     * `.cmd` / `.bat`**，必须显式过 shell。原来这里已经想到了 Windows（选了 `pnpm.cmd`），
+     * 但那个修复是在 Node 改行为之前写的，如今那条分支必然抛错。
+     *
+     * 后果比看上去严重得多：本脚本挂在 `prepare` 上，也就是
+     * **Windows 上 `pnpm install` 会直接失败**——不是 CI 的问题，是任何人在 Windows 上
+     * 都克隆不下来。三平台 CI 第一次真跑（2026-08-05）才把它照出来，
+     * 而这正是"Tier 1 支持 Windows"这句话此前从没被验证过的证据。
+     *
+     * 只在 Windows 上开：POSIX 下多套一层 shell 是没必要的攻击面。
+     * 参数是三个固定字面量，没有空格与转义风险。
+     */
+    ...(isWin ? { shell: true } : {}),
   });
   // 形如 "Version 7.0.2"
   const m = /(\d+)\.(\d+)\.\d+/.exec(out);
