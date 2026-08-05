@@ -78,6 +78,8 @@
 
 `node:sqlite` 在 Electron 内置的 Node 22 上仍是实验状态，且 sqlite-vec 所需的扩展加载能力要实测。better-sqlite3 的代价是原生模块——每次 Electron 升级要 `electron-rebuild`、三平台预编译产物要进 CI——但那是**一次性且可自动化**的痛苦，而实验 API 的行为漂移是持续的。
 
+> ⚠️ **上面这段关于 `electron-rebuild` 的代价估计不准确**，2026-08-05 实测修正见 [ADR-0016](./0016-原生模块与打包.md)：better-sqlite3 13 随包发的 `prebuilds/*.node` 是 **N-API**，Node 与 Electron 共用同一份，Electron 升级不需要重编。选型结论不变，只是它比这里估计的更便宜。
+
 同步 API 在这里反而是优点：单写者模型下，`append` 不需要把 async 传染进调用链。
 
 > 重新评估条件：`node:sqlite` 在我们所用的 Electron/Node 版本上转正，**且**扩展加载可用。
@@ -133,7 +135,7 @@ ADR-0008 的分层此前只有事后的包含性测试在拦，现在写入侧�
 **正面**
 
 - 存储选型第一次有了可追溯的理由，包括否决 PG 的理由
-- M0-b 的 SQLite 适配器开工即有 11 条现成的验收用例，不必边写边猜契约
+- M0-b 的 SQLite 适配器开工即有 11 条现成的验收用例，不必边写边猜契约（落地时补到 12 条：`openForWrite` 的失败必须是拒绝的 Promise 而非同步抛出——better-sqlite3 全同步，这一条差点漏过去，见 ADR-0016 背景）
 - M0-a 复审的两项遗留债务中的一项（`redact()` 无执行点）关闭；并在关闭过程中抓出一个会永久污染成本数据的缺陷。另一项（`SessionState.messages` 无界增长）仍在，属 M2 上下文压缩的范围
 - 内核新增 4 个模块、体积仍是契约包 6.75 kB（预算 15 kB），依赖图 61 模块 126 边，零违规
 
@@ -152,5 +154,5 @@ ADR-0008 的分层此前只有事后的包含性测试在拦，现在写入侧�
 ## 遗留
 
 - **`ext.*` 事件的持久化层级未定。** 插件事件不在 `EVENT_SPECS` 里，因此也不在 `PersistedEvent` 里，当前端口写不进它们。但插件状态若要能回放就必须落库。留给 M3 与 docs/05 一并决定（涉及插件卸载后历史会话还能不能 reduce）。
-- **`BlobStore` 端口未定义**，M0-b 补。本 ADR 只定下"blob 先于引用它的事件落盘"这条顺序约束。
+- ~~**`BlobStore` 端口未定义**，M0-b 补。~~ ✅ 已于 2026-08-05 落地：端口在 `kernel/src/port/blob-store.ts`，10 条一致性用例，实现是 `FileBlobStore`（内容寻址 + 写临时文件→fsync→rename）。"blob 先于引用它的事件落盘"的执行点就是 `put()` 返回即已持久化。引用计数与 GC 仍未做，随 M2 的 checkpoint 一起。
 - **审计库是否复用同一个端口**待验证。它同样是只增不改的本地 SQLite，但记录的不是 `XmEvent`。

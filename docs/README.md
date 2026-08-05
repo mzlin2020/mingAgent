@@ -30,19 +30,34 @@
 | [10-契约设计](./10-契约设计.md) | `@xm/contracts` 的实现级规格：事件 / 工具 / 权限 / 模型 / 配置 schema | **写 M0 第一行代码时** |
 | [adr/](./adr/) | 架构决策记录（一决策一文件，只增不改） | 决策落定后立刻写 |
 
-## 代码现状（2026-08-04）
+## 代码现状（2026-08-05）
 
-M0-a 已落地：`packages/contracts`（唯一契约来源，零依赖 6.75KB）与 `packages/kernel`（纯逻辑，零 I/O）。
-183 个测试、6 项故意违规演练全绿。地基复审修掉了安全边界的四处失效，见 [ADR-0012](./adr/0012-地基复审与安全边界修正.md)；
-存储引擎选型与 `EventStore` 端口见 [ADR-0013](./adr/0013-存储引擎选型与EventStore端口.md)。
-剩余 M0-b（Electron 空壳 / SQLite 适配器 / headless 冒烟）见 [08 路线图](./08-路线图与里程碑.md)。
+**M0 已完成**（M0-a 契约与内核、M0-b 外壳与持久化），欠一项：应用没在真机上启动过，
+本轮开发环境缺 GUI 系统库且无安装权限，该格由 CI 的 `desktop` job 补，前提是有远端仓库。
+
+| 包 | 状态 |
+|---|---|
+| [`packages/contracts`](../packages/contracts/README.md) | 唯一契约来源，零依赖 6.75 kB |
+| [`packages/kernel`](../packages/kernel/README.md) | 纯逻辑、零 I/O；全部端口在此定义 |
+| [`packages/platform`](../packages/platform/README.md) | `PlatformPort` 的 Node 实现（[ADR-0014](./adr/0014-数据目录与平台路径.md)） |
+| [`packages/storage`](../packages/storage/README.md) | SQLite 事件存储 + 文件 blob（[ADR-0013](./adr/0013-存储引擎选型与EventStore端口.md)） |
+| [`packages/runtime`](../packages/runtime/README.md) | 装配层 + headless 冒烟 |
+| [`apps/desktop`](../apps/desktop/README.md) | Electron 三段（[ADR-0015](./adr/0015-进程与IPC边界.md)、[ADR-0016](./adr/0016-原生模块与打包.md)） |
+
+287 个测试、依赖图 125 模块 371 条边零违规、契约包 6.75 kB（预算 15 kB）。
 
 ```bash
 pnpm install     # 自动断言双编译器工具链装配正确
-pnpm verify      # toolchain + typecheck + lint + test + depcruise + size
+pnpm verify      # toolchain + typecheck + lint + test + headless 冒烟 + depcruise + size
+pnpm smoke       # 只跑 headless 冒烟（跑的是 dist/，不是源码）
+pnpm --filter @xm/desktop dev    # Electron + Vite
 ```
 
-各包的"负责什么 / 不负责什么"见包内 README：[`packages/contracts`](../packages/contracts/README.md)、[`packages/kernel`](../packages/kernel/README.md)。
+> **本轮反复出现的一件事**：M0-b 里发现了**三条从写下起就没生效过的护栏**——
+> depcruise 因 electron 未安装而看不见 `import 'electron'`、因 `dist/` 被 exclude 而看不见
+> 全部跨包 `@xm/*` 边（135 条）、以及 docs/06 §7 写了一个里程碑却根本不存在的审计红线。
+> 加上 M0-a 的 `includeOnly`，这是同一类失效的第四、五、六次。
+> **「规则存在 ≠ 规则生效」不是一句口号，是这个项目每次动护栏都要做反向演练的原因。**
 
 ## 文档约定
 
