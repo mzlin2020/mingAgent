@@ -48,6 +48,15 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: 'storage-不得依赖-electron',
+      comment:
+        '存储适配器要能在 headless 与 CLI 下使用（ADR-0013 / ADR-0016）。原生模块的 ABI 差异' +
+        '由构建期的 electron-rebuild 处理，不是靠在代码里 import electron 解决。',
+      severity: 'error',
+      from: { path: '^packages/storage/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
       name: 'runtime-不得依赖-electron',
       comment:
         'CLI 形态延后到 M3，但架构约束从 M0 起生效（ADR-0007 / docs/09 A2）。runtime 泄漏 electron 依赖，CLI 就永远起不来。',

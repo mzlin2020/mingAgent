@@ -6,6 +6,10 @@ packages:
 # 安装脚本是供应链攻击的主要入口，esbuild 是 size-limit 的下载型二进制，必须放行。
 allowBuilds:
   esbuild: true
+  # better-sqlite3 是原生模块，安装脚本负责取预编译产物或就地编译（ADR-0016）。
+  # 白名单越短越好这条没变——放行它是因为存储引擎选了 SQLite（ADR-0013），
+  # 而 node:sqlite 在我们所用的 Electron/Node 版本上还是实验状态。
+  better-sqlite3: true
 
 minimumReleaseAgeExclude:
   - '@typescript-eslint/eslint-plugin@8.66.0'

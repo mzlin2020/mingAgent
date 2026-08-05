@@ -16,7 +16,8 @@
     "paths": {
       "@xm/contracts": ["./packages/contracts/src/index.ts"],
       "@xm/kernel": ["./packages/kernel/src/index.ts"],
-      "@xm/platform": ["./packages/platform/src/index.ts"]
+      "@xm/platform": ["./packages/platform/src/index.ts"],
+      "@xm/storage": ["./packages/storage/src/index.ts"]
     }
   },
   "include": ["packages/*/tests/**/*.ts", "packages/*/src/**/*.ts", "vitest.config.ts"]

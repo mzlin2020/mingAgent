@@ -16,7 +16,7 @@
 | `port/event-store.ts` | 事件存储端口：接口 + 七条不变量 + `SealedEvent`（ADR-0013） |
 | `port/summary-projection.ts` | 会话摘要投影的唯一推进规则 |
 | `port/memory-event-store.ts` | 端口的参考实现，供冒烟/回放/单测使用 |
-| `port/event-store-contract.ts` | 端口一致性用例，任何实现都要全过 |
+| `port/event-store-contract.ts` | 端口一致性用例（12 条），任何实现都要全过 |
 | `port/blob-store.ts` | Blob 端口 + `collectBlobRefs()`（坏引用检测的基础） |
 | `port/memory-blob-store.ts` `port/blob-store-contract.ts` | 同上的参考实现与一致性用例 |
 | `port/platform.ts` | 平台端口 + `XmPaths` + `xmDataLayout()`（ADR-0014） |

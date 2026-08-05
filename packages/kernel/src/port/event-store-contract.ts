@@ -204,6 +204,38 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
   },
 
   {
+    /*
+     * 这条是 M0-b 写 SQLite 适配器时补的，起因是一次真实的失误：
+     * better-sqlite3 全是同步 API，租约检查因此同步抛出，`openForWrite()` 表面上返回
+     * `Promise` 却根本没进入 Promise 轨道——调用方的 `.catch()` 一次也不会跑到，
+     * 而 `try { await ... }` 又照样能接住，所以上面那条"第二个写者"用例是绿的。
+     *
+     * 「能接住」和「以拒绝表达」是两件事，中间隔着所有用 `.catch` 的调用点。
+     */
+    name: 'openForWrite 的失败是拒绝的 Promise，不是同步抛出',
+    async run(makeStore) {
+      const store = makeStore();
+      const s = newSessionId();
+      await store.openForWrite(s);
+
+      let sync: unknown;
+      let rejected = false;
+      try {
+        await store.openForWrite(s).catch(() => {
+          rejected = true;
+        });
+      } catch (e) {
+        sync = e;
+      }
+      assert(
+        sync === undefined,
+        `第二次 openForWrite 同步抛出了（${String(sync)}），调用方的 .catch 接不到`,
+      );
+      assert(rejected, '第二次 openForWrite 应以拒绝的 Promise 表达失败');
+    },
+  },
+
+  {
     name: '摘要投影：标题、时间与 lastSeq 随事件推进',
     async run(makeStore) {
       const store = makeStore();

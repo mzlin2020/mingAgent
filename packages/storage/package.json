@@ -1,0 +1,25 @@
+{
+  "name": "@xm/storage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "SQLite 事件存储与文件 blob 存储：EventStore / BlobStore 端口的落地实现。不依赖 electron",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "@xm/kernel": "workspace:*",
+    "better-sqlite3": "13.0.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13"
+  }
+}
