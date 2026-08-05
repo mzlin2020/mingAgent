@@ -17,6 +17,10 @@
 | `port/summary-projection.ts` | 会话摘要投影的唯一推进规则 |
 | `port/memory-event-store.ts` | 端口的参考实现，供冒烟/回放/单测使用 |
 | `port/event-store-contract.ts` | 端口一致性用例，任何实现都要全过 |
+| `port/blob-store.ts` | Blob 端口 + `collectBlobRefs()`（坏引用检测的基础） |
+| `port/memory-blob-store.ts` `port/blob-store-contract.ts` | 同上的参考实现与一致性用例 |
+| `port/platform.ts` | 平台端口 + `XmPaths` + `xmDataLayout()`（ADR-0014） |
+| `port/model-provider.ts` | 模型提供商端口（docs/04 §4.1 的实现级版本） |
 
 ## 不负责什么
 
@@ -44,9 +48,17 @@
 `red.self-modify-*` 一组禁止小明修改策略目录、权限契约、密钥契约、脱敏出口、`scripts/`、
 depcruise/eslint 配置、githooks 与 CI workflow——红线能被自己改掉，就等于没有红线。
 
-⚠️ **红线是参数化的**：`builtinRules({ home, appRoot })`，两个参数必填。
+⚠️ **红线是参数化的**：`builtinRules({ home, appRoot, dataDir })`，三个参数全部必填。
 内核零 I/O 拿不到 `homedir()`，就不该假装知道。这不是形式主义——上一版把家目录写成字面量 `~`，
 而运行时传的永远是展开后的 `/home/ming`，那条红线**从写下的那一刻起就没有生效过**（ADR-0012 ①）。
+
+`dataDir` 是 M0-b 补的，补的原因是同一件事又发生了一次：docs/06 §7 写了整整一个里程碑的
+"禁止写入审计库路径"，而代码里**一条对应规则都没有**——`PolicyEnv` 拿不到数据目录，写不出来
+（ADR-0014）。别手写这三个值，走唯一的通路：
+
+```ts
+const rules = builtinRules(policyEnvFromPaths(platform.paths()));
+```
 
 配套的是 `policy/target.ts`：路径类能力先规范化再匹配，**规范化失败直接 deny**
 （判不了就拒绝——ask 的下一步是用户点"允许"）。符号链接解析归运行时的能力网关，那一层才有文件系统。

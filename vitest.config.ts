@@ -19,6 +19,7 @@ export default defineConfig({
       // 让测试直接吃源码，省掉"改一行要先 build"的循环
       '@xm/contracts': fileURLToPath(new URL('./packages/contracts/src/index.ts', import.meta.url)),
       '@xm/kernel': fileURLToPath(new URL('./packages/kernel/src/index.ts', import.meta.url)),
+      '@xm/platform': fileURLToPath(new URL('./packages/platform/src/index.ts', import.meta.url)),
     },
   },
 });

@@ -14,10 +14,17 @@ export * from './policy/engine.js';
 export * from './policy/defaults.js';
 export * from './policy/target.js';
 
+export * from './port/platform.js';
+export * from './port/model-provider.js';
+
 export * from './port/event-store.js';
 export * from './port/summary-projection.js';
 export * from './port/memory-event-store.js';
 export * from './port/event-store-contract.js';
+
+export * from './port/blob-store.js';
+export * from './port/memory-blob-store.js';
+export * from './port/blob-store-contract.js';
 
 export * from './tool/types.js';
 export * from './tool/registry.js';

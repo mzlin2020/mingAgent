@@ -19,7 +19,13 @@ import type { PolicyEnv } from '@xm/kernel';
  * 来写，而不是按"规则里写了什么"来写。
  */
 
-const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo' };
+const ENV: PolicyEnv = {
+  home: '/home/ming',
+  appRoot: '/repo',
+  // 真实形态：env-paths 在 Linux 上给出的数据目录（ADR-0014）。刻意不写成 `~/.xiaoming`
+  // ——运行时传进来的永远是展开后的绝对路径，拿 `~` 去测就是在测一个不存在的输入
+  dataDir: '/home/ming/.local/share/xiaoming',
+};
 const RULES = builtinRules(ENV);
 
 const req = (capability: Capability, target: string): PermissionRequest => ({
@@ -132,7 +138,11 @@ describe('glob 在安全边界上的语义', () => {
   it('🔴 Windows 上大小写不敏感，否则改个大小写就绕过红线', () => {
     expect(verdict('self.modify', 'C:/REPO/scripts/x.mjs').effect).toBe('ask');
 
-    const winEnv: PolicyEnv = { home: 'C:/Users/ming', appRoot: 'C:/repo' };
+    const winEnv: PolicyEnv = {
+      home: 'C:/Users/ming',
+      appRoot: 'C:/repo',
+      dataDir: 'C:/Users/ming/AppData/Roaming/xiaoming',
+    };
     const v = evaluate({
       request: req('self.modify', 'C:/REPO/SCRIPTS/check-secrets.mjs'),
       rules: builtinRules(winEnv),

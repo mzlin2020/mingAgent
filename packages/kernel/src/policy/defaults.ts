@@ -1,4 +1,6 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
+import type { XmPaths } from '../port/platform.js';
+import { xmDataLayout } from '../port/platform.js';
 import { normalizedOrThrow } from './target.js';
 
 /**
@@ -17,6 +19,18 @@ export interface PolicyEnv {
   readonly home: string;
   /** 小明自身仓库/安装目录的绝对路径。L4 自我修改的红线全部相对它计算 */
   readonly appRoot: string;
+  /**
+   * 数据目录（事件库 / 审计库 / blob 都在这下面）。
+   *
+   * 同样必填，理由与上面两个一样，而且更具体：docs/06 §7 从一开始就写着
+   * "小明自身的策略规则禁止写入审计库路径"，但直到 M0-b 开工前，代码里**一条对应规则
+   * 都没有**——因为 `PolicyEnv` 拿不到这个目录，写不出那条规则。文档里的一句承诺，
+   * 就这样安静地当了一个里程碑的摆设（ADR-0014）。
+   *
+   * 必须与 `home`/`appRoot` 出自同一次平台解析（`PlatformPort.paths()`），
+   * 否则又是 ADR-0012 ①：规则里的路径和请求里的路径来自两个坐标系。
+   */
+  readonly dataDir: string;
 }
 
 /**
@@ -96,6 +110,53 @@ export const redLineRules = (env: PolicyEnv): readonly PolicyRule[] => {
    * 红线要护的从来不是某个文件，是**"改了它就没人拦得住后续改动"的那一组文件**。
    */
   ...selfModifyRedLines(appRoot),
+  ...auditLogRedLines(env.dataDir),
+  ];
+};
+
+/**
+ * ── 审计日志的红线 ──
+ *
+ * docs/06 §7：审计库只增不改，"小明自身的策略规则禁止写入该路径"。
+ * 这条承诺此前**没有任何代码实现**——`PolicyEnv` 里根本没有数据目录，写不出来。
+ * 于是它和 ADR-0012 ⑧ 记下的那三个"文档里存在、代码里不存在"的扩展点是同一类东西。
+ *
+ * 为什么它值得当红线：审计日志是事后追责与小明自我审查的**唯一**依据。
+ * 一个能改自己审计记录的 Agent，等于没有审计记录——而且是那种看起来还在的没有。
+ *
+ * 两个容易写错、写错就等于没写的细节：
+ *
+ *   · **必须盖住 `-wal` / `-shm`**。SQLite 的 WAL 模式下，尚未 checkpoint 的记录全在
+ *     `audit.db-wal` 里。只护主文件，删掉 wal 就能抹掉最近一段审计——而主文件纹丝不动，
+ *     看起来一切正常。这里用 `audit.db*`（极简 glob 的 `*` 不跨 `/`，正好只盖住边车文件）。
+ *   · **只管工具发起的操作**。小明自己往审计库追加记录走的是存储适配器，不经过
+ *     PolicyEngine；这里拦的是"模型让一个工具去动审计文件"，那才是攻击路径。
+ *
+ * `events.db` **刻意不设红线**。按本文件开头写下的挑选标准——红线只留"做了就回不来
+ * 且没有任何正当理由"的操作——清空自己的会话数据是有正当用途的，它属于 `def.fs-delete`
+ * 的 ask 加还原点。红线一多，用户就会去找绕过的办法，那才是真的全面失效。
+ */
+const auditLogRedLines = (dataDir: string): PolicyRule[] => {
+  const { auditDb } = xmDataLayout(dataDir);
+  const target = `${auditDb}*`;
+
+  return [
+    {
+      id: 'red.audit-log-write',
+      effect: 'deny',
+      capability: 'fs.write',
+      match: { target },
+      reason: '写入审计日志。审计只增不改，可写的审计等于没有审计（docs/06 §7）。',
+      immutable: true,
+    },
+    {
+      id: 'red.audit-log-delete',
+      effect: 'deny',
+      capability: 'fs.delete',
+      match: { target },
+      reason: '删除审计日志。它是事后追责与自我审查的唯一依据（docs/06 §7）。',
+      immutable: true,
+    },
   ];
 };
 
@@ -218,6 +279,19 @@ export const builtinRules = (env: PolicyEnv): PolicyRuleSet => [
   ...redLineRules(env),
   ...BALANCED_DEFAULT_RULES,
 ];
+
+/**
+ * `PlatformPort.paths()` → `PolicyEnv` 的**唯一**转换点。
+ *
+ * 存在的全部意义是消灭"两个坐标系"这个失效模式：调用方拿到一份 `XmPaths` 之后
+ * 只能整份交过来，不能这里传解析出来的 data、那里手写一个 home。
+ * ADR-0012 ① 就是手写那一半造成的。
+ */
+export const policyEnvFromPaths = (paths: XmPaths): PolicyEnv => ({
+  home: paths.home,
+  appRoot: paths.appRoot,
+  dataDir: paths.data,
+});
 
 /** 拼接分层规则。顺序即优先级：后面的胜。 */
 export const composeRules = (env: PolicyEnv, ...layers: readonly PolicyRuleSet[]): PolicyRuleSet => [

@@ -3,6 +3,7 @@
   "files": [],
   "references": [
     { "path": "./packages/contracts" },
-    { "path": "./packages/kernel" }
+    { "path": "./packages/kernel" },
+    { "path": "./packages/platform" }
   ]
 }

@@ -50,8 +50,9 @@ export default tseslint.config(
           object: 'process',
           property: 'platform',
           message:
-            '禁止在业务代码里判断平台。平台差异收敛到 PlatformPort 之后（ADR-0007）；' +
-            '平台适配器本身请用 eslint-disable 并写明理由。',
+            '禁止在业务代码里判断平台。平台差异收敛到 PlatformPort 之后（ADR-0007）——' +
+            '用 @xm/platform 的 nodePlatform()。唯一的例外是 packages/platform/src/detect.ts，' +
+            '它在本文件下方按路径放行；不要用行内 eslint-disable 开新口子（ADR-0014）。',
         },
         {
           object: 'process',
@@ -65,13 +66,28 @@ export default tseslint.config(
           patterns: [
             {
               group: ['node:os'],
-              message: '平台/主机信息走 PlatformPort，不要直接读 node:os（ADR-0007）。',
+              message:
+                '平台/主机信息走 PlatformPort，不要直接读 node:os（ADR-0007）。' +
+                '唯一的例外是 packages/platform/src/detect.ts，已在本文件下方按路径放行。',
             },
           ],
         },
       ],
       // 内核与契约不做输出，日志走事件流（docs/10 §4.3 的 notice 事件）
       'no-console': 'error',
+    },
+  },
+
+  // ── 平台探测：全仓库唯一允许读 process.platform / node:os 的文件 ──────
+  //
+  // 按**路径**开口子，而不是让适配器自己写行内 eslint-disable。区别是扩散性：
+  // 行内注释会跟着复制粘贴一路传染，路径白名单传染不了——多放行一个文件就要多改一次
+  // 本文件，那次改动在 review 里看得见，而且它本身是被 red.self-modify 红线护住的。
+  {
+    files: ['packages/platform/src/detect.ts'],
+    rules: {
+      'no-restricted-properties': 'off',
+      'no-restricted-imports': 'off',
     },
   },
 

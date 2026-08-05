@@ -1,0 +1,22 @@
+{
+  "name": "@xm/platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "PlatformPort 的 Node 实现：操作系统识别、目录解析、能力探测。不依赖 electron",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "@xm/kernel": "workspace:*",
+    "env-paths": "^3.0.0"
+  }
+}

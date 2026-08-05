@@ -13,10 +13,15 @@ import {
 import type { PolicyEnv } from '@xm/kernel';
 
 /**
- * 红线依赖两个环境事实（家目录、安装目录），所以测试也必须给出它们。
- * 这正是把 PolicyEnv 做成必填参数的用意：忘了传，编译就不过。
+ * 红线依赖三个环境事实（家目录、安装目录、数据目录），所以测试也必须给出它们。
+ * 这正是把 PolicyEnv 做成必填参数的用意：忘了传，编译就不过——
+ * `dataDir` 加进来的那一次，三处调用点当场全红，这就是想要的效果。
  */
-const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo' };
+const ENV: PolicyEnv = {
+  home: '/home/ming',
+  appRoot: '/repo',
+  dataDir: '/home/ming/.local/share/xiaoming',
+};
 const BUILTIN_RULES = builtinRules(ENV);
 const RED_LINE_RULES = redLineRules(ENV);
 

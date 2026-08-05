@@ -39,6 +39,15 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: 'platform-不得依赖-electron',
+      comment:
+        'PlatformPort 的 Node 实现要能被 CLI 与 headless 冒烟使用（ADR-0007 / ADR-0014）。' +
+        '外壳特有的能力（safeStorage / 托盘 / 通知）由 apps/desktop 用 withCapabilities 往上抬。',
+      severity: 'error',
+      from: { path: '^packages/platform/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
       name: 'runtime-不得依赖-electron',
       comment:
         'CLI 形态延后到 M3，但架构约束从 M0 起生效（ADR-0007 / docs/09 A2）。runtime 泄漏 electron 依赖，CLI 就永远起不来。',
