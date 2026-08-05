@@ -27,7 +27,7 @@ import {
 
 const ROOT = mkdtempSync(join(tmpdir(), 'xm-smoke-'));
 afterAll(() => {
-  rmSync(ROOT, { recursive: true, force: true });
+  rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 const APP_ROOT = '/opt/xiaoming';

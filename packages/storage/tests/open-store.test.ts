@@ -9,7 +9,7 @@ import { openStores } from '@xm/storage';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'xm-open-'));
 afterAll(() => {
-  rmSync(ROOT, { recursive: true, force: true });
+  rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 /**

@@ -35,6 +35,12 @@ export type TargetNormalization =
 /** `C:\x`、`c:/x` 这类 Windows 绝对路径 */
 const WINDOWS_ABSOLUTE = /^([a-zA-Z]):[\\/]/;
 
+/**
+ * Windows 8.3 短文件名的一段，如 `PROGRA~1`、`RUNNER~1`、`MYDOCU~1.TXT`。
+ * 形态是「至多 6 个字符 + `~` + 序号」，可带至多 3 字符的扩展名。
+ */
+const SHORT_NAME_8_3 = /^[^/]{1,6}~\d{1,3}(\.[^/.]{1,3})?$/;
+
 export function normalizePathTarget(raw: string): TargetNormalization {
   if (raw === '') {
     return { ok: false, reason: '目标路径为空' };
@@ -43,10 +49,24 @@ export function normalizePathTarget(raw: string): TargetNormalization {
     // 空字节截断是绕过路径检查的经典手法：检查看到的是全串，系统调用看到的是前半截
     return { ok: false, reason: '目标路径含空字节' };
   }
-  if (raw.includes('~')) {
+  /*
+   * 未展开的家目录。
+   *
+   * ⚠️ 只看**开头**的 `~`，不是"含有 `~`"。
+   *
+   * 原来写的是 `raw.includes('~')`，本意没错（`~/Documents` 这种没展开的路径判不了），
+   * 但它把两件完全不同的事混成了一条规则，代价是 **Windows 上整个应用起不来**：
+   * `~` 在 Windows 8.3 短文件名里是合法字符——`RUNNER~1`、`PROGRA~1`、`DOCUME~1`——
+   * 于是 `C:\Users\RUNNER~1\AppData\...` 被当成"没展开的家目录"拒掉，
+   * 而这正是 `os.tmpdir()` 在 Windows 上返回的形态（三平台 CI 首次实跑才照出来）。
+   *
+   * shell 的家目录展开语法永远是行首：`~`、`~/x`、`~user/x`。段中间的 `~` 与它无关
+   * （POSIX 上还有 emacs/vim 的备份文件 `foo.txt~`，同样是合法路径）。
+   */
+  if (/^~([/\\]|$)/.test(raw) || /^~[^/\\]+[/\\]/.test(raw)) {
     return {
       ok: false,
-      reason: `目标路径含 "~"，说明调用方没有展开家目录。内核不做展开（零 I/O），无法判定。`,
+      reason: `目标路径以 "~" 开头，说明调用方没有展开家目录。内核不做展开（零 I/O），无法判定。`,
     };
   }
 
@@ -60,6 +80,31 @@ export function normalizePathTarget(raw: string): TargetNormalization {
     // 由 EvaluateInput.pathCaseInsensitive 交给知道平台的运行时打开。
     prefix = `${(win[1] ?? '').toUpperCase()}:`;
     rest = slashed.slice(win[0].length - 1);
+
+    /*
+     * Windows 8.3 短文件名 —— **必须拒绝，理由是安全而不是洁癖。**
+     *
+     * `C:/PROGRA~1/Foo` 与 `C:/Program Files/Foo` 是**同一个文件的两种写法**。
+     * 红线是字面量 glob：规则按长名写、请求按短名来，就匹配不上——
+     * 这和"同一个文件写成相对路径就能绕过红线"是同一类绕过，只是换了个 Windows 特有的马甲。
+     *
+     * 内核解析不了它（短名↔长名要问文件系统，而内核零 I/O），所以**失败关闭**：
+     * 由有文件系统的那一层（`@xm/platform` 的 `resolvePaths`，以及将来的能力网关）
+     * 先 realpath 成长名再送进来。这与符号链接的分工完全一致，见本文件顶部说明。
+     *
+     * 只在**确认是 Windows 路径**（有盘符）时才查，POSIX 路径不受影响：
+     * `/home/u/v1~2` 在 POSIX 上就是个普通文件名，没有别名语义。
+     */
+    const short = rest.split('/').find((seg) => SHORT_NAME_8_3.test(seg));
+    if (short !== undefined) {
+      return {
+        ok: false,
+        reason:
+          `目标路径含 Windows 8.3 短文件名段 "${short}"。它是长文件名的**别名**，` +
+          `按短名写的路径匹配不上按长名写的红线。内核无法解析（需要文件系统），` +
+          `请调用方先 realpath 成长名再送进来。`,
+      };
+    }
   } else if (slashed.startsWith('/')) {
     rest = slashed;
   } else {

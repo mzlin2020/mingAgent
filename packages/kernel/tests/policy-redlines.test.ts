@@ -259,3 +259,79 @@ describe('自改红线：按目标而不是按自报能力', () => {
     expect(verdict('fs.write', '/repo/README.md').effect).toBe('ask');
   });
 });
+
+/**
+ * ── `~` 的两种含义，以及 Windows 8.3 短名这条绕过路径 ──
+ *
+ * 三平台 CI 首次实跑（2026-08-05）在 Windows 上抓到的：`os.tmpdir()` 返回
+ * `C:\Users\RUNNER~1\AppData\Local\Temp\...`，而 `normalizePathTarget` 当时
+ * 拒绝**一切**含 `~` 的路径，理由写的是"调用方没有展开家目录"。
+ *
+ * 那条规则把两件不相干的事混成了一条：
+ *   · shell 的家目录展开 —— 语法上永远是**行首**的 `~`
+ *   · Windows 8.3 短文件名 —— `~` 出现在**段中间**，是长名的合法别名
+ *
+ * 混在一起的代价是双向的：Windows 上应用直接起不来（误杀），
+ * 而真正该防的别名问题从来没被单独说清过。
+ */
+describe('`~` 的两种含义', () => {
+  it('行首的 `~` 是没展开的家目录，拒绝', () => {
+    for (const raw of ['~', '~/Documents', '~/.ssh/id_rsa', '~ming/work', '~\\Documents']) {
+      const r = normalizePathTarget(raw);
+      expect(r.ok, raw).toBe(false);
+      expect(!r.ok && r.reason, raw).toMatch(/家目录/);
+    }
+  });
+
+  it('段中间的 `~` 是合法文件名，不该被误杀', () => {
+    // POSIX 上 emacs / vim 的备份文件就长这样，是再普通不过的路径
+    for (const raw of ['/home/u/notes.txt~', '/home/u/a~b/c', '/tmp/foo~']) {
+      const r = normalizePathTarget(raw);
+      expect(r.ok, raw).toBe(true);
+    }
+  });
+});
+
+describe('Windows 8.3 短文件名：一条真实的红线绕过路径', () => {
+  it('短名段被拒绝 —— 内核解析不了别名，只能失败关闭', () => {
+    for (const raw of [
+      'C:/PROGRA~1/xiaoming/app.exe',
+      'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\x',
+      'C:/Users/MYDOCU~1.TXT',
+    ]) {
+      const r = normalizePathTarget(raw);
+      expect(r.ok, raw).toBe(false);
+      expect(!r.ok && r.reason, raw).toMatch(/8\.3|短文件名/);
+    }
+  });
+
+  it('🔴 拒绝的理由：短名与长名指向同一个文件，红线却只按长名匹配', () => {
+    // 假设红线护着 C:/Program Files/xiaoming 下的自改文件。
+    // 若短名被放行，它会绕过所有按长名写的规则 —— 而这正是 target 规范化存在的意义。
+    const long = 'C:/Program Files/xiaoming/scripts/check-secrets.mjs';
+    const short = 'C:/PROGRA~1/xiaoming/scripts/check-secrets.mjs';
+
+    const rules = builtinRules({ ...ENV, appRoot: 'C:/Program Files/xiaoming' });
+    const ask = (target: string) =>
+      evaluate({
+        request: req('fs.write', target),
+        rules,
+        tier: 'yolo',
+        pathCaseInsensitive: true,
+      });
+
+    expect(ask(long).effect, '长名必须命中红线').toBe('deny');
+    expect(ask(long).ruleId).toMatch(/^red\.self-modify-/);
+
+    // 短名同样是 deny，但走的是"判不了"这条路 —— 关键是**它不能是 allow/ask**
+    const s = ask(short);
+    expect(s.effect, '短名必须失败关闭').toBe('deny');
+    expect(s.ruleId).toBe('builtin.invalid-target');
+  });
+
+  it('普通 Windows 路径不受影响', () => {
+    for (const raw of ['C:/Users/runneradmin/x', 'D:\\work\\repo\\src\\a.ts']) {
+      expect(normalizePathTarget(raw).ok, raw).toBe(true);
+    }
+  });
+});

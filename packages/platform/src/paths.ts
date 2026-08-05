@@ -1,3 +1,5 @@
+import { realpathSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import envPaths from 'env-paths';
 import type { XmPaths } from '@xm/kernel';
 import { normalizedOrThrow } from '@xm/kernel';
@@ -30,9 +32,49 @@ export interface ResolvePathsOptions {
   readonly dataDir?: string;
 }
 
+/** 看起来像 Windows 绝对路径（有盘符）且含 8.3 短名段 */
+const WINDOWS_SHORT = /^[a-zA-Z]:[\\/].*[^\\/]{1,6}~\d{1,3}(\.[^\\/.]{1,3})?([\\/]|$)/;
+
+/**
+ * 把 Windows 的 8.3 短文件名解析成长名。
+ *
+ * **这一步必须在平台层做，不能在内核做**：短名↔长名的对应关系只有文件系统知道，
+ * 而内核是零 I/O 的（它只能失败关闭地拒绝，见 kernel/policy/target.ts）。
+ * 分工与符号链接完全一致——需要问磁盘的事，交给有磁盘的这一层。
+ *
+ * 为什么非做不可：`os.tmpdir()` 与 `%ProgramFiles%` 在 Windows 上都可能返回短名形态
+ * （`C:\Users\RUNNER~1\...`、`C:\PROGRA~1\...`）。不解析，应用在 Windows 上直接起不到；
+ * 解析错了，红线按长名写、请求按短名来，就是一条静默的绕过路径。
+ *
+ * `realpathSync.native` 走 OS API，是唯一能还原短名的方式（纯 JS 的 realpath 不行）。
+ *
+ * ⚠️ **只对 Windows 短名生效。** POSIX 路径原样返回，一个字节都不动——
+ * realpath 会顺带解析符号链接，而那会把 macOS 的 `/var/...` 变成 `/private/var/...`，
+ * 属于与本次修复无关的行为改变。要动它得单独决策。
+ */
+function resolveWindowsShortName(p: string): string {
+  if (!WINDOWS_SHORT.test(p)) return p;
+
+  // 路径可能还不存在（数据目录是用后才建的），所以从最深的**已存在**祖先开始解析，
+  // 再把剩下的段拼回去。整条都不存在时原样返回，交给内核那一侧失败关闭。
+  const tail: string[] = [];
+  let head = p;
+  for (;;) {
+    try {
+      return join(realpathSync.native(head), ...tail);
+    } catch {
+      const parent = dirname(head);
+      if (parent === head) return p;
+      tail.unshift(basename(head));
+      head = parent;
+    }
+  }
+}
+
 export function resolvePaths(options: ResolvePathsOptions): XmPaths {
   const name = options.appName ?? 'xiaoming';
   const base = envPaths(name, { suffix: '' });
+  const norm = (p: string): string => normalizedOrThrow(resolveWindowsShortName(p));
 
   /*
    * 全部过一遍 normalizedOrThrow，得到的是**与红线规则同一个坐标系**的路径：
@@ -43,11 +85,11 @@ export function resolvePaths(options: ResolvePathsOptions): XmPaths {
    * 现在两边都从这里出发，形状上就没有分叉的机会。
    */
   return {
-    home: normalizedOrThrow(options.home ?? homeDir()),
-    appRoot: normalizedOrThrow(options.appRoot),
-    data: normalizedOrThrow(options.dataDir ?? base.data),
-    config: normalizedOrThrow(base.config),
-    cache: normalizedOrThrow(base.cache),
-    logs: normalizedOrThrow(base.log),
+    home: norm(options.home ?? homeDir()),
+    appRoot: norm(options.appRoot),
+    data: norm(options.dataDir ?? base.data),
+    config: norm(base.config),
+    cache: norm(base.cache),
+    logs: norm(base.log),
   };
 }

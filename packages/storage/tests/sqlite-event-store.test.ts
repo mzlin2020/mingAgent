@@ -16,7 +16,17 @@ import { SqliteEventStore } from '@xm/storage';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'xm-store-'));
 afterAll(() => {
-  rmSync(ROOT, { recursive: true, force: true });
+  /*
+   * `maxRetries` 在 Windows 上是必须的，不是保险。
+   *
+   * POSIX 允许删除仍被打开的文件，Windows 不允许——better-sqlite3 的句柄
+   * 只要还有一个没关（或者 WAL 的 `-wal` / `-shm` 还挂着），unlink 就是 EBUSY：
+   *   EBUSY: resource busy or locked, unlink '...\\s0.db'
+   * 而 `force: true` 只忽略"不存在"，不忽略"被占用"。
+   *
+   * 这是三平台 CI 首次实跑才暴露的——本地全在 Linux 上跑，这条路径永远走不到。
+   */
+  rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 let n = 0;

@@ -32,12 +32,16 @@
 
 ## 代码现状（2026-08-05）
 
-**M0 已完成**（M0-a 契约与内核、M0-b 外壳与持久化），欠一项：**应用仍没在真机上启动过**。
-远端仓库已就位、三平台 CI 于 2026-08-05 首跑，但四个 job 全部倒在装配阶段，
-还没有一个平台走到启动自检那一步（见 [ADR-0016](./adr/0016-原生模块与打包.md) 首跑记录）。
-其中一条是真 bug：**Windows 上 `pnpm install` 一直是失败的**——`prepare` 里的
-`execFileSync('pnpm.cmd', ...)` 触发 Node 修 CVE-2024-27980 后的 EINVAL。
-「Windows 是 Tier 1」这句话此前从未被真的检验过。
+**M0 已完成**（M0-a 契约与内核、M0-b 外壳与持久化）。欠了两个里程碑的那一格
+——**应用没在真机上启动过**——已于 2026-08-05 关闭：三平台 CI 的 `desktop` job
+全绿，打包产物在 Linux / macOS / Windows 上各被真的启动了一次，
+原生模块从 `app.asar.unpacked` 加载、真 SQLite 开库、建会话、投影读回。
+
+> 首跑一共照出五个问题，**没有一个是产品逻辑的 bug**，全是"从没在真平台上跑过"
+> 才会暴露的东西。其中两个是真 bug 且都只在 Windows 上：`pnpm install` 一直失败
+> （`execFileSync('pnpm.cmd')` 触发 Node 修 CVE-2024-27980 后的 EINVAL），
+> 以及 8.3 短文件名 `PROGRA~1` 造成的**红线绕过**（[ADR-0018](./adr/0018-Windows短文件名与路径规范化契约.md)）。
+> 「Windows 是 Tier 1」此前从未被真的检验过。
 
 | 包 | 状态 |
 |---|---|
@@ -48,7 +52,7 @@
 | [`packages/runtime`](../packages/runtime/README.md) | 装配层 + headless 冒烟 |
 | [`apps/desktop`](../apps/desktop/README.md) | Electron 三段（[ADR-0015](./adr/0015-进程与IPC边界.md)、[ADR-0016](./adr/0016-原生模块与打包.md)） |
 
-314 个测试、依赖图 127 模块 380 条边零违规、契约包 6.78 kB（预算 15 kB）。
+319 个测试、依赖图 127 模块 382 条边零违规、契约包 6.78 kB（预算 15 kB）。
 
 ```bash
 pnpm install     # 自动断言双编译器工具链装配正确

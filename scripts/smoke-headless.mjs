@@ -153,7 +153,7 @@ try {
     );
   }
 } finally {
-  rmSync(dataDir, { recursive: true, force: true });
+  rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 /** Map 不能直接 JSON 序列化，这里只用于比较，不追求好看 */
