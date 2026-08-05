@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
-import type { SessionState } from '@xm/kernel';
-import { emptySessionState, reduce } from '@xm/kernel';
+import type { LiveBuffer, SessionState } from '@xm/kernel';
+import { applyLive, emptySessionState, reduce } from '@xm/kernel';
 import type { ListSessionsResult, PushedEvent } from '../shared/ipc.js';
 import { api } from './bridge.js';
 
@@ -27,6 +27,16 @@ interface UiState {
   sessions: ListSessionsResult;
   currentId: SessionId | undefined;
   session: SessionState | undefined;
+  /**
+   * 在途消息（ADR-0021）。**与 `session` 分开放，是这条设计的全部要点。**
+   *
+   * 它不是 `SessionState` 的副本：里面的文字尚未持久化，`message.end` 一到就归零，
+   * 那之后同一段文字只存在于 `session.messages` 里。两者在时间上互斥，
+   * 所以不存在 ADR-0015 要防的那种"会和回放结果分叉的第二份状态"。
+   *
+   * 累积与归零的逻辑全在内核的 `applyLive()` 里——这里只存结果，不做判断。
+   */
+  live: LiveBuffer | undefined;
   busy: boolean;
   error: string | undefined;
 
@@ -54,6 +64,7 @@ export const useUi = create<UiState>((set, get) => ({
   sessions: [],
   currentId: undefined,
   session: undefined,
+  live: undefined,
   busy: false,
   error: undefined,
 
@@ -72,7 +83,8 @@ export const useUi = create<UiState>((set, get) => ({
   },
 
   openSession: async (id) => {
-    set({ currentId: id, session: undefined, error: undefined });
+    // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
+    set({ currentId: id, session: undefined, live: undefined, error: undefined });
     const events = await api.readSession(id);
     let state = emptySessionState(id);
     for (const raw of events) {
@@ -121,6 +133,15 @@ export const useUi = create<UiState>((set, get) => ({
 
     const e = toCoreEvent(pushed);
     if (e === undefined || !isCoreEvent(e)) return;
-    set({ session: reduce(session, e) });
+
+    /*
+     * 两条线各走各的：
+     *   · `reduce` 只认持久化事实，`message.delta` 在它眼里是空操作（ADR-0008，不动）
+     *   · `applyLive` 只认在途事件，`message.end` 一到就归零
+     *
+     * 顺序无关紧要（两者互不读对方），但**必须都调**——只调 reduce 就是 G6 那个洞，
+     * 只调 applyLive 就成了真正的第二份状态。
+     */
+    set({ session: reduce(session, e), live: applyLive(get().live, e) });
   },
 }));

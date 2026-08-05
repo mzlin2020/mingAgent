@@ -54,6 +54,7 @@ export function App(): ReactNode {
               {(session?.messages ?? []).map((m) => (
                 <MessageView key={m.id} message={m} />
               ))}
+              <LiveMessage />
             </div>
           )}
         </div>
@@ -61,6 +62,44 @@ export function App(): ReactNode {
         <Composer disabled={currentId === undefined || busy} />
       </main>
     </div>
+  );
+}
+
+/**
+ * 在途消息（ADR-0021）—— 模型正在打字的那一条。
+ *
+ * 它渲染的是 `live`，不是 `session.messages`。两者在时间上互斥：`message.end` 一到，
+ * `applyLive` 归零、`reduce` 把完整消息放进 `messages`，同一段文字换了个位置显示，
+ * **不会同时出现两份**。这条互斥就是它不算"第二份状态"的全部理由。
+ *
+ * 在这个组件存在之前，`message.delta` 推到渲染层之后无人接收（`reduce` 里它是空操作），
+ * 于是一次三十秒的流式回复期间界面完全静止（docs/09 G6）。
+ */
+function LiveMessage(): ReactNode {
+  const live = useUi((s) => s.live);
+  if (live === undefined || (live.text === '' && live.thinking === '')) return null;
+
+  return (
+    <Card>
+      <div className="mb-1 text-xs text-[var(--xm-fg-muted)]">小明</div>
+      <div className="flex flex-col gap-2">
+        {live.thinking !== '' && (
+          <details className="text-xs text-[var(--xm-fg-muted)]" open>
+            <summary className="cursor-pointer">思考中…</summary>
+            <p className="mt-1 whitespace-pre-wrap">{live.thinking}</p>
+          </details>
+        )}
+        {live.text !== '' && (
+          <p className="whitespace-pre-wrap">
+            {live.text}
+            {/* 光标：让"还在写"和"写完了但很短"这两种情况分得开 */}
+            <span className="ml-0.5 inline-block w-1.5 animate-pulse bg-[var(--xm-fg)] align-text-bottom">
+              &nbsp;
+            </span>
+          </p>
+        )}
+      </div>
+    </Card>
   );
 }
 

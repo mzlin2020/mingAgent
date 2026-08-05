@@ -8,6 +8,7 @@
 
 export * from './state/session-state.js';
 export * from './state/reduce.js';
+export * from './state/live-buffer.js';
 export * from './state/seq.js';
 
 export * from './policy/engine.js';
