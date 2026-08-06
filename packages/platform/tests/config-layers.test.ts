@@ -1,6 +1,8 @@
+import { realpath as realpathCb } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PolicyRule } from '@xm/contracts';
 import type { PolicyEnv, XmPaths } from '@xm/kernel';
@@ -34,9 +36,22 @@ const rule = (over: Partial<PolicyRule> & Pick<PolicyRule, 'id'>): PolicyRule =>
   ...over,
 });
 
+/*
+ * ⚠️ `realpath.native`，不是裸的 `mkdtemp`。
+ *
+ * Windows 上 `os.tmpdir()` 给的是 8.3 短名（`C:\Users\RUNNER~1\AppData\...`），
+ * 而内核对短名**失败关闭**：`appendUserRule` 里那道构造期闸门会在 `builtinRules(env)`
+ * 就抛出来，五条用例全红，且报的错与它们要测的东西毫无关系。
+ *
+ * 生产路径上这一步在 `resolvePaths()` 里（platform/paths.ts 的 `resolveWindowsShortName`），
+ * 而这个文件手工拼 `XmPaths`，绕过了它。绕过平台层自己的路径解析、又去测平台层的行为，
+ * 本身就是这条用例的第一个 bug。
+ */
+const realNative = promisify(realpathCb.native);
+
 beforeEach(async () => {
-  home = await mkdtemp(join(tmpdir(), 'xm-cfg-'));
-  project = await mkdtemp(join(tmpdir(), 'xm-proj-'));
+  home = await realNative(await mkdtemp(join(tmpdir(), 'xm-cfg-')));
+  project = await realNative(await mkdtemp(join(tmpdir(), 'xm-proj-')));
   paths = {
     home,
     appRoot: '/repo',

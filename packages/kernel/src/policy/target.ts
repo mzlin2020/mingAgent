@@ -131,6 +131,37 @@ export function normalizePathTarget(raw: string): TargetNormalization {
 }
 
 /**
+ * 规则**模式**（glob）的坐标系归一 —— 与 `normalizePathTarget` 是同一枚硬币的两面。
+ *
+ * ── 为什么模式也要归一 ──
+ *
+ * `normalizePathTarget` 把请求的 target 统一成 `C:/Users/...`（正斜杠、盘符大写），
+ * 而规则的 `match.target` 是**用户手写或程序合成的原样字符串**。Windows 上这两者
+ * 天然对不上：用户在 config.json 里写 `"C:\\Users\\me\\secrets\\**"`（JSON 转义后
+ * 是单反斜杠），判定时拿它去匹配 `C:/Users/me/secrets/x`——**一个字符都对不上，
+ * 于是这条 deny 规则静默失效**。三平台 CI 第一次跑真实文件工具时照出的就是这个：
+ * 一条写着真实路径的 deny 规则，在 Windows 上完全不生效（approval.test 的符号链接用例）。
+ *
+ * 归一放在**匹配器里**，不是放在每个模式的生产者那里。生产者有三个——内置默认、
+ * 配置加载、授权合成——而"三个地方各自记得做同一件事"正是这个仓库反复栽的形状。
+ * 匹配器只有一个，让它保证两边同坐标系，就没有分叉的机会。
+ *
+ * ── 只对 Windows 盘符绝对路径动手 ──
+ *
+ * 反斜杠在这里有两个身份：Windows 的路径分隔符，和本 glob 的**转义符**（`\*` / `\?`）。
+ * 二者只在一种情况下不冲突——**Windows 文件名里根本不允许出现 `\` `*` `?`**，
+ * 所以在一个 `C:/` 打头的模式里，反斜杠只可能是分隔符，不可能是转义。
+ * 反过来 POSIX 上 `a*b`、`a\b` 都是合法文件名，那里的反斜杠必须继续当转义符
+ * （`escapeGlobPattern` 依赖这一点），所以非盘符模式**一个字节都不动**。
+ */
+export function normalizePathPattern(pattern: string): string {
+  if (!/^[a-zA-Z]:[\\/]/.test(pattern)) return pattern;
+  // 分隔符统一并折叠重复（`C:\\Users` 这种双写在 JSON 里很常见）；盘符大写，与 target 一致
+  const slashed = pattern.replace(/[\\/]+/g, '/');
+  return `${(slashed[0] ?? '').toUpperCase()}${slashed.slice(1)}`;
+}
+
+/**
  * 规范化后的路径拼接，供红线规则构造使用。
  * 传进来的片段必须已经是绝对路径，否则抛错——红线的构造期出错好过运行期失效。
  */

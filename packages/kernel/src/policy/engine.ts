@@ -10,6 +10,7 @@ import type {
 } from '@xm/contracts';
 import { isIrreversible, targetKindOf } from '@xm/contracts';
 import { normalizeTarget } from './normalize.js';
+import { normalizePathPattern } from './target.js';
 
 export type Executor = 'local' | 'container' | 'remote';
 
@@ -334,26 +335,34 @@ function globToRegExp(pattern: string, caseInsensitive: boolean, kind: TargetKin
   const cached = GLOB_CACHE.get(cacheKey);
   if (cached !== undefined) return cached;
 
+  /*
+   * 路径模式先过一遍坐标系归一：请求的 target 一律是正斜杠 + 大写盘符，
+   * 而规则里的模式是用户手写 / 程序合成的原样字符串。两边不在同一个坐标系里，
+   * 一条写着 `C:\Users\me\**` 的 deny 规则就是一条**静默失效**的规则。
+   * 见 `normalizePathPattern` —— 它只动 Windows 盘符绝对路径，POSIX 模式原样通过。
+   */
+  const source = kind === 'path' ? normalizePathPattern(pattern) : pattern;
+
   let out = '^';
   let start = 0;
   // host 语义下开头的 `*.`：子域可有可无，域名自身也算命中（见上方说明）
-  if (kind === 'host' && pattern.startsWith('*.')) {
+  if (kind === 'host' && source.startsWith('*.')) {
     out += '(?:[^.]+\\.)*';
     start = 2;
   }
 
-  for (let i = start; i < pattern.length; i++) {
-    const ch = pattern[i] ?? '';
-    if (ch === '\\' && i + 1 < pattern.length) {
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i] ?? '';
+    if (ch === '\\' && i + 1 < source.length) {
       // 转义：下一个字符按字面量处理，不参与任何通配语义
-      out += (pattern[i + 1] ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out += (source[i + 1] ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       i++;
-    } else if (ch === '/' && pattern[i + 1] === '*' && pattern[i + 2] === '*' && i + 3 === pattern.length) {
+    } else if (ch === '/' && source[i + 1] === '*' && source[i + 2] === '*' && i + 3 === source.length) {
       // 结尾的 `/**`：目录自身也算命中
       out += '(?:/.*)?';
       i += 2;
     } else if (ch === '*') {
-      if (pattern[i + 1] === '*') {
+      if (source[i + 1] === '*') {
         out += '.*';
         i++;
       } else {

@@ -1,6 +1,7 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
 import { targetKindOf } from '@xm/contracts';
 import type { PermissionGrant } from '../state/session-state.js';
+import { normalizeTarget } from './normalize.js';
 
 /**
  * 规则层的构造 —— 三件事：**项目层只能收紧**、**授权合成规则**、**字面路径要转义**。
@@ -54,8 +55,14 @@ export const GRANT_RULE_PREFIX = 'grant.';
  * `SessionState.grants` 从 M0 起就在 `reduce` 里算着了，一直没有任何人读它——
  * 于是"本会话都允许"这个选项即便点了，下一次调用照样弹框。这个函数是它的读取端。
  *
- * 三个细节，每个都是错了就放大权限的那种：
+ * 四个细节，每个都是错了就放大权限的那种：
  *
+ * 〇、**先规范化，再转义。** 授权的 target 是从 `PermissionRequest` 里原样带出来的，
+ *     而判定时 `evaluate()` 会把请求的 target 规范化之后再比。两边坐标系不一致，
+ *     合成出来的规则就永远匹配不上——Windows 上尤其明显：授权存的是
+ *     `C:\work\a.md`，判定比的是 `C:/work/a.md`，于是"本会话都允许"点了等于没点
+ *     （三平台 CI 实测，M1-c 补记）。规范化失败的直接丢弃（**失败关闭**）：
+ *     一条判定时必然 deny 的 target，合成出规则来只会让人以为授权生效了。
  * 一、**target 要转义。** 授权针对的是一个具体的目标（一个路径、一个 host），
  *     不是一个模式。见 `escapeGlobPattern`。
  * 二、**`always` 也进会话层。** 它同时会被写进用户级配置文件，但那要下次启动
@@ -67,17 +74,23 @@ export const GRANT_RULE_PREFIX = 'grant.';
  * 用户下次还会被问一遍，而不是拿到一条建立在没有契约的 target 上的规则。
  */
 export const grantsToRules = (grants: readonly PermissionGrant[]): PolicyRuleSet =>
-  grants.filter(grantable).map((g) => ({
-    id: `${GRANT_RULE_PREFIX}${g.scope}.${g.requestId}`,
-    effect: g.effect,
-    capability: g.capability,
-    match: { target: escapeGlobPattern(g.target) },
-    reason:
-      g.effect === 'allow'
-        ? `你在本会话${g.scope === 'always' ? '选择了永久允许' : '允许过这个操作'}`
-        : `你在本会话${g.scope === 'always' ? '选择了永久拒绝' : '拒绝过这个操作'}`,
-    immutable: false,
-  }));
+  grants.filter(grantable).flatMap((g) => {
+    const normalized = normalizeTarget(g.capability, g.target);
+    if (!normalized.ok) return [];
+    return [grantRule(g, normalized.value)];
+  });
+
+const grantRule = (g: PermissionGrant, target: string): PolicyRule => ({
+  id: `${GRANT_RULE_PREFIX}${g.scope}.${g.requestId}`,
+  effect: g.effect,
+  capability: g.capability,
+  match: { target: escapeGlobPattern(target) },
+  reason:
+    g.effect === 'allow'
+      ? `你在本会话${g.scope === 'always' ? '选择了永久允许' : '允许过这个操作'}`
+      : `你在本会话${g.scope === 'always' ? '选择了永久拒绝' : '拒绝过这个操作'}`,
+  immutable: false,
+});
 
 /**
  * 把一个**字面**目标变成只匹配它自己的 glob。

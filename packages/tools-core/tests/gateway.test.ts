@@ -1,12 +1,14 @@
+import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { PermissionRequest, PolicyRuleSet } from '@xm/contracts';
 import { newRequestId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv, RegisteredTool, ToolContext } from '@xm/kernel';
-import { GatewayError, builtinLayers, defineTool, evaluate } from '@xm/kernel';
+import { GatewayError, builtinLayers, defineTool, evaluate, normalizedOrThrow } from '@xm/kernel';
 import { nodeToolGateway } from '@xm/tools-core';
 
 /**
@@ -45,8 +47,17 @@ const tool = (over: Partial<Parameters<typeof defineTool>[0]> = {}): RegisteredT
   });
 
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), 'xm-gateway-'));
-  outside = await mkdtemp(join(tmpdir(), 'xm-secret-'));
+  /*
+   * ⚠️ 临时目录**必须先 realpath.native**，两个平台各有各的理由：
+   *   · macOS：`/tmp` 自己是指向 `/private/tmp` 的符号链接；
+   *   · Windows：`os.tmpdir()` 返回 8.3 短名（`C:\Users\RUNNER~1\...`），
+   *     而内核对短名是**失败关闭**的——用它当规则模式，规则匹配不上；
+   *     用它当请求 target，判定直接 deny。
+   * 生产路径上这件事由 `resolvePaths()` 做（platform/paths.ts），用例里没有它，
+   * 于是得自己走同一步。不走的后果是断言测的不是它想测的东西。
+   */
+  root = await realNative(await mkdtemp(join(tmpdir(), 'xm-gateway-')));
+  outside = await realNative(await mkdtemp(join(tmpdir(), 'xm-secret-')));
   await mkdir(join(root, 'src'), { recursive: true });
   await writeFile(join(root, 'src', 'a.ts'), 'export const a = 1;\n');
   await writeFile(join(outside, 'id_rsa'), 'PRIVATE KEY\n');
@@ -127,14 +138,14 @@ describe('解析规则', () => {
 
   it('🔴 还不存在的文件也能解析 —— 否则 fs.write 永远新建不了文件', async () => {
     const r = await nodeToolGateway().resolve(tool(), { path: 'src/new/deep/x.md' }, ctx(root));
-    expect(r.target).toBe(join(await realOf(join(root, 'src')), 'new', 'deep', 'x.md'));
+    expect(r.target).toBe(await realOf(join(root, 'src'), 'new', 'deep', 'x.md'));
   });
 
   it('🔴 不存在的文件穿过符号链接目录时，链接那一段仍然被解析', async () => {
     // 这一条是"取最深的存在祖先"真正要保证的东西：
     // 逃逸的载体是**已经存在**的那一段，剩下的段按定义没有链接可解
     const r = await nodeToolGateway().resolve(tool(), { path: 'link-dir/brand-new.txt' }, ctx(root));
-    expect(r.target).toBe(join(await realOf(outside), 'brand-new.txt'));
+    expect(r.target).toBe(await realOf(outside, 'brand-new.txt'));
   });
 
   it('🔴 入参被回写 —— 判定与执行用的是同一个字符串', async () => {
@@ -150,7 +161,7 @@ describe('解析规则', () => {
       pathInputs: ['dst', 'src'],
     });
     const r = await nodeToolGateway().resolve(t, { src: 'src/a.ts', dst: 'out.txt' }, ctx(root));
-    expect(r.target).toBe(join(await realOf(root), 'out.txt'));
+    expect(r.target).toBe(await realOf(root, 'out.txt'));
     expect((r.input as { src: string }).src).toBe(await realOf(join(root, 'src', 'a.ts')));
   });
 });
@@ -182,12 +193,23 @@ describe('🔴 失败关闭', () => {
   });
 });
 
-/** macOS 的 /tmp 自己就是指向 /private/tmp 的链接，断言必须比对 realpath 后的值 */
-const realOf = async (p: string): Promise<string> => {
-  const { realpath } = await import('node:fs/promises');
+const realNative = promisify(realpathCb.native);
+
+/**
+ * 期望值走**与网关同一条路**：realpath.native → 内核规范化。
+ *
+ * 两段各有各的必要性：realpath 处理 macOS 的 `/tmp` → `/private/tmp` 与 Windows 短名；
+ * 规范化处理分隔符与盘符大小写——网关回写给工具的就是规范化后的那个串（ADR-0024 补记），
+ * 拿 `join()` 拼出来的原生路径去比，在 Windows 上永远不相等。
+ *
+ * `rest` 是给"尚不存在的路径"用的：只 realpath 存在的那一段，剩下的原样拼。
+ */
+const realOf = async (base: string, ...rest: string[]): Promise<string> => {
+  let head: string;
   try {
-    return await realpath(p);
+    head = await realNative(base);
   } catch {
-    return resolve(p);
+    head = resolve(base);
   }
+  return normalizedOrThrow(rest.length === 0 ? head : join(head, ...rest));
 };

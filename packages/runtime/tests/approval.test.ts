@@ -1,11 +1,20 @@
-import { mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { realpath as realpathCb } from 'node:fs';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PermissionRequest, PersistedEvent, PolicyRule, PolicyRuleSet } from '@xm/contracts';
-import { newCallId, newSessionId } from '@xm/contracts';
+import { newCallId, newRequestId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
-import { MemoryBlobStore, MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
+import {
+  MemoryBlobStore,
+  MemoryEventStore,
+  ToolRegistry,
+  composeRules,
+  evaluate,
+  normalizedOrThrow,
+} from '@xm/kernel';
 import type { PermissionAnswer } from '@xm/runtime';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
 import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
@@ -98,8 +107,11 @@ const requests = (all: PersistedEvent[]) =>
 const decisions = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'permission.decision' ? [e.payload] : []));
 
+/** Windows 的 %TEMP% 是 8.3 短名，macOS 的 /tmp 是符号链接 —— 两边都得先解析成真名 */
+const realNative = promisify(realpathCb.native);
+
 beforeEach(async () => {
-  dir = await realpath(await mkdtemp(join(tmpdir(), 'xm-approval-')));
+  dir = await realNative(await mkdtemp(join(tmpdir(), 'xm-approval-')));
   ENV = { home: '/home/ming', appRoot: '/repo', dataDir: join(dir, '.data') };
 });
 afterEach(async () => {
@@ -164,8 +176,36 @@ describe('审批的三个范围', () => {
     const rule = h.persisted[0]!;
     expect(rule.effect).toBe('allow');
     expect(rule.capability).toBe('fs.write');
-    expect(rule.match?.target).toBe(join(dir, 'a.md'));
     expect(rule.id).toMatch(/^grant\.always\./);
+
+    // 落盘的这条规则，针对的正是刚刚被问的那个目标
+    const target = requests(await events(h))[0]?.target;
+    expect(target).toBeDefined();
+    expect(rule.match?.target).toBe(target);
+
+    /*
+     * 而"针对同一个目标"还不等于"下次真的放行"——规则里的是**模式**，
+     * 请求里的是**字面值**，两者形状相同、含义不同。所以这里把它当成
+     * 下次启动读回来的用户级规则，真判一次。
+     *
+     * 这一条不是多余的：Windows 上曾经就是"target 对得上、判定匹配不上"——
+     * 授权存的是 `C:\work\a.md`，判定比的是 `C:/work/a.md`（M1-c 补记）。
+     */
+    expect(
+      evaluate({
+        request: {
+          requestId: newRequestId(),
+          sessionId: newSessionId(),
+          capability: 'fs.write',
+          target: target!,
+          risk: 'medium',
+          reason: '重启后再写一次',
+          trustLevel: 'model',
+        },
+        layers: composeRules({ env: ENV, user: [rule] }),
+        tier: 'balanced',
+      }).effect,
+    ).toBe('allow');
   });
 
   /**
@@ -227,8 +267,14 @@ describe('🔴 红线在真实工具输入下被验证一次', () => {
     await h.turn('读一下笔记', call('fs.read', { path: 'notes.txt' }));
 
     const all = await events(h);
-    // 规则写的是真实文件，模型给的是链接名 —— 没有网关的话这条规则完全匹配不上
-    expect(requests(all)[0]?.target).toBe(secret);
+    /*
+     * 规则写的是真实文件，模型给的是链接名 —— 没有网关的话这条规则完全匹配不上。
+     *
+     * 期望值要过一遍 `normalizedOrThrow`：网关回写与记进事件流的是**规范化后**的路径
+     * （ADR-0024 补记），而 `join()` 拼出来的是平台原生形态。POSIX 上两者相同，
+     * Windows 上差一个分隔符——差一个分隔符就是差一条匹配不上的规则。
+     */
+    expect(requests(all)[0]?.target).toBe(normalizedOrThrow(secret));
     expect(decisions(all)[0]?.effect).toBe('deny');
     expect(ended(all)[0]?.ok).toBe(false);
   });
