@@ -1,23 +1,31 @@
 import { app, safeStorage } from 'electron';
 import { join } from 'node:path';
-import type { Config, PolicyRuleSet, SessionId } from '@xm/contracts';
+import type { Config, RequestId, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
-import type { ModelProvider, PlatformPort, SecretBackend, SecretStore } from '@xm/kernel';
-import { ToolRegistry, builtinRules, policyEnvFromPaths } from '@xm/kernel';
+import type { ModelProvider, PlatformPort, RuleLayer, SecretBackend, SecretStore } from '@xm/kernel';
+import { ToolRegistry, composeRules, policyEnvFromPaths } from '@xm/kernel';
 import type { ConfigProblem } from '@xm/platform';
-import { loadConfig, nodePlatform, parseModelRef, unavailableSecretStore, withCapabilities } from '@xm/platform';
+import {
+  appendUserRule,
+  loadConfig,
+  nodePlatform,
+  parseModelRef,
+  unavailableSecretStore,
+  withCapabilities,
+} from '@xm/platform';
 import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
 import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
+import type { PermissionAnswer } from '@xm/runtime';
 import {
   EventBus,
   ScriptedProvider,
   SessionRuntime,
-  demoTargetOf,
   echoTool,
   fakeDeleteTool,
   runTurn,
 } from '@xm/runtime';
+import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
 import { keychainSecretStore } from './secrets.js';
 
 /**
@@ -40,14 +48,16 @@ export interface Services {
   readonly platform: PlatformPort;
   readonly stores: OpenedStores;
   readonly bus: EventBus;
-  readonly rules: PolicyRuleSet;
+  readonly layers: readonly RuleLayer[];
   readonly tools: ToolRegistry;
-  createSession(title?: string): Promise<SessionId>;
+  createSession(options?: { title?: string; cwd?: string }): Promise<SessionId>;
   sendUserMessage(sessionId: SessionId, text: string): Promise<string>;
   /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
   interrupt(sessionId: SessionId): boolean;
+  /** 应答一次审批。返回是否对上了一个正在等的请求 */
+  respondPermission(requestId: RequestId, answer: PermissionAnswer): boolean;
   status(): Promise<RuntimeStatus>;
   setApiKey(providerId: string, key: string): Promise<void>;
   close(): Promise<void>;
@@ -78,7 +88,7 @@ export async function startServices(): Promise<Services> {
 
   const paths = platform.paths();
   const stores = await openStores(paths);
-  const rules = builtinRules(policyEnvFromPaths(paths));
+  const policyEnv = policyEnvFromPaths(paths);
   const bus = new EventBus();
 
   /*
@@ -96,13 +106,56 @@ export async function startServices(): Promise<Services> {
   const loaded = await loadConfig({ paths, cwd: app.getPath('home') });
   let config: Config = loaded.config;
 
+  /*
+   * 规则层。顺序即优先级，后面的层胜（ADR-0023）。
+   *
+   * 用户级可以放松也可以收紧；**项目级只能收紧**——`.xiaoming/config.json` 躺在
+   * 用户 clone 来的仓库里，而小明自己有 `fs.write`。被丢弃的条目进 `problems`，
+   * 变成一条用户看得见的 notice：不生效可以，不告诉他不行。
+   */
+  let userRules = [...loaded.permissionRules.user];
+  let layers: readonly RuleLayer[] = composeRules({
+    env: policyEnv,
+    user: userRules,
+    project: loaded.permissionRules.project,
+  });
+
   const tools = new ToolRegistry();
+  for (const t of coreTools()) tools.register(t);
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
+
+  const gateway = nodeToolGateway();
+  const checkpointer = nodeCheckpointer({ blobs: stores.blobs });
 
   const runtimes = new Map<SessionId, SessionRuntime>();
   /** 每会话一个 AbortController。它的存在期就是"这一轮正在跑" */
   const running = new Map<SessionId, AbortController>();
+
+  /**
+   * 等待用户应答的审批请求。
+   *
+   * ── 三个地方必须**兑现成 deny**，一个都不能漏 ──
+   *
+   * 关窗、退出、点停止。任何一个漏掉，那个 promise 就永远不 resolve——
+   * 表现是 Turn 循环挂死、会话卡在 `waiting_permission`，而用户看到的是
+   * "点了停止但它还在转"。失败关闭在这里不只是安全姿态，也是不卡死的唯一做法。
+   */
+  const pending = new Map<RequestId, (answer: PermissionAnswer) => void>();
+
+  const settle = (requestId: RequestId, answer: PermissionAnswer): boolean => {
+    const resolve = pending.get(requestId);
+    if (resolve === undefined) return false;
+    pending.delete(requestId);
+    resolve(answer);
+    return true;
+  };
+
+  const denyAllPending = (): void => {
+    for (const requestId of [...pending.keys()]) {
+      settle(requestId, { effect: 'deny', scope: 'once' });
+    }
+  };
 
   const runtimeFor = async (sessionId: SessionId): Promise<SessionRuntime> => {
     const existing = runtimes.get(sessionId);
@@ -153,18 +206,20 @@ export async function startServices(): Promise<Services> {
     platform,
     stores,
     bus,
-    rules,
+    layers,
     tools,
 
-    async createSession(title?: string): Promise<SessionId> {
+    async createSession(options: { title?: string; cwd?: string } = {}): Promise<SessionId> {
       const sessionId = newSessionId();
       const runtime = await runtimeFor(sessionId);
       await runtime.record({
         type: 'session.created',
         payload: {
-          cwd: app.getPath('home'),
+          // 工作目录决定"相对路径相对谁"。用户没选就用家目录——那是个安全的默认值，
+          // 但主 DoD 任务（"读这个目录"）需要他先选一个
+          cwd: options.cwd ?? app.getPath('home'),
           modelRef: config.model.main,
-          ...(title === undefined ? {} : { title }),
+          ...(options.title === undefined ? {} : { title: options.title }),
         },
       });
 
@@ -218,20 +273,53 @@ export async function startServices(): Promise<Services> {
             runtime,
             provider,
             tools,
-            rules,
+            layers,
             tier: config.permission.tier,
             model: provider.id === 'scripted' ? 'scripted-1' : model,
             prices: config.prices,
-            targetOf: demoTargetOf,
+            gateway,
+            checkpointer,
+            blobs: stores.blobs,
             pathCaseInsensitive: platform.os === 'windows',
             signal: controller.signal,
-            // 审批 UI 是 M1-c。在那之前 ask 一律拒绝——默认放行等于没有闸门
-            decide: () => Promise.resolve('deny'),
+            /*
+             * 审批：把请求挂起来，等渲染层送答复回来。
+             *
+             * 挂起期间**不做超时**——用户可能去看代码、去问同事，一个会自己
+             * 超时变成拒绝的确认框只会让人养成"赶紧点允许"的习惯。
+             * 兜底靠三条兑现路径（关窗 / 退出 / 停止），见 pending 的注释。
+             */
+            decide: (request) =>
+              new Promise<PermissionAnswer>((resolve) => {
+                if (controller.signal.aborted) {
+                  resolve({ effect: 'deny', scope: 'once' });
+                  return;
+                }
+                pending.set(request.requestId, resolve);
+              }),
+            /**
+             * 「永久」落进用户级配置。
+             *
+             * 写完之后**立刻重算 layers**：不重算的话，这条规则要等下次启动才生效，
+             * 而本会话靠 grants 顶着——两条路径的行为差异会在"重启后范围变了"
+             * 这种最难查的形态上暴露出来。
+             */
+            persistGrant: async (rule) => {
+              await appendUserRule({ paths, env: policyEnv, rule });
+              userRules = [...userRules.filter((r) => r.id !== rule.id), rule];
+              layers = composeRules({
+                env: policyEnv,
+                user: userRules,
+                project: loaded.permissionRules.project,
+              });
+            },
           },
           text,
         );
       } finally {
         running.delete(sessionId);
+        // 这一轮结束了，还挂着的审批不可能再有人处理它 —— 兑现成拒绝
+        denyAllPending();
         void providerId;
       }
     },
@@ -255,8 +343,19 @@ export async function startServices(): Promise<Services> {
     interrupt(sessionId: SessionId): boolean {
       const controller = running.get(sessionId);
       if (controller === undefined) return false;
+      /*
+       * 先把挂着的审批兑现成拒绝，再 abort。
+       *
+       * 顺序要紧：Turn 循环此刻很可能正 await 在 `decide` 上，而 `AbortController`
+       * 唤不醒一个普通的 promise。只 abort 不兑现，用户点了停止之后界面会一直转下去。
+       */
+      denyAllPending();
       controller.abort();
       return true;
+    },
+
+    respondPermission(requestId: RequestId, answer: PermissionAnswer): boolean {
+      return settle(requestId, answer);
     },
 
     async status(): Promise<RuntimeStatus> {
@@ -303,6 +402,7 @@ export async function startServices(): Promise<Services> {
     },
 
     async close(): Promise<void> {
+      denyAllPending();
       for (const controller of running.values()) controller.abort();
       running.clear();
       for (const runtime of runtimes.values()) await runtime.close();

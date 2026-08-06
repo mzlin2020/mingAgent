@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  ChooseWorkspaceResult,
   ClearUntrustedResult,
   CreateSessionResult,
   InterruptResult,
@@ -7,6 +8,7 @@ import {
   ListSessionsResult,
   PushedEvent,
   ReadSessionResult,
+  RespondPermissionResult,
   SendUserMessageResult,
   SetApiKeyResult,
   StatusResult,
@@ -30,6 +32,8 @@ interface XmBridge {
   readSession(req: unknown): Promise<unknown>;
   clearUntrusted(req: unknown): Promise<unknown>;
   interrupt(req: unknown): Promise<unknown>;
+  respondPermission(req: unknown): Promise<unknown>;
+  chooseWorkspace(): Promise<unknown>;
   status(): Promise<unknown>;
   setApiKey(req: unknown): Promise<unknown>;
   onEvent(listener: (event: unknown) => void): () => void;
@@ -70,8 +74,14 @@ async function call<T extends z.ZodType>(promise: Promise<unknown>, schema: T): 
 
 export const api = {
   listSessions: () => call(bridge().listSessions(), ListSessionsResult),
-  createSession: (title?: string) =>
-    call(bridge().createSession(title === undefined ? {} : { title }), CreateSessionResult),
+  createSession: (options: { title?: string; cwd?: string } = {}) =>
+    call(
+      bridge().createSession({
+        ...(options.title === undefined ? {} : { title: options.title }),
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+      }),
+      CreateSessionResult,
+    ),
   sendUserMessage: (sessionId: string, text: string) =>
     call(bridge().sendUserMessage({ sessionId, text }), SendUserMessageResult),
   readSession: (sessionId: string) =>
@@ -84,6 +94,20 @@ export const api = {
     ),
 
   interrupt: (sessionId: string) => call(bridge().interrupt({ sessionId }), InterruptResult),
+
+  respondPermission: (
+    sessionId: string,
+    requestId: string,
+    effect: 'allow' | 'deny',
+    scope: 'once' | 'session' | 'always',
+  ) =>
+    call(
+      bridge().respondPermission({ sessionId, requestId, effect, scope }),
+      RespondPermissionResult,
+    ),
+
+  /** 打开原生目录选择框。用户取消时返回 `{}` */
+  chooseWorkspace: () => call(bridge().chooseWorkspace(), ChooseWorkspaceResult),
 
   status: () => call(bridge().status(), StatusResult),
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ModelChunk, ModelRequest, XmEventType } from '@xm/contracts';
 import { isCoreEvent, newSessionId } from '@xm/contracts';
 import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
-import { MemoryEventStore, ToolRegistry, builtinRules, emptySessionState, reduce } from '@xm/kernel';
+import { MemoryEventStore, ToolRegistry, builtinLayers, emptySessionState, reduce } from '@xm/kernel';
 import { EventBus, SessionRuntime, runTurn } from '@xm/runtime';
 
 /**
@@ -102,7 +102,7 @@ async function runAndInterrupt(afterMs = 0): Promise<Recorded> {
         { kind: 'text_delta', text: '慢慢地想…' },
       ]),
       tools: new ToolRegistry(),
-      rules: builtinRules(ENV),
+      layers: builtinLayers(ENV),
       tier: 'balanced',
       model: 'x',
       signal: controller.signal,

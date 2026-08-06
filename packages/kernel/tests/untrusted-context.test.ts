@@ -14,6 +14,22 @@ import { builtinRules, emptySessionState, evaluate, reduce, reduceAll } from '@x
 import type { PolicyEnv } from '@xm/kernel';
 
 /**
+ * 单层求值的便捷包装。
+ *
+ * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
+ * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
+ * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
+ */
+type EvalInput = Parameters<typeof evaluate>[0];
+const judge = (
+  input: Omit<EvalInput, 'layers'> & { rules: EvalInput['layers'][number]['rules'] },
+): ReturnType<typeof evaluate> => {
+  const { rules, ...rest } = input;
+  return evaluate({ ...rest, layers: [{ id: 'builtin', rules }] });
+};
+
+/**
  * ── 上下文污染标记：本项目第七次「规则存在 ≠ 规则生效」的回归闸门 ──
  *
  * M0-b 复审实测：`PermissionRequest.trustLevel` 在整个代码库里只被赋值过一次，
@@ -129,7 +145,7 @@ describe('端到端：污点接上判定，docs/06 §9 的验收项', () => {
   const RULES = builtinRules(ENV);
 
   const ask = (capability: Capability, target: string, trustLevel: 'model' | 'untrusted') =>
-    evaluate({
+    judge({
       request: {
         requestId: newRequestId(),
         sessionId: SESSION,

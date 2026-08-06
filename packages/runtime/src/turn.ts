@@ -1,4 +1,5 @@
 import type {
+  BlobRef,
   CallId,
   ContentBlock,
   Message,
@@ -6,15 +7,33 @@ import type {
   ModelRequest,
   PermissionRequest,
   PermissionTier,
-  PolicyRuleSet,
+  PolicyRule,
   PriceTable,
   ResultBlock,
   StopReason,
   TurnId,
 } from '@xm/contracts';
-import { newMessageId, newRequestId, newTurnId, xmError } from '@xm/contracts';
-import type { AbortLike, ModelProvider, RegisteredTool, ToolRegistry } from '@xm/kernel';
-import { ToolInputError, costOf, evaluate, lookupPrice } from '@xm/kernel';
+import { newCheckpointId, newMessageId, newRequestId, newTurnId, xmError } from '@xm/contracts';
+import type {
+  AbortLike,
+  BlobStore,
+  Checkpointer,
+  ModelProvider,
+  RegisteredTool,
+  RuleLayer,
+  ToolContext,
+  ToolGateway,
+  ToolRegistry,
+} from '@xm/kernel';
+import {
+  GatewayError,
+  ToolInputError,
+  costOf,
+  evaluate,
+  grantsToRules,
+  lookupPrice,
+  truncateResult,
+} from '@xm/kernel';
 import type { SessionRuntime } from './session-runtime.js';
 
 /**
@@ -38,7 +57,14 @@ export interface TurnDeps {
   readonly runtime: SessionRuntime;
   readonly provider: ModelProvider;
   readonly tools: ToolRegistry;
-  readonly rules: PolicyRuleSet;
+  /**
+   * 规则层。顺序即优先级，后面的层胜（engine.ts）。
+   *
+   * **本会话的授权不在这里**——它每次判定前由 `grantsToRules(state.grants)` 现算并
+   * 追加成最后一层。授权是随对话增长的，放进这份静态配置里就意味着某处要维护
+   * 一份会和事件流分叉的副本。
+   */
+  readonly layers: readonly RuleLayer[];
   readonly tier: PermissionTier;
   readonly model: string;
   readonly signal?: AbortLike;
@@ -48,13 +74,51 @@ export interface TurnDeps {
    * `ask` 的应答者。headless 下由调用方注入（冒烟里是一个固定答案的函数），
    * 桌面端是审批 UI。**不提供默认值**：默认放行等于没有闸门，默认拒绝会让人以为闸门坏了。
    */
-  readonly decide?: (request: PermissionRequest) => Promise<'allow' | 'deny'>;
-  /** 从工具入参提取权限目标。不同工具的 target 语义不同，交给装配方（docs/09 C4） */
-  readonly targetOf?: (toolName: string, input: unknown) => string;
+  readonly decide?: (request: PermissionRequest) => Promise<PermissionAnswer>;
+  /**
+   * 把 `scope: 'always'` 的授权写进用户级配置。
+   *
+   * **不提供也照样能用**：那时"永久"退化成"本会话"，并落一条 notice 说清楚。
+   * 退化必须是用户看得见的——点了"永久允许"，重启后又被问一遍，
+   * 而没有任何地方解释为什么，是最败坏信任的那种行为。
+   */
+  readonly persistGrant?: (rule: PolicyRule) => Promise<void>;
+  /**
+   * 能力网关：把已校验的入参解析成"判定与执行共用的那一个值"（ADR-0024）。
+   *
+   * **不提供就等于没有路径工具**——省略时所有 target 为空，路径类能力的判定会
+   * 落到能力级规则上。真实文件工具必须配 `nodeToolGateway`，否则符号链接、
+   * 相对路径、Windows 短名三条路全部敞着。
+   */
+  readonly gateway?: ToolGateway;
+  /**
+   * 破坏性调用的写前快照（ADR-0003 的"无条件还原点"）。
+   *
+   * 省略即**没有还原点**——这在测试与冒烟里是可以接受的，在桌面端不是。
+   */
+  readonly checkpointer?: Checkpointer;
+  /**
+   * 结果截断时存放全文的地方。
+   *
+   * 省略不影响截断本身，只影响截断标记里有没有"完整内容在哪"。
+   */
+  readonly blobs?: BlobStore;
   /** 价格表。缺省或查不到该模型时成本记 0 且标 `priced: false`（见 kernel/model/cost.ts） */
   readonly prices?: PriceTable;
   /** 防跑飞。真实的停止条件是模型自己不再调工具 */
   readonly maxIterations?: number;
+}
+
+/**
+ * 用户对一次 `ask` 的答复。
+ *
+ * `scope` 与 `effect` 是**两个独立的问题**——"这次允不允许"和"下次还问不问"。
+ * 合并成一个五取一的枚举（allow-once / allow-session / …）看起来更省事，
+ * 但那样"本会话都拒绝"就很容易被漏掉，而它和"本会话都允许"一样是用户的决定。
+ */
+export interface PermissionAnswer {
+  readonly effect: 'allow' | 'deny';
+  readonly scope: 'once' | 'session' | 'always';
 }
 
 interface PendingCall {
@@ -305,14 +369,16 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
   }
 
   /*
-   * 入参**先校验，再判权限**。顺序是有理由的，而且有两条：
+   * 入参**先校验、再解析、最后判权限**。这三步的顺序各有理由：
    *
-   * 一、`targetOf` 拿到的必须是工具真正会执行的那个对象。工具 schema 允许 `.default()`
-   *     （`.transform()` 被 assertToolSchema 禁掉了），于是原始 JSON 与校验后的值可能
-   *     不是同一个东西——判定看着 A、执行的是 B，就是权限判定上的 TOCTOU。
-   * 二、参数根本不合法的调用不该惊动用户。之前的顺序会先发出 permission.request、
+   * 一、参数根本不合法的调用不该惊动用户。反过来的顺序会先发出 permission.request、
    *     弹一个审批框，等用户点了"允许"才在执行时因为 invalid_input 失败。
    *     审批噪音会直接转化成"下次顺手点允许"。
+   * 二、判权用的必须是工具真正会执行的那个对象。工具 schema 允许 `.default()`
+   *     （`.transform()` 被 assertToolSchema 禁掉了），于是原始 JSON 与校验后的值可能
+   *     不是同一个东西——判定看着 A、执行的是 B，就是权限判定上的 TOCTOU。
+   * 三、同理，网关解析路径之后**必须回写入参**：判定看到 realpath 之后的绝对路径，
+   *     执行却拿着模型给的那个符号链接，等于判定判了个别的东西（ADR-0024）。
    */
   let input: unknown;
   try {
@@ -329,7 +395,33 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     return;
   }
 
-  const target = deps.targetOf?.(call.name, input) ?? '';
+  const ctx: ToolContext = {
+    sessionId: runtime.sessionId,
+    signal: deps.signal ?? NEVER_ABORTS,
+    cwd: runtime.state.cwd,
+    executor: 'local',
+  };
+
+  let target = '';
+  if (deps.gateway !== undefined) {
+    try {
+      const resolved = await deps.gateway.resolve(tool, input, ctx);
+      input = resolved.input;
+      target = resolved.target;
+    } catch (e) {
+      // 失败关闭：解析不了就不执行，也**不发权限事件**——没有解析出来的目标，
+      // 弹给用户看的那个确认框上写什么都是猜的
+      await failCall(
+        deps,
+        turnId,
+        call,
+        e instanceof GatewayError
+          ? e.asXmError
+          : xmError('invalid_input', e instanceof Error ? e.message : String(e)),
+      );
+      return;
+    }
+  }
 
   /*
    * 信任级别是**算出来的，不是填的**。
@@ -340,6 +432,19 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
    * 的工具之后，`untrustedContext` 就被置上，此后所有判定按不可信走（reduce.ts）。
    */
   const trustLevel = deps.runtime.state.untrustedContext === undefined ? 'model' : 'untrusted';
+
+  /*
+   * 本会话的授权是**最后一层**，而且每次判定都现算。
+   *
+   * `SessionState.grants` 由 `reduce` 从 `permission.decision` 算出（scope 超过单次的
+   * 才进去）。在这之前它一直没有任何读取端——于是"本会话都允许"这个选项即便实现了，
+   * 下一次调用还是会弹框。这一行是它的读取端，而且它让授权走的仍然是**同一个纯函数**：
+   * 没有第二条"先查一下授权表"的判定路径，也就没有两条路径慢慢分叉的可能。
+   */
+  const layers = [
+    ...deps.layers,
+    { id: 'session' as const, rules: grantsToRules(deps.runtime.state.grants) },
+  ];
 
   /*
    * 权限闸门。**必须在执行之前，且没有旁路。**
@@ -361,7 +466,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
 
     const verdict = evaluate({
       request,
-      rules: deps.rules,
+      layers,
       tier: deps.tier,
       ...(deps.pathCaseInsensitive === undefined
         ? {}
@@ -402,19 +507,153 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
 
     // ask：交给注入的应答者。没有应答者就等同于拒绝——headless 下没人能点"允许"，
     // 默认放行会把整条闸门变成摆设
-    const answer = deps.decide === undefined ? 'deny' : await deps.decide(request);
+    const answer: PermissionAnswer =
+      deps.decide === undefined
+        ? { effect: 'deny', scope: 'once' }
+        : await decideOrAbort(deps.decide, request, deps.signal ?? NEVER_ABORTS);
+
+    /*
+     * scope 记**用户真正选的那个**，不是恒定的 'once'。
+     *
+     * 这条事件是 `SessionState.grants` 唯一的来源（reduce.ts 只收 scope !== 'once' 的），
+     * 而 grants 又是下一次判定的会话层。写死 'once' 的后果是"本会话都允许"
+     * 点了等于没点——而且是**在事件流里也看不出**用户曾经授权过，回放出的会话比当时更严。
+     */
     await runtime.record({
       type: 'permission.decision',
       turnId,
-      payload: { requestId: request.requestId, effect: answer, scope: 'once', by: 'user' },
+      payload: {
+        requestId: request.requestId,
+        effect: answer.effect,
+        scope: answer.scope,
+        by: 'user',
+      },
     });
-    if (answer === 'deny') {
+
+    if (answer.effect === 'deny') {
       await failCall(deps, turnId, call, xmError('user_rejected', '用户拒绝了这次操作。'));
       return;
     }
+
+    if (answer.scope === 'always') {
+      await persistAlways(deps, turnId, request, answer.effect);
+    }
+
+    /*
+     * 授权立刻生效于**本次循环里剩下的能力**。
+     *
+     * 一个工具声明多个能力时逐个判定，而 `layers` 是循环开始前算好的——
+     * 不在这里追加，用户对 `fs.read` 点了"本会话允许"之后，同一次调用里的
+     * `fs.write` 判定用的还是旧的一份。这不影响正确性（那是另一个能力），
+     * 但下一次调用会因为 state 已更新而行为不同，两次之间不一致最难排查。
+     */
+    if (answer.scope !== 'once') {
+      layers[layers.length - 1] = {
+        id: 'session',
+        rules: grantsToRules(deps.runtime.state.grants),
+      };
+    }
   }
 
-  await executeCall(deps, turnId, call, tool, input);
+  await executeCall(deps, turnId, call, tool, input, ctx);
+}
+
+/**
+ * 等用户应答，**同时盯着取消信号**。
+ *
+ * ── 为什么这道保险必须在这里，而不是"应答者自己记得处理" ──
+ *
+ * 一个挂起的审批就是一个挂起的 promise。`AbortController` 唤不醒它——
+ * 于是"点了停止但界面一直在转"这个 bug 的完整条件是：某个应答者忘了在中断时兑现。
+ * 而应答者不止一个：桌面 UI、headless 注入的函数、将来的 CLI、M3 的插件宿主。
+ * 让每一个都记得处理取消，是一条迟早会被漏掉的约定。
+ *
+ * 这与 M1-b 那道兜底（Provider 没守"取消时正常结束迭代"的约定时，turn.ts 也要判对）
+ * 是同一个形状、同一个理由：**能在这里结构性地保证的事，不要写成对调用方的要求。**
+ *
+ * 中断时算 deny 而不是 allow，理由不必多说。
+ */
+function decideOrAbort(
+  decide: (request: PermissionRequest) => Promise<PermissionAnswer>,
+  request: PermissionRequest,
+  signal: AbortLike,
+): Promise<PermissionAnswer> {
+  const denied: PermissionAnswer = { effect: 'deny', scope: 'once' };
+  if (signal.aborted) return Promise.resolve(denied);
+
+  return new Promise<PermissionAnswer>((resolve) => {
+    let settled = false;
+    const finish = (answer: PermissionAnswer): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve(answer);
+    };
+    function onAbort(): void {
+      finish(denied);
+    }
+
+    signal.addEventListener('abort', onAbort);
+    decide(request).then(finish, () => {
+      // 应答者自己抛了：按拒绝处理。"审批出错"绝不能变成"于是就放行了"
+      finish(denied);
+    });
+  });
+}
+
+/**
+ * 把「永久允许 / 永久拒绝」写进用户级配置。
+ *
+ * 三件事按顺序：合成规则 → 交给持久化 → **失败就降级并说出来**。
+ *
+ * 合成用的是与会话层完全相同的 `grantsToRules`，所以"重启前"和"重启后"的规则
+ * 逐字相同。分别写两处的话，两者迟早在 target 转义之类的细节上分叉，
+ * 而那种分叉的表现是"永久授权重启后范围变了"——几乎不可能被人发现。
+ */
+async function persistAlways(
+  deps: TurnDeps,
+  turnId: TurnId,
+  request: PermissionRequest,
+  effect: 'allow' | 'deny',
+): Promise<void> {
+  const [rule] = grantsToRules([
+    {
+      requestId: request.requestId,
+      capability: request.capability,
+      target: request.target,
+      effect,
+      scope: 'always',
+      ts: Date.now(),
+    },
+  ]);
+
+  const degrade = async (why: string): Promise<void> => {
+    await deps.runtime.record({
+      type: 'notice.posted',
+      turnId,
+      payload: {
+        level: 'warn',
+        code: 'permission.grant_not_persisted',
+        message: `「永久」这次只在本会话生效：${why}`,
+      },
+    });
+  };
+
+  // 命令类能力的授权合成不出来（`grantable`）——那不是错误，是契约还没落地
+  if (rule === undefined) {
+    await degrade(`「${request.capability}」的目标还没有规范化契约，无法写成一条可靠的规则。`);
+    return;
+  }
+  if (deps.persistGrant === undefined) {
+    await degrade('当前形态没有配置文件可写（headless / 测试）。');
+    return;
+  }
+
+  try {
+    await deps.persistGrant(rule);
+  } catch (e) {
+    await degrade(e instanceof Error ? e.message : String(e));
+  }
 }
 
 async function executeCall(
@@ -423,9 +662,12 @@ async function executeCall(
   call: PendingCall,
   tool: RegisteredTool,
   input: unknown,
+  ctx: ToolContext,
 ): Promise<void> {
   const { runtime } = deps;
   const startedAt = Date.now();
+
+  await recordCheckpoint(deps, turnId, tool, input, ctx);
 
   await runtime.record({
     type: 'tool.start',
@@ -439,13 +681,6 @@ async function executeCall(
       capabilities: [...tool.descriptor.capabilities],
     },
   });
-
-  const ctx = {
-    sessionId: runtime.sessionId,
-    signal: deps.signal ?? NEVER_ABORTS,
-    cwd: runtime.state.cwd,
-    executor: 'local' as const,
-  };
 
   let forModel: ResultBlock[] = [];
   let error: ReturnType<typeof xmError> | undefined;
@@ -479,6 +714,8 @@ async function executeCall(
     forModel = [{ type: 'text', text: error.message }];
   }
 
+  const capped = await capResult(deps, forModel, tool);
+
   await runtime.record({
     type: 'tool.end',
     turnId,
@@ -486,10 +723,92 @@ async function executeCall(
       callId: call.callId,
       ok: error === undefined,
       durationMs: Date.now() - startedAt,
-      forModel,
+      forModel: capped.forModel,
+      ...(capped.fullRef === undefined ? {} : { fullRef: capped.fullRef }),
       ...(error === undefined ? {} : { error }),
     },
   });
+}
+
+/**
+ * 结果截断 —— **由运行时统一执行，不由工具自觉**（ADR-0009）。
+ *
+ * `truncateResult` 与它的 12 条用例从 M0-a 起就在内核里，但**没有任何调用点**：
+ * 玩具工具的输出都是几十个字节，接上真实的 `fs.read` 之前谁也不会发现。
+ * 这个函数就是那个缺失的调用点——本项目第 N 次「实现存在 ≠ 实现生效」。
+ *
+ * 先不带 ref 截一次、只有真截断了才写 blob，是为了让绝大多数小结果一次盘都不落。
+ * `truncateResult` 是纯函数，重算没有副作用。
+ */
+async function capResult(
+  deps: TurnDeps,
+  blocks: readonly ResultBlock[],
+  tool: RegisteredTool,
+): Promise<{ forModel: ResultBlock[]; fullRef?: BlobRef }> {
+  const limits = tool.descriptor.resultLimits;
+  const probe = truncateResult(blocks, limits);
+  if (!probe.truncated) return { forModel: probe.blocks };
+
+  if (deps.blobs === undefined) {
+    /*
+     * 没有 blob 存储：**照样截断**，只是标记里没有"完整内容在哪"。
+     *
+     * 反过来（没地方存全文就不截断）会让 headless 与测试环境的行为与生产不同，
+     * 而截断恰恰是那种"只在生产的大文件上才出问题"的东西。
+     */
+    return { forModel: probe.blocks };
+  }
+
+  const full = blocks
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('\n');
+  const ref = await deps.blobs.put(new TextEncoder().encode(full), 'text/plain');
+  return { forModel: truncateResult(blocks, limits, ref).blocks, fullRef: ref };
+}
+
+/**
+ * 写前还原点（ADR-0003「无条件还原点」的执行点）。
+ *
+ * **快照失败不中止执行**，只落一条 notice。取舍的理由：用户要的是把活干完，
+ * 而一次快照失败（磁盘满、文件太大）不该让任务停下——但他必须知道"这一步没有退路"，
+ * 否则他会按"反正能撤销"的心态继续往下走。
+ */
+async function recordCheckpoint(
+  deps: TurnDeps,
+  turnId: TurnId,
+  tool: RegisteredTool,
+  input: unknown,
+  ctx: ToolContext,
+): Promise<void> {
+  if (deps.checkpointer === undefined) return;
+
+  try {
+    const record = await deps.checkpointer.before(tool, input, ctx);
+    if (record === undefined) return;
+    await deps.runtime.record({
+      type: 'checkpoint.created',
+      turnId,
+      payload: {
+        checkpointId: newCheckpointId(),
+        kind: record.kind,
+        ref: record.ref,
+        label: record.label,
+      },
+    });
+  } catch (e) {
+    await deps.runtime.record({
+      type: 'notice.posted',
+      turnId,
+      payload: {
+        level: 'warn',
+        code: 'checkpoint.failed',
+        message:
+          `没能为 ${tool.descriptor.name} 建立还原点，**这一步无法撤销**：` +
+          (e instanceof Error ? e.message : String(e)),
+      },
+    });
+  }
 }
 
 /** 未执行就结束的调用：仍然要产出 tool.end，否则模型收不到这次 tool_use 的结果 */

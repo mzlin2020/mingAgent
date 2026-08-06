@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ContentBlock, Message } from '@xm/contracts';
 import { api } from './bridge.js';
+import { MarkdownText } from './components/markdown.js';
 import { Button, Card, Textarea } from './components/ui';
 import { cn } from './lib/cn.js';
 import { useUi } from './store.js';
@@ -51,10 +52,10 @@ export function App(): ReactNode {
               <SetupBanner />
               <NoticeBanner />
               <UntrustedBanner />
-              {(session?.messages ?? []).map((m) => (
-                <MessageView key={m.id} message={m} />
-              ))}
+              <MessageStream messages={session?.messages ?? []} />
               <LiveMessage />
+              <LiveCalls />
+              <PermissionCard />
             </div>
           )}
         </div>
@@ -69,6 +70,21 @@ export function App(): ReactNode {
         />
       </main>
     </div>
+  );
+}
+
+/**
+ * 消息流。工具结果先索引一遍，再交给每条消息——`tool_use` 与 `tool_result`
+ * 分处两条消息，不索引就配不成一张卡（见 `indexResults`）。
+ */
+function MessageStream({ messages }: { readonly messages: readonly Message[] }): ReactNode {
+  const results = indexResults(messages);
+  return (
+    <>
+      {messages.map((m) => (
+        <MessageView key={m.id} message={m} results={results} />
+      ))}
+    </>
   );
 }
 
@@ -191,28 +207,138 @@ function NoticeBanner(): ReactNode {
  * 于是一次三十秒的流式回复期间界面完全静止（docs/09 G6）。
  */
 function LiveMessage(): ReactNode {
-  const live = useUi((s) => s.live);
-  if (live === undefined || (live.text === '' && live.thinking === '')) return null;
+  const message = useUi((s) => s.live.message);
+  if (message === undefined || (message.text === '' && message.thinking === '')) return null;
 
   return (
     <Card>
       <div className="mb-1 text-xs text-[var(--xm-fg-muted)]">小明</div>
       <div className="flex flex-col gap-2">
-        {live.thinking !== '' && (
+        {message.thinking !== '' && (
           <details className="text-xs text-[var(--xm-fg-muted)]" open>
             <summary className="cursor-pointer">思考中…</summary>
-            <p className="mt-1 whitespace-pre-wrap">{live.thinking}</p>
+            <p className="mt-1 whitespace-pre-wrap">{message.thinking}</p>
           </details>
         )}
-        {live.text !== '' && (
+        {message.text !== '' && (
           <p className="whitespace-pre-wrap">
-            {live.text}
+            {/*
+              在途文字**不过 Markdown**：半截的语法（一个还没闭合的 ``` 或 |）
+              会让渲染结果在打字过程中反复跳变。落库之后的那一份才渲染。
+            */}
+            {message.text}
             {/* 光标：让"还在写"和"写完了但很短"这两种情况分得开 */}
             <span className="ml-0.5 inline-block w-1.5 animate-pulse bg-[var(--xm-fg)] align-text-bottom">
               &nbsp;
             </span>
           </p>
         )}
+      </div>
+    </Card>
+  );
+}
+
+/**
+ * 正在跑的工具及其最新进度（ADR-0021 的第二半）。
+ *
+ * `tool.progress` 与 `message.delta` 一样是瞬态事件，在 `reduce` 里同样是空操作——
+ * 所以在这个组件存在之前，一次读几千个文件的调用期间界面上什么也不会变。
+ *
+ * 它读的是 `live.calls`，归零由 `tool.end` 负责。与在途文字不同的是：
+ * 这里显示的内容**永远不会**出现在 `session.messages` 里（那里放的是工具的结果），
+ * 所以它不是"先在 buffer 后在 state"，而是"用完就没了"。
+ */
+function LiveCalls(): ReactNode {
+  const calls = useUi((s) => s.live.calls);
+  const running = useUi((s) => s.session?.runningCalls);
+  if (running === undefined || running.size === 0) return null;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {[...running.values()].map((c) => (
+        <div
+          key={c.callId}
+          className="rounded-md border border-[var(--xm-border)] px-3 py-2 text-xs"
+        >
+          <span className="font-mono font-medium">{c.name}</span>
+          <span className="ml-2 text-[var(--xm-fg-muted)]">
+            {calls.get(c.callId)?.message ?? '运行中…'}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 审批卡片 —— 权限闸门的用户侧。
+ *
+ * ── 为什么内联在消息流里，不是模态框 ──
+ *
+ * 模态框挡住上下文，而用户恰恰要看着上下文才能判断这次操作合不合理
+ * （"它刚才说要改哪个文件来着？"）。挡住之后剩下的只有"允许/拒绝"两个按钮，
+ * 那时唯一理性的选择就是点允许。
+ *
+ * ── 卡片上的每一个字都来自事件流 ──
+ *
+ * 工具名、能力、**网关解析后的** target、风险等级、命中的规则 id——全部由
+ * `reduce` 从 `permission.request` 算出，模型碰不到。这与 ADR-0019 的解除按钮
+ * 是同一条理由：模型完全可以在回复里写"下面那个框点允许就行"，
+ * 而用户要确认的必须是一件具体的事，不是一段措辞。
+ *
+ * ── 「永久」为什么单独一行、样式更重 ──
+ *
+ * 它会写进用户级配置文件并在重启后继续生效，是这四个按钮里唯一有持久后果的那个。
+ * 四个等宽按钮并排会让它和"本次允许"看起来一样轻。
+ */
+function PermissionCard(): ReactNode {
+  const request = useUi((s) => s.session?.pendingPermission);
+  const respond = useUi((s) => s.respondPermission);
+  if (request === undefined) return null;
+
+  const answer = (effect: 'allow' | 'deny', scope: 'once' | 'session' | 'always') => () => {
+    void respond(request.requestId, effect, scope);
+  };
+
+  return (
+    <Card className="border-[var(--xm-accent)]">
+      <p className="font-medium">需要你的确认</p>
+      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+        <dt className="text-[var(--xm-fg-muted)]">操作</dt>
+        <dd className="font-mono">{request.capability}</dd>
+        <dt className="text-[var(--xm-fg-muted)]">目标</dt>
+        <dd className="break-all font-mono">{request.target === '' ? '（无）' : request.target}</dd>
+        <dt className="text-[var(--xm-fg-muted)]">风险</dt>
+        <dd>{request.risk}</dd>
+        <dt className="text-[var(--xm-fg-muted)]">原因</dt>
+        <dd>{request.reason}</dd>
+      </dl>
+
+      {request.trustLevel === 'untrusted' && (
+        <p className="mt-2 rounded bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
+          本会话读过外部内容。请特别确认这次操作确实是你要的。
+        </p>
+      )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button onClick={answer('allow', 'once')}>允许本次</Button>
+        <Button variant="ghost" onClick={answer('allow', 'session')}>
+          本会话都允许
+        </Button>
+        <Button variant="ghost" onClick={answer('deny', 'once')}>
+          拒绝
+        </Button>
+        <Button variant="ghost" onClick={answer('deny', 'session')}>
+          本会话都拒绝
+        </Button>
+      </div>
+      <div className="mt-2 flex items-center gap-2 border-t border-[var(--xm-border)] pt-2">
+        <Button variant="ghost" onClick={answer('allow', 'always')}>
+          永久允许这个目标
+        </Button>
+        <span className="text-xs text-[var(--xm-fg-muted)]">
+          会写进用户配置，重启后仍然生效。只针对上面那一个目标。
+        </span>
       </div>
     </Card>
   );
@@ -267,12 +393,27 @@ function SessionList(): ReactNode {
   const { sessions, currentId } = useUi();
   const newSession = useUi((s) => s.newSession);
   const openSession = useUi((s) => s.openSession);
+  const chooseWorkspace = useUi((s) => s.chooseWorkspace);
 
   return (
     <aside className="flex w-60 shrink-0 flex-col border-r border-[var(--xm-border)] bg-[var(--xm-surface-2)]">
-      <div className="p-2">
+      <div className="flex flex-col gap-1 p-2">
         <Button className="w-full" onClick={() => void newSession()}>
           新会话
+        </Button>
+        {/*
+          选目录再建会话 —— 主 DoD 任务（"读这个目录…"）的前提。
+          会话的 cwd 决定模型给的相对路径落在哪，而它记在 `session.created` 里、
+          此后不可改：换目录就是换一个会话，而不是让同一条事件流中途改变含义。
+        */}
+        <Button
+          variant="ghost"
+          className="w-full"
+          onClick={() => {
+            void chooseWorkspace().then((cwd) => (cwd === undefined ? undefined : newSession(cwd)));
+          }}
+        >
+          选择目录，新建会话
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -353,25 +494,61 @@ function Composer({ disabled, running }: { readonly disabled: boolean; readonly 
   );
 }
 
-function MessageView({ message }: { readonly message: Message }): ReactNode {
+/**
+ * 一次工具调用的结果，按 `toolUseId` 索引。
+ *
+ * 契约上 `tool_use` 与 `tool_result` 落在**两条不同的消息**里（前者在 assistant 的
+ * message.end，后者由 tool.end 追加）。照事件流的顺序平铺出来，用户看到的是
+ * "一个请求" + 隔了几行的"一段输出"，中间还可能夹着别的调用——一次并行调用之后
+ * 就完全对不上号了。所以这里先把结果索引起来，再合并成一张卡。
+ */
+type ResultIndex = ReadonlyMap<string, Extract<ContentBlock, { type: 'tool_result' }>>;
+
+function indexResults(messages: readonly Message[]): ResultIndex {
+  const out = new Map<string, Extract<ContentBlock, { type: 'tool_result' }>>();
+  for (const m of messages) {
+    for (const b of m.blocks) {
+      if (b.type === 'tool_result') out.set(b.toolUseId, b);
+    }
+  }
+  return out;
+}
+
+function MessageView({
+  message,
+  results,
+}: {
+  readonly message: Message;
+  readonly results: ResultIndex;
+}): ReactNode {
+  // 只含 tool_result 的消息不单独成卡：它的内容已经并进了发起它的那张工具卡
+  const visible = message.blocks.filter((b) => b.type !== 'tool_result');
+  if (visible.length === 0) return null;
+
   return (
     <Card className={message.role === 'user' ? 'bg-[var(--xm-surface-2)]' : ''}>
       <div className="mb-1 text-xs text-[var(--xm-fg-muted)]">
         {message.role === 'user' ? '你' : '小明'}
       </div>
       <div className="flex flex-col gap-2">
-        {message.blocks.map((b, i) => (
-          <BlockView key={i} block={b} />
+        {visible.map((b, i) => (
+          <BlockView key={i} block={b} results={results} />
         ))}
       </div>
     </Card>
   );
 }
 
-function BlockView({ block }: { readonly block: ContentBlock }): ReactNode {
+function BlockView({
+  block,
+  results,
+}: {
+  readonly block: ContentBlock;
+  readonly results: ResultIndex;
+}): ReactNode {
   switch (block.type) {
     case 'text':
-      return <p className="whitespace-pre-wrap">{block.text}</p>;
+      return <MarkdownText text={block.text} />;
 
     case 'thinking':
       return (
@@ -382,25 +559,13 @@ function BlockView({ block }: { readonly block: ContentBlock }): ReactNode {
       );
 
     case 'tool_use':
-      return (
-        <div className="rounded border border-[var(--xm-border)] px-2 py-1 text-xs">
-          <span className="font-medium">{block.name}</span>
-          <pre className="mt-1 overflow-x-auto text-[var(--xm-fg-muted)]">
-            {JSON.stringify(block.input)}
-          </pre>
-        </div>
-      );
+      return <ToolCard name={block.name} input={block.input} result={results.get(block.id)} />;
 
     case 'tool_result':
+      // 正常路径下走不到这里（上面已经并进工具卡）。留着是兜底：
+      // 一个找不到发起者的结果**照样要显示**，不能因为配不上对就从界面上消失
       return (
-        <div
-          className={cn(
-            'rounded border px-2 py-1 text-xs',
-            block.isError
-              ? 'border-[var(--xm-danger)] bg-[var(--xm-danger-bg)]'
-              : 'border-[var(--xm-border)]',
-          )}
-        >
+        <div className="rounded border border-[var(--xm-border)] px-2 py-1 text-xs">
           {block.content.map((c, i) => (
             <p key={i} className="whitespace-pre-wrap">
               {c.type === 'text' ? c.text : `[${c.type}]`}
@@ -413,4 +578,67 @@ function BlockView({ block }: { readonly block: ContentBlock }): ReactNode {
       // 未知块类型原样跳过，不让整条消息渲染失败——与事件流的处理保持一致
       return null;
   }
+}
+
+/**
+ * 工具调用卡片：请求与结果合成一张。
+ *
+ * 结果默认折叠。理由不是省地方，是**结果是给模型看的**——它经常是几百行文件内容，
+ * 铺开来会把对话本身淹掉。用户想看的时候点开，而"它到底做了什么"（工具名 + 入参）
+ * 始终可见。
+ */
+function ToolCard({
+  name,
+  input,
+  result,
+}: {
+  readonly name: string;
+  readonly input: unknown;
+  readonly result: Extract<ContentBlock, { type: 'tool_result' }> | undefined;
+}): ReactNode {
+  const failed = result?.isError === true;
+  const text = (result?.content ?? [])
+    .map((c) => (c.type === 'text' ? c.text : `[${c.type}]`))
+    .join('\n');
+
+  return (
+    <div
+      className={cn(
+        'rounded border text-xs',
+        failed ? 'border-[var(--xm-danger)]' : 'border-[var(--xm-border)]',
+      )}
+    >
+      <div
+        className={cn(
+          'flex items-baseline gap-2 px-2 py-1',
+          failed && 'bg-[var(--xm-danger-bg)]',
+        )}
+      >
+        <span className="font-mono font-medium">{name}</span>
+        <span className="min-w-0 flex-1 truncate text-[var(--xm-fg-muted)]">
+          {summarize(input)}
+        </span>
+        <span className="shrink-0 text-[var(--xm-fg-muted)]">
+          {result === undefined ? '进行中' : failed ? '失败' : '完成'}
+        </span>
+      </div>
+      {text !== '' && (
+        <details className="border-t border-[var(--xm-border)]">
+          <summary className="cursor-pointer px-2 py-1 text-[var(--xm-fg-muted)]">
+            {failed ? '查看错误' : `查看结果（${String(text.split('\n').length)} 行）`}
+          </summary>
+          <pre className="max-h-96 overflow-auto px-2 pb-2 whitespace-pre-wrap">{text}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+/** 工具入参的一行摘要。路径类的最有用，其余退回紧凑 JSON */
+function summarize(input: unknown): string {
+  if (typeof input !== 'object' || input === null) return String(input);
+  const record = input as Record<string, unknown>;
+  const path = record.path;
+  if (typeof path === 'string') return path;
+  return JSON.stringify(input);
 }

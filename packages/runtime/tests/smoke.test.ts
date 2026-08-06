@@ -6,7 +6,8 @@ import type { AnyEvent, ModelChunk, PermissionRequest } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import {
   ToolRegistry,
-  builtinRules,
+  builtinLayers,
+  pureGateway,
   emptySessionState,
   policyEnvFromPaths,
   reduce,
@@ -48,7 +49,7 @@ describe('headless 冒烟：一轮完整对话', () => {
     const platform = nodePlatform({ appRoot: APP_ROOT, dataDir });
     const paths = platform.paths();
     const stores = await openStores(paths);
-    const rules = builtinRules(policyEnvFromPaths(paths));
+    const layers = builtinLayers(policyEnvFromPaths(paths));
 
     const bus = new EventBus();
     const seen: AnyEvent[] = [];
@@ -114,14 +115,14 @@ describe('headless 冒烟：一轮完整对话', () => {
         runtime,
         provider,
         tools,
-        rules,
+        layers,
         tier: 'balanced',
         model: 'scripted-1',
-        targetOf: demoTargetOf,
+        gateway: pureGateway(demoTargetOf),
         pathCaseInsensitive: platform.os === 'windows',
         decide: (request) => {
           asked.push(request);
-          return Promise.resolve('allow');
+          return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
         },
       },
       '试一下这几个工具',
@@ -192,7 +193,7 @@ describe('headless 冒烟：一轮完整对话', () => {
     const dataDir = join(ROOT, 'run2');
     const platform = nodePlatform({ appRoot: APP_ROOT, dataDir });
     const stores = await openStores(platform.paths());
-    const rules = builtinRules(policyEnvFromPaths(platform.paths()));
+    const layers = builtinLayers(policyEnvFromPaths(platform.paths()));
     const bus = new EventBus();
     const seen: AnyEvent[] = [];
     bus.subscribe((e) => seen.push(e));
@@ -224,7 +225,7 @@ describe('headless 冒烟：一轮完整对话', () => {
 
     // 刻意不传 decide
     await runTurn(
-      { runtime, provider, tools, rules, tier: 'balanced', model: 'scripted-1', targetOf: demoTargetOf },
+      { runtime, provider, tools, layers, tier: 'balanced', model: 'scripted-1', gateway: pureGateway(demoTargetOf) },
       '删掉它',
     );
 

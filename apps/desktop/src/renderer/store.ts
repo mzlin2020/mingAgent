@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
 import type { LiveBuffer, SessionState } from '@xm/kernel';
-import { applyLive, emptySessionState, reduce } from '@xm/kernel';
+import { EMPTY_LIVE, applyLive, emptySessionState, reduce } from '@xm/kernel';
 import type { ListSessionsResult, PushedEvent, StatusResult } from '../shared/ipc.js';
 import type { z } from 'zod';
 import { api } from './bridge.js';
@@ -38,8 +38,10 @@ interface UiState {
    * 所以不存在 ADR-0015 要防的那种"会和回放结果分叉的第二份状态"。
    *
    * 累积与归零的逻辑全在内核的 `applyLive()` 里——这里只存结果，不做判断。
+   * 它同时装着在途消息与**正在跑的工具的最新进度**（M1-c），两者的归零时机不同，
+   * 见 `live-buffer.ts` 的说明。
    */
-  live: LiveBuffer | undefined;
+  live: LiveBuffer;
   busy: boolean;
   error: string | undefined;
   /**
@@ -53,7 +55,14 @@ interface UiState {
   // 写成箭头属性而不是方法：zustand 的选择器会把它们从对象上摘下来单独传，
   // 方法类型在那时会触发 unbound-method——而这里确实不需要 this
   readonly refreshSessions: () => Promise<void>;
-  readonly newSession: () => Promise<void>;
+  readonly newSession: (cwd?: string) => Promise<void>;
+  /** 打开原生目录选择框；用户取消时返回 undefined */
+  readonly chooseWorkspace: () => Promise<string | undefined>;
+  readonly respondPermission: (
+    requestId: string,
+    effect: 'allow' | 'deny',
+    scope: 'once' | 'session' | 'always',
+  ) => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
   readonly send: (text: string) => Promise<void>;
   readonly stop: () => Promise<void>;
@@ -77,7 +86,7 @@ export const useUi = create<UiState>((set, get) => ({
   sessions: [],
   currentId: undefined,
   session: undefined,
-  live: undefined,
+  live: EMPTY_LIVE,
   busy: false,
   error: undefined,
   status: undefined,
@@ -90,15 +99,44 @@ export const useUi = create<UiState>((set, get) => ({
     }
   },
 
-  newSession: async () => {
-    const { sessionId } = await api.createSession('新会话');
+  newSession: async (cwd) => {
+    const { sessionId } = await api.createSession({
+      title: cwd === undefined ? '新会话' : (cwd.split(/[/\\]/).pop() ?? '新会话'),
+      ...(cwd === undefined ? {} : { cwd }),
+    });
     await get().refreshSessions();
     await get().openSession(sessionId);
   },
 
+  chooseWorkspace: async () => {
+    try {
+      return (await api.chooseWorkspace()).path;
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+      return undefined;
+    }
+  },
+
+  /**
+   * 应答审批。**与 stop / clearUntrusted 同一个姿态：发出去就完了，不乐观更新。**
+   *
+   * 在这里顺手把 `pendingPermission` 清掉会快一帧，代价是主进程若没收到
+   * （requestId 已经过期、窗口刚重载），用户看到的是"已允许"而闸门其实拒了。
+   * 权限状态尤其不能乐观更新——它是这套系统里最不该出现"看起来生效了"的地方。
+   */
+  respondPermission: async (requestId, effect, scope) => {
+    const id = get().currentId;
+    if (id === undefined) return;
+    try {
+      await api.respondPermission(id, requestId, effect, scope);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
   openSession: async (id) => {
     // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
-    set({ currentId: id, session: undefined, live: undefined, error: undefined });
+    set({ currentId: id, session: undefined, live: EMPTY_LIVE, error: undefined });
     const events = await api.readSession(id);
     let state = emptySessionState(id);
     for (const raw of events) {

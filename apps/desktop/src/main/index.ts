@@ -81,7 +81,7 @@ app.whenReady().then(
     if (isSmoke) {
       // 走一遍真实的建会话路径：它会打开真库、取写句柄、落一条 session.created。
       // 打包漏了 prebuilds/ 的话，这一步就是崩的那一步。
-      const sessionId = await services.createSession('打包冒烟');
+      const sessionId = await services.createSession({ title: '打包冒烟' });
       const list = await services.stores.events.listSessions();
       const ok = list.some((s) => s.sessionId === sessionId);
       console.log(ok ? '✓ 桌面产物冒烟通过：库能开、会话能建、投影能读' : '✗ 会话没进投影');

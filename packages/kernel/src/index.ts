@@ -13,6 +13,7 @@ export * from './state/seq.js';
 
 export * from './policy/engine.js';
 export * from './policy/defaults.js';
+export * from './policy/layers.js';
 export * from './policy/target.js';
 export * from './policy/host-target.js';
 export * from './policy/normalize.js';
@@ -20,6 +21,8 @@ export * from './policy/normalize.js';
 export * from './port/platform.js';
 export * from './port/model-provider.js';
 export * from './port/secret-store.js';
+export * from './port/tool-gateway.js';
+export * from './port/checkpointer.js';
 
 export * from './model/cost.js';
 

@@ -6,8 +6,9 @@ import {
   MemoryEventStore,
   ToolRegistry,
   applyLive,
-  builtinRules,
-  emptyLiveBuffer,
+  builtinLayers,
+  EMPTY_LIVE,
+  hasLive,
   emptySessionState,
   reduce,
 } from '@xm/kernel';
@@ -40,7 +41,7 @@ const FULL = PIECES.join('');
 /** 按渲染层的方式消费：两条线各走各的（apps/desktop/src/renderer/store.ts） */
 class Screen {
   state: SessionState;
-  live: LiveBuffer | undefined = emptyLiveBuffer();
+  live: LiveBuffer = EMPTY_LIVE;
   /** 每次 live 更新时的快照，用来证明"字在长" */
   readonly frames: string[] = [];
   /** 逐条收到的 delta 文本 */
@@ -57,7 +58,7 @@ class Screen {
     this.live = applyLive(this.live, core);
     if (core.type === 'message.delta' && core.payload.kind !== 'thinking') {
       this.deltas.push(core.payload.text);
-      this.frames.push(this.live?.text ?? '');
+      this.frames.push(this.live.message?.text ?? '');
     }
   }
 }
@@ -94,7 +95,7 @@ async function run(): Promise<Screen> {
         ],
       }),
       tools: new ToolRegistry(),
-      rules: builtinRules(ENV),
+      layers: builtinLayers(ENV),
       tier: 'balanced',
       model: 'scripted-1',
     },
@@ -131,6 +132,6 @@ describe('流式输出真的会显示出来', () => {
 
   it('回合结束时在途缓冲已归零 —— 屏幕上那段文字只剩 messages 里那一份', async () => {
     const s = await run();
-    expect(s.live).toBeUndefined();
+    expect(hasLive(s.live)).toBe(false);
   });
 });

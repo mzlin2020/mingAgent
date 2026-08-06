@@ -1,0 +1,22 @@
+{
+  "name": "@xm/tools-core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "基础工具集：fs 读写列举、路径能力网关、写前还原点。要 node:fs，不依赖 electron",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "@xm/kernel": "workspace:*",
+    "zod": "4.4.3"
+  }
+}

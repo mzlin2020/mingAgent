@@ -26,6 +26,22 @@ import {
 import type { PolicyEnv } from '@xm/kernel';
 
 /**
+ * 单层求值的便捷包装。
+ *
+ * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
+ * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
+ * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
+ */
+type EvalInput = Parameters<typeof evaluate>[0];
+const judge = (
+  input: Omit<EvalInput, 'layers'> & { rules: EvalInput['layers'][number]['rules'] },
+): ReturnType<typeof evaluate> => {
+  const { rules, ...rest } = input;
+  return evaluate({ ...rest, layers: [{ id: 'builtin', rules }] });
+};
+
+/**
  * 红线依赖三个环境事实（家目录、安装目录、数据目录），所以测试也必须给出它们。
  * 这正是把 PolicyEnv 做成必填参数的用意：忘了传，编译就不过——
  * `dataDir` 加进来的那一次，三处调用点当场全红，这就是想要的效果。
@@ -129,7 +145,7 @@ describe('PolicyEngine：优先级判定表', () => {
 
   for (const row of table) {
     it(row.name, () => {
-      const verdict = evaluate({
+      const verdict = judge({
         request: req('fs.write'),
         rules: row.rules,
         tier: 'balanced',
@@ -142,7 +158,7 @@ describe('PolicyEngine：优先级判定表', () => {
   it('每个 Verdict 都带 ruleId 与 reason —— 用户问"为什么拦我"必须答得出', () => {
     for (const capability of ALL_CAPABILITIES) {
       for (const tier of ['strict', 'balanced', 'yolo'] as const) {
-        const v = evaluate({ request: req(capability), rules: BUILTIN_RULES, tier });
+        const v = judge({ request: req(capability), rules: BUILTIN_RULES, tier });
         expect(v.ruleId, `${capability}/${tier}`).toBeTruthy();
         expect(v.reason, `${capability}/${tier}`).toBeTruthy();
       }
@@ -152,20 +168,20 @@ describe('PolicyEngine：优先级判定表', () => {
 
 describe('PolicyEngine：档位兜底', () => {
   it('平衡档：safe 放行，其余询问', () => {
-    expect(evaluate({ request: req('net.listen', { risk: 'safe' }), rules: [], tier: 'balanced' }).effect).toBe('allow');
-    expect(evaluate({ request: req('net.listen', { risk: 'low' }), rules: [], tier: 'balanced' }).effect).toBe('ask');
+    expect(judge({ request: req('net.listen', { risk: 'safe' }), rules: [], tier: 'balanced' }).effect).toBe('allow');
+    expect(judge({ request: req('net.listen', { risk: 'low' }), rules: [], tier: 'balanced' }).effect).toBe('ask');
   });
 
   it('严格档：一律询问，safe 也不例外', () => {
-    expect(evaluate({ request: req('fs.read', { risk: 'safe' }), rules: [], tier: 'strict' }).effect).toBe('ask');
+    expect(judge({ request: req('fs.read', { risk: 'safe' }), rules: [], tier: 'strict' }).effect).toBe('ask');
   });
 
   it('YOLO 档：默认放行', () => {
-    expect(evaluate({ request: req('shell.exec'), rules: [], tier: 'yolo' }).effect).toBe('allow');
+    expect(judge({ request: req('shell.exec'), rules: [], tier: 'yolo' }).effect).toBe('allow');
   });
 
   it('🔴 YOLO 也拦不住红线', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('fs.delete', { target: '/' }),
       rules: BUILTIN_RULES,
       tier: 'yolo',
@@ -178,9 +194,10 @@ describe('PolicyEngine：档位兜底', () => {
     const userAllowsEverything: PolicyRuleSet = [
       rule({ id: 'user.allow-all', effect: 'allow', capability: '*' }),
     ];
+    // 这一条必须走真正的分层：用户层排在内置层之后，正是"后面的层胜"最该被质疑的地方
     const v = evaluate({
       request: req('gui.input', { trustLevel: 'untrusted' }),
-      rules: composeRules(ENV, userAllowsEverything),
+      layers: composeRules({ env: ENV, user: userAllowsEverything }),
       tier: 'yolo',
     });
     expect(v.effect).toBe('deny');
@@ -191,7 +208,7 @@ describe('PolicyEngine：档位兜底', () => {
 describe('PolicyEngine：提示词注入降级', () => {
   it('untrusted + 不可撤销能力 + 本来 allow → 降级为 ask', () => {
     for (const capability of IRREVERSIBLE_CAPABILITIES) {
-      const v = evaluate({
+      const v = judge({
         request: req(capability, { trustLevel: 'untrusted' }),
         rules: [rule({ id: 'a', effect: 'allow' })],
         tier: 'balanced',
@@ -204,7 +221,7 @@ describe('PolicyEngine：提示词注入降级', () => {
   });
 
   it('untrusted 但能力可撤销 → 不降级', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('fs.write', { trustLevel: 'untrusted' }),
       rules: [rule({ id: 'a', effect: 'allow' })],
       tier: 'balanced',
@@ -214,7 +231,7 @@ describe('PolicyEngine：提示词注入降级', () => {
 
   it('trustLevel=model 或 user 时不降级 —— 全局收紧会被用户整体关掉', () => {
     for (const trustLevel of ['user', 'model'] satisfies TrustLevel[]) {
-      const v = evaluate({
+      const v = judge({
         request: req('net.fetch', { trustLevel }),
         rules: [rule({ id: 'a', effect: 'allow' })],
         tier: 'balanced',
@@ -224,7 +241,7 @@ describe('PolicyEngine：提示词注入降级', () => {
   });
 
   it('降级只把 allow 变 ask，不会把 deny 变松', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('net.fetch', { trustLevel: 'untrusted' }),
       rules: [rule({ id: 'd', effect: 'deny' })],
       tier: 'balanced',
@@ -236,8 +253,8 @@ describe('PolicyEngine：提示词注入降级', () => {
 describe('PolicyEngine：匹配条件', () => {
   it('capability 精确匹配，`*` 匹配全部', () => {
     const rules = [rule({ id: 'only-read', effect: 'allow', capability: 'fs.read' })];
-    expect(evaluate({ request: req('fs.read'), rules, tier: 'balanced' }).ruleId).toBe('only-read');
-    expect(evaluate({ request: req('fs.write'), rules, tier: 'balanced' }).ruleId).toBe(
+    expect(judge({ request: req('fs.read'), rules, tier: 'balanced' }).ruleId).toBe('only-read');
+    expect(judge({ request: req('fs.write'), rules, tier: 'balanced' }).ruleId).toBe(
       TIER_FALLBACK_RULE_ID,
     );
   });
@@ -247,11 +264,11 @@ describe('PolicyEngine：匹配条件', () => {
       rule({ id: 'src-only', effect: 'allow', capability: 'fs.write', match: { target: '/work/src/**' } }),
     ];
     expect(
-      evaluate({ request: req('fs.write', { target: '/work/src/a/b.ts' }), rules, tier: 'balanced' })
+      judge({ request: req('fs.write', { target: '/work/src/a/b.ts' }), rules, tier: 'balanced' })
         .ruleId,
     ).toBe('src-only');
     expect(
-      evaluate({ request: req('fs.write', { target: '/work/other.ts' }), rules, tier: 'balanced' })
+      judge({ request: req('fs.write', { target: '/work/other.ts' }), rules, tier: 'balanced' })
         .ruleId,
     ).toBe(TIER_FALLBACK_RULE_ID);
   });
@@ -260,11 +277,11 @@ describe('PolicyEngine：匹配条件', () => {
     const rules = [
       rule({ id: 'container-only', effect: 'allow', match: { executor: 'container' } }),
     ];
-    expect(evaluate({ request: req('shell.exec'), rules, tier: 'balanced' }).ruleId).toBe(
+    expect(judge({ request: req('shell.exec'), rules, tier: 'balanced' }).ruleId).toBe(
       TIER_FALLBACK_RULE_ID,
     );
     expect(
-      evaluate({ request: req('shell.exec'), rules, tier: 'balanced', executor: 'container' })
+      judge({ request: req('shell.exec'), rules, tier: 'balanced', executor: 'container' })
         .ruleId,
     ).toBe('container-only');
   });
@@ -272,10 +289,10 @@ describe('PolicyEngine：匹配条件', () => {
   it('trustLevel 匹配', () => {
     const rules = [rule({ id: 'trusted-only', effect: 'allow', match: { trustLevel: ['user'] } })];
     expect(
-      evaluate({ request: req('fs.write', { trustLevel: 'user' }), rules, tier: 'balanced' }).ruleId,
+      judge({ request: req('fs.write', { trustLevel: 'user' }), rules, tier: 'balanced' }).ruleId,
     ).toBe('trusted-only');
     expect(
-      evaluate({ request: req('fs.write', { trustLevel: 'model' }), rules, tier: 'balanced' }).ruleId,
+      judge({ request: req('fs.write', { trustLevel: 'model' }), rules, tier: 'balanced' }).ruleId,
     ).toBe(TIER_FALLBACK_RULE_ID);
   });
 });
@@ -326,7 +343,7 @@ describe('红线清单', () => {
   });
 
   it('包含"不许改权限模块自身"这条', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('self.modify', { target: '/repo/packages/kernel/src/policy/defaults.ts' }),
       rules: BUILTIN_RULES,
       tier: 'balanced',
@@ -364,7 +381,7 @@ describe('YOLO 档的边界', () => {
   const RULES = [...builtinRules(ENV), USER_DENY];
 
   const ask = (capability: Capability, target: string, tier: 'balanced' | 'yolo') =>
-    evaluate({
+    judge({
       request: {
         requestId: newRequestId(),
         sessionId: newSessionId(),

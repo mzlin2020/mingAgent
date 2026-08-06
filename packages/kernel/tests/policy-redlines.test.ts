@@ -5,6 +5,22 @@ import { builtinRules, evaluate, globMatch, normalizePathTarget } from '@xm/kern
 import type { PolicyEnv } from '@xm/kernel';
 
 /**
+ * 单层求值的便捷包装。
+ *
+ * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
+ * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
+ * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
+ */
+type EvalInput = Parameters<typeof evaluate>[0];
+const judge = (
+  input: Omit<EvalInput, 'layers'> & { rules: EvalInput['layers'][number]['rules'] },
+): ReturnType<typeof evaluate> => {
+  const { rules, ...rest } = input;
+  return evaluate({ ...rest, layers: [{ id: 'builtin', rules }] });
+};
+
+/**
  * 红线的**真实输入**回归测试。
  *
  * 这个文件的每一条都来自 2026-08-04 的一次实测：当时红线全部"已配置"，
@@ -39,7 +55,7 @@ const req = (capability: Capability, target: string): PermissionRequest => ({
 });
 
 const verdict = (capability: Capability, target: string, caseInsensitive = false) =>
-  evaluate({
+  judge({
     request: req(capability, target),
     rules: RULES,
     tier: 'balanced',
@@ -143,7 +159,7 @@ describe('glob 在安全边界上的语义', () => {
       appRoot: 'C:/repo',
       dataDir: 'C:/Users/ming/AppData/Roaming/xiaoming',
     };
-    const v = evaluate({
+    const v = judge({
       request: req('self.modify', 'C:/REPO/SCRIPTS/check-secrets.mjs'),
       rules: builtinRules(winEnv),
       tier: 'balanced',
@@ -155,7 +171,7 @@ describe('glob 在安全边界上的语义', () => {
 
 describe('红线不受档位影响', () => {
   it('🔴 YOLO 也拦得住删根', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('fs.delete', '/tmp/..'),
       rules: RULES,
       tier: 'yolo',
@@ -180,7 +196,7 @@ describe('注入降级：ask → deny', () => {
       ['fs.delete', '/repo/src/a.ts'],
       ['net.fetch', 'https://example.com'],
     ] as const) {
-      const v = evaluate({
+      const v = judge({
         request: { ...req(capability, target), trustLevel: 'untrusted' },
         rules: RULES,
         tier: 'balanced',
@@ -191,7 +207,7 @@ describe('注入降级：ask → deny', () => {
   });
 
   it('可撤销的能力不降级 —— 全局收紧会被用户整体关掉，等于防御不存在', () => {
-    const v = evaluate({
+    const v = judge({
       request: { ...req('fs.write', '/repo/src/a.ts'), trustLevel: 'untrusted' },
       rules: RULES,
       tier: 'balanced',
@@ -201,7 +217,7 @@ describe('注入降级：ask → deny', () => {
   });
 
   it('可信上下文下 ask 保持 ask', () => {
-    expect(evaluate({ request: req('git.push', '/repo'), rules: RULES, tier: 'balanced' }).effect)
+    expect(judge({ request: req('git.push', '/repo'), rules: RULES, tier: 'balanced' }).effect)
       .toBe('ask');
   });
 });
@@ -313,7 +329,7 @@ describe('Windows 8.3 短文件名：一条真实的红线绕过路径', () => {
 
     const rules = builtinRules({ ...ENV, appRoot: 'C:/Program Files/xiaoming' });
     const ask = (target: string) =>
-      evaluate({
+      judge({
         request: req('fs.write', target),
         rules,
         tier: 'yolo',

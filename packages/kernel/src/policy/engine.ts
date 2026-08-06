@@ -13,10 +13,23 @@ import { normalizeTarget } from './normalize.js';
 
 export type Executor = 'local' | 'container' | 'remote';
 
+/**
+ * 规则的来源层。**顺序即优先级**，见 `evaluate()` 的求值顺序说明。
+ *
+ * 层名不只是标签：`project` 层被限制为只能收紧（`layers.ts` 的 `tightenOnly`），
+ * `session` 层由用户当场的审批决定合成（`grantsToRules`）。
+ */
+export type RuleLayerId = 'builtin' | 'user' | 'project' | 'session';
+
+export interface RuleLayer {
+  readonly id: RuleLayerId;
+  readonly rules: PolicyRuleSet;
+}
+
 export interface EvaluateInput {
   readonly request: PermissionRequest;
-  /** 内置默认 + 用户级 + 项目级，按该顺序拼接。同优先级内**后定义者胜** */
-  readonly rules: PolicyRuleSet;
+  /** 自底向上排列：内置 → 用户级 → 项目级 → 会话授权。**后一层胜** */
+  readonly layers: readonly RuleLayer[];
   readonly tier: PermissionTier;
   readonly executor?: Executor;
   /**
@@ -38,17 +51,41 @@ export const INVALID_TARGET_RULE_ID = 'builtin.invalid-target';
 /**
  * 权限判定 —— **纯函数**，无 I/O、无状态、无时间依赖。
  *
- * 求值顺序：`deny(immutable)` → `deny` → `ask` → `allow`，同优先级内**后定义者胜**
- * （所以项目配置能覆盖用户配置：拼接时放在后面即可）。
+ * ── 求值顺序 ──
  *
- * 无匹配规则时由档位兜底。**YOLO 只跳过 ask，跳不过任何 deny**——红线不行，
- * 用户自己写的普通 deny 也不行（docs/09 C5）。
+ * ```
+ * 0  target 规范化，失败关闭
+ * 1  全部层里的 immutable deny（红线）—— 任何层都翻不了
+ * 2  自最后一层向前，第一个「有匹配」的层定案；层内 deny > ask > allow，同效果后定义者胜
+ * 3  没有任何层匹配 → 档位兜底
+ * 4  YOLO：把结论里的 ask 变成 allow —— **跳过 ask，跳不过任何 deny**（docs/09 C5）
+ * 5  不可信上下文降级（allow→ask、ask→deny），只作用于不可撤销能力
+ * ```
+ *
+ * ── 第 2 步为什么是「分层」而不是「一张拍平的表」──
+ *
+ * 上一版把所有规则拍成一个数组，优先级是 `deny > ask > allow` 且**与定义顺序无关**。
+ * 那条规矩单看很合理（一条写宽了的 allow 不该悄悄把 ask 放松掉），但它有一个
+ * 直到 M1-c 接上审批 UI 才暴露出来的后果：
+ *
+ *   **任何 allow 都压不过内置的 ask，于是「永久授权」在这个引擎里根本表达不出来。**
+ *
+ * 内置默认里 `fs.write` / `fs.delete` / `shell.exec` / `git.push` / `net.fetch` …
+ * 全是 ask。用户在 `config.json` 里写 `allow fs.write /proj/**`，判定照样 ask——
+ * `Config.permission.rules` 的 allow 条目对**所有值得授权的能力**一条都不生效。
+ * 用户只能收紧，不能放松，而这件事没有任何地方写着。
+ *
+ * 现在的语义是：**后一层覆盖前一层；同一层内仍是 deny > ask > allow。**
+ * 「一条写宽了的 allow 不该放松同一批规则里的 ask」这个保护留在层内，
+ * 而「我显式配置的东西应该压过出厂默认」这条常识在层间成立。
+ *
+ * 红线仍然在分层之前、全局最先判——它是唯一不参与层序的东西，也必须是。
  *
  * 之所以做成纯函数：它是安全边界，必须能被穷举测试。任何 I/O 都会让"把规则优先级
  * 的所有组合跑一遍"变成不可能，而那正是唯一能证明它对的方式。
  */
 export function evaluate(input: EvaluateInput): PolicyVerdict {
-  const { request, rules, tier } = input;
+  const { request, layers, tier } = input;
 
   /*
    * 0) 目标先规范化，**失败关闭**。
@@ -73,58 +110,69 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
   }
   const target = normalized.value;
 
-  const matched = rules.filter((r) => matches(r, input, target, kind));
-
-  // 1) 红线：不可覆盖
-  const immutableDeny = lastWhere(matched, (r) => r.effect === 'deny' && r.immutable);
-  if (immutableDeny !== undefined) return denyOf(immutableDeny);
-
-  // 2) 普通 deny
-  const deny = lastWhere(matched, (r) => r.effect === 'deny');
-  if (deny !== undefined) return denyOf(deny);
+  const matchedPerLayer = layers.map((layer) =>
+    layer.rules.filter((r) => matches(r, input, target, kind)),
+  );
 
   /*
-   * 3) YOLO —— **跳过 ask，不跳过 deny**（docs/09 C5 定稿）。
+   * 1) 红线：不参与层序，全局最先判。
    *
-   * 这一步之前排在普通 deny 前面，效果是 YOLO 把**用户自己写下的 deny 规则**
-   * 也一并忽略了。实测：用户写 `deny fs.delete /home/ming/work/prod/**`，
-   * balanced 档 DENY，yolo 档 ALLOW。
+   * 它是这个函数里唯一"跨层"的一步，也必须是——红线的定义就是"任何档位、任何用户
+   * 配置都不可覆盖"，一旦让它进层序，一条更靠后的层就能把它顶掉。
+   */
+  const immutableDeny = lastWhere(
+    matchedPerLayer.flat(),
+    (r) => r.effect === 'deny' && r.immutable,
+  );
+  if (immutableDeny !== undefined) return denyOf(immutableDeny);
+
+  // 2) 自最后一层向前：第一个有匹配的层定案，层内 deny > ask > allow
+  let verdict: PolicyVerdict | undefined;
+  for (let i = matchedPerLayer.length - 1; i >= 0 && verdict === undefined; i--) {
+    const matched = matchedPerLayer[i] ?? [];
+    if (matched.length === 0) continue;
+
+    const deny = lastWhere(matched, (r) => r.effect === 'deny');
+    // deny 直接定案：YOLO 与后续步骤都越不过它（用户自己写的 deny 同样算数，docs/09 C5）
+    if (deny !== undefined) return denyOf(deny);
+
+    const ask = lastWhere(matched, (r) => r.effect === 'ask');
+    if (ask !== undefined) {
+      verdict = { effect: 'ask', ruleId: ask.id, reason: ask.reason, risk: request.risk };
+      break;
+    }
+
+    const allow = lastWhere(matched, (r) => r.effect === 'allow');
+    if (allow !== undefined) verdict = { effect: 'allow', ruleId: allow.id, reason: allow.reason };
+  }
+
+  // 3) 档位兜底。YOLO 没有自己的兜底档，它借平衡档的结论再走第 4 步
+  verdict ??= tierFallback(tier === 'yolo' ? 'balanced' : tier, request.risk);
+
+  /*
+   * 4) YOLO —— **跳过 ask，不跳过 deny**（docs/09 C5 定稿）。
+   *
+   * 它之前排在普通 deny 之前，效果是 YOLO 把**用户自己写下的 deny 规则**也一并忽略了。
+   * 实测：用户写 `deny fs.delete /home/ming/work/prod/**`，balanced 档 DENY，yolo 档 ALLOW。
    *
    * 那个语义站不住。YOLO 的意思是"别再问我了"，不是"忘掉我说过不许碰的地方"——
    * 前者省的是确认框，后者删的是用户唯一能表达"这里绝对不行"的手段。
    * 而且它恰好在最危险的时候失效：用户开 YOLO 正是因为要放手让它长时间自己跑。
    *
-   * 所以 YOLO 现在只吞掉 ask（连同档位兜底的 ask）。红线在上面第 1 步就拦住了，
-   * 用户的 deny 在上面第 2 步拦住了，剩下的才默认放行。
+   * 放在这里而不是更早，是为了让 `ruleId` 仍然指向**那条本来要问的规则**：
+   * 审计里"YOLO 跳过了 def.fs-delete"比"YOLO 默认放行"有用得多。
    */
-  if (tier === 'yolo') {
-    return downgradeIfUntrusted(
-      { effect: 'allow', ruleId: TIER_FALLBACK_RULE_ID, reason: 'YOLO 档：默认放行（不越过 deny 规则）' },
-      request,
-    );
+  if (tier === 'yolo' && verdict.effect === 'ask') {
+    verdict = {
+      effect: 'allow',
+      ruleId: verdict.ruleId,
+      reason: `YOLO 档：跳过确认（${verdict.reason}）`,
+    };
   }
 
-  // 4) ask —— 同样要过降级：默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
+  // 5) 注入降级。ask 也要过——默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
   //    不在这里过一遍，注入降级就永远碰不到最该拦的那批操作
-  const ask = lastWhere(matched, (r) => r.effect === 'ask');
-  if (ask !== undefined) {
-    return downgradeIfUntrusted(
-      { effect: 'ask', ruleId: ask.id, reason: ask.reason, risk: request.risk },
-      request,
-    );
-  }
-
-  // 5) allow
-  const allow = lastWhere(matched, (r) => r.effect === 'allow');
-  if (allow !== undefined) {
-    return downgradeIfUntrusted(
-      { effect: 'allow', ruleId: allow.id, reason: allow.reason },
-      request,
-    );
-  }
-
-  // 6) 档位兜底
-  return downgradeIfUntrusted(tierFallback(tier, request.risk), request);
+  return downgradeIfUntrusted(verdict, request);
 }
 
 function tierFallback(tier: Exclude<PermissionTier, 'yolo'>, risk: RiskLevel): PolicyVerdict {
@@ -239,6 +287,12 @@ function lastWhere<T>(items: readonly T[], pred: (item: T) => boolean): T | unde
  *   `**`        跨分隔符匹配任意字符
  *   `*`         匹配任意字符但不跨 `/`
  *   `?`         匹配单个非 `/` 字符
+ *   `\x`        转义：把 `x` 当字面量，用于 `\*` / `\?` / `\\`
+ *
+ * 转义是给**授权**用的（`layers.ts` 的 `escapeGlobPattern`）：一次"允许写这个文件"
+ * 的授权，target 是一个字面路径而不是模式。POSIX 上 `a*b` 是合法文件名，
+ * 不转义就会让一次针对单个文件的授权匹配到一批文件——授权是会被持久化成规则的，
+ * 那个放大会一直留着。内置规则里没有反斜杠，所以这条不影响任何存量模式。
  *
  * 第一条是单独列出来的，因为它是个真实的坑：朴素实现里 `/prod/**` 展开成 `/prod/.*`，
  * 于是**匹配不到 `/prod` 目录本身**——"禁止写 /prod 下的一切"这条规则，对 `/prod`
@@ -290,7 +344,11 @@ function globToRegExp(pattern: string, caseInsensitive: boolean, kind: TargetKin
 
   for (let i = start; i < pattern.length; i++) {
     const ch = pattern[i] ?? '';
-    if (ch === '/' && pattern[i + 1] === '*' && pattern[i + 2] === '*' && i + 3 === pattern.length) {
+    if (ch === '\\' && i + 1 < pattern.length) {
+      // 转义：下一个字符按字面量处理，不参与任何通配语义
+      out += (pattern[i + 1] ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      i++;
+    } else if (ch === '/' && pattern[i + 1] === '*' && pattern[i + 2] === '*' && i + 3 === pattern.length) {
       // 结尾的 `/**`：目录自身也算命中
       out += '(?:/.*)?';
       i += 2;

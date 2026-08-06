@@ -1,30 +1,40 @@
-import type { MessageId, XmEvent } from '@xm/contracts';
+import type { CallId, MessageId, XmEvent } from '@xm/contracts';
 
 /**
- * 在途消息缓冲 —— **不是** `SessionState` 的一部分（ADR-0021）。
+ * 在途缓冲 —— **不是** `SessionState` 的一部分（ADR-0021）。
  *
  * ── 它为什么必须存在 ──
  *
  * 两条各自完全正确的约束，合起来产生了一个洞（docs/09 G6）：
  *
- *   · ADR-0008：瞬态事件（`message.delta`）在 `reduce` 里**必须是空操作**，
- *              不得改变状态的任何一位。
+ *   · ADR-0008：瞬态事件（`message.delta` / `tool.progress`）在 `reduce` 里**必须是
+ *              空操作**，不得改变状态的任何一位。
  *   · ADR-0015：渲染层**不持有第二份状态**，消息流全部由 `reduce()` 算出。
  *
- * 于是 `message.delta` 到达时，UI 什么也不做——**模型正在输出的文字，在 `message.end`
- * 落库之前一个字都不会显示**。M0-b 看不出来，因为脚本化 Provider 是瞬间返回的；
- * 接上真实模型，一次三十秒的回复期间界面完全静止，而那恰恰是对话类产品最核心的体感。
+ * 于是瞬态事件到达时，UI 什么也不做——**模型正在输出的文字，在 `message.end`
+ * 落库之前一个字都不会显示**；工具跑到第几步，同样显示不出来。M0-b 看不出来，
+ * 因为脚本化 Provider 是瞬间返回的；接上真实模型与真实工具，一次三十秒的回复
+ * 或一次读几千个文件的调用期间界面完全静止，而那恰恰是最需要反馈的时刻。
  *
  * ── 它凭什么不违反 ADR-0015 ──
  *
- * ADR-0015 禁的是「UI 自己维护一份**会和回放结果分叉**的 messages」。分叉之所以致命，
+ * ADR-0015 禁的是「UI 自己维护一份**会和回放结果分叉**的状态」。分叉之所以致命，
  * 是因为它的表现是"刷新一下内容就变了"，而且没人能说清哪一份是对的。
  *
- * 这里渲染的是**尚未持久化的在途事件**：它本来就不在回放结果里，`message.end` 一到
- * 就归零。两者在时间上互斥——**任何时刻，同一段文字要么在 buffer 里，要么在
- * `state.messages` 里，不会同时在两边**。没有重叠，就没有分叉的余地。
+ * 这里渲染的是**尚未持久化的在途事件**，判据是：
  *
- * 这条互斥是可执行的判据，不是一句辩解：`tests/live-buffer.test.ts` 把它变成用例。
+ *   **任何时刻，同一条信息要么在 buffer 里，要么在 `state` 里，不会同时在两边。**
+ *
+ * 两个部分满足这条判据的方式**不一样**，这个区别要说清楚：
+ *
+ *   · `message`：delta 里的文字最终会**原样进** `message.end`，所以它是"先在 buffer、
+ *     后在 state"，靠 `message.end` 的归零完成交接。
+ *   · `calls`：`tool.progress` 的内容**永远不会进** state（它是纯瞬态的进度描述，
+ *     持久流里对应的是 `tool.end` 的结果）。所以它的判据是"随 `tool.end` 消失"——
+ *     不是被取代，是本来就不该留下。
+ *
+ * 漏掉任何一条归零的后果都一样：屏幕上出现一段**回放不出来**的内容，
+ * 而那正是 ADR-0015 要防的那种"第二份状态"。
  *
  * ── 它为什么在内核而不在渲染层 ──
  *
@@ -33,6 +43,13 @@ import type { MessageId, XmEvent } from '@xm/contracts';
  * 而且它是纯函数，放在内核才能被穷举测试。
  */
 export interface LiveBuffer {
+  /** 正在流式输出的那条消息。没有则为 undefined */
+  readonly message: LiveMessage | undefined;
+  /** 正在跑的工具调用 → 它最新一条进度。`tool.end` 到达即删除 */
+  readonly calls: ReadonlyMap<CallId, LiveCall>;
+}
+
+export interface LiveMessage {
   readonly messageId: MessageId;
   /** 已到达的正文增量拼接 */
   readonly text: string;
@@ -40,45 +57,90 @@ export interface LiveBuffer {
   readonly thinking: string;
 }
 
-export const emptyLiveBuffer = (): LiveBuffer | undefined => undefined;
+export interface LiveCall {
+  readonly callId: CallId;
+  /**
+   * 最新一条进度描述。**只留最新的一条，不做历史堆叠**——
+   * 进度是"现在在干什么"，堆起来就成了日志，而日志属于 `tool.end` 的结果。
+   */
+  readonly message: string;
+  /** 工具附带的结构化进度数据（如已处理文件数），原样透传给 UI */
+  readonly data: unknown;
+}
+
+export const EMPTY_LIVE: LiveBuffer = { message: undefined, calls: new Map() };
 
 /**
  * 把一条事件叠进在途缓冲。**归零的时机是这个函数的全部要害。**
  *
- * 四种归零：
+ * 消息部分的四种归零：
  *   · `message.end`         —— 正文已经进了 `state.messages`，再留着就是重影
  *   · `message.interrupted` —— 用户按了停止，在途内容不该继续挂在屏幕上
- *   · `turn.end`            —— 兜底。回合结束却还有在途消息，说明前两条漏了一条，
+ *   · `turn.end`            —— 兜底。回合结束却还有在途内容，说明前两条漏了一条，
  *                              这时宁可少显示，也不要留下一段永远不会被替换的文字
  *   · `message.start`       —— 新消息开始，旧的必须让位（同时也是新缓冲的起点）
  *
- * 漏掉任何一条的后果都一样：屏幕上出现一段**回放不出来**的文字，
- * 而那正是 ADR-0015 要防的那种"第二份状态"。
+ * 工具部分的两种归零：
+ *   · `tool.end`  —— 这次调用的结果已经进了 `state.messages`
+ *   · `turn.end`  —— 同样是兜底：回合结束了就不该再有"正在跑"的东西
  */
-export function applyLive(buffer: LiveBuffer | undefined, e: XmEvent): LiveBuffer | undefined {
+export function applyLive(buffer: LiveBuffer, e: XmEvent): LiveBuffer {
   switch (e.type) {
     case 'message.start':
       // assistant 之外的角色不会流式输出，不给它开缓冲
-      return e.payload.role === 'assistant'
-        ? { messageId: e.payload.messageId, text: '', thinking: '' }
-        : undefined;
+      return {
+        ...buffer,
+        message:
+          e.payload.role === 'assistant'
+            ? { messageId: e.payload.messageId, text: '', thinking: '' }
+            : undefined,
+      };
 
     case 'message.delta': {
       // 没有 start 就来的 delta 一律丢弃：它属于某条我们没看见开头的消息，
       // 显示出来会挂在错误的位置上。订阅是可以中途接上的（fromSeq 续读），
       // 所以"没看见开头"是正常情况，不是错误。
-      if (buffer?.messageId !== e.payload.messageId) return buffer;
-      return e.payload.kind === 'thinking'
-        ? { ...buffer, thinking: buffer.thinking + e.payload.text }
-        : { ...buffer, text: buffer.text + e.payload.text };
+      const m = buffer.message;
+      if (m?.messageId !== e.payload.messageId) return buffer;
+      return {
+        ...buffer,
+        message:
+          e.payload.kind === 'thinking'
+            ? { ...m, thinking: m.thinking + e.payload.text }
+            : { ...m, text: m.text + e.payload.text },
+      };
     }
 
     case 'message.end':
     case 'message.interrupted':
+      return { ...buffer, message: undefined };
+
+    case 'tool.progress': {
+      const calls = new Map(buffer.calls);
+      calls.set(e.payload.callId, {
+        callId: e.payload.callId,
+        message: e.payload.message ?? '',
+        data: e.payload.data,
+      });
+      return { ...buffer, calls };
+    }
+
+    case 'tool.end': {
+      if (!buffer.calls.has(e.payload.callId)) return buffer;
+      const calls = new Map(buffer.calls);
+      calls.delete(e.payload.callId);
+      return { ...buffer, calls };
+    }
+
     case 'turn.end':
-      return undefined;
+      return EMPTY_LIVE;
 
     default:
       return buffer;
   }
 }
+
+/** 缓冲里有没有值得显示的东西。UI 用它决定要不要渲染在途区域 */
+export const hasLive = (buffer: LiveBuffer): boolean =>
+  buffer.calls.size > 0 ||
+  (buffer.message !== undefined && (buffer.message.text !== '' || buffer.message.thinking !== ''));

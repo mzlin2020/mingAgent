@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { Capability, PersistedEvent } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
-import { MemoryEventStore, ToolRegistry, builtinRules, defineTool } from '@xm/kernel';
+import { MemoryEventStore, ToolRegistry, builtinLayers,
+  pureGateway, defineTool } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
 
 /**
@@ -138,12 +139,12 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         runtime: h.runtime,
         provider,
         tools: h.tools,
-        rules: builtinRules(ENV),
+        layers: builtinLayers(ENV),
         tier: 'balanced',
         model: 'scripted-1',
-        targetOf,
+        gateway: pureGateway(targetOf),
         // ask 一律放行：这样如果防御失效，push 就会真的执行 —— 用例才拦得住回归
-        decide: () => Promise.resolve('allow'),
+        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       '看看这个网页',
     );
@@ -163,15 +164,15 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
 
   it('跨回合：新回合不会把标记清掉', async () => {
     const h = await harness();
-    const rules = builtinRules(ENV);
+    const layers = builtinLayers(ENV);
     const deps = {
       runtime: h.runtime,
       tools: h.tools,
-      rules,
+      layers,
       tier: 'balanced' as const,
       model: 'scripted-1',
-      targetOf,
-      decide: () => Promise.resolve('allow' as const),
+      gateway: pureGateway(targetOf),
+      decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
     };
 
     await runTurn(
@@ -220,11 +221,11 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
           ],
         }),
         tools: h.tools,
-        rules: builtinRules(ENV),
+        layers: builtinLayers(ENV),
         tier: 'balanced',
         model: 'scripted-1',
-        targetOf,
-        decide: () => Promise.resolve('allow'),
+        gateway: pureGateway(targetOf),
+        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       '推上去',
     );

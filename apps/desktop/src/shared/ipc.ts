@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EventEnvelope, SessionId } from '@xm/contracts';
+import { EventEnvelope, RequestId, SessionId } from '@xm/contracts';
 
 /**
  * IPC 载荷契约（ADR-0015）。
@@ -33,6 +33,14 @@ export type ListSessionsResult = z.infer<typeof ListSessionsResult>;
 
 export const CreateSessionRequest = z.strictObject({
   title: z.string().max(200).optional(),
+  /**
+   * 会话的工作目录。省略则用家目录。
+   *
+   * 渲染层能送任意字符串上来，而这**不是**一条提权路径：判定用的是网关解析出的
+   * 绝对路径，红线照样生效。它决定的只是"相对路径相对谁"。
+   * 正常路径是先调 `chooseWorkspace` 让用户在原生对话框里选。
+   */
+  cwd: z.string().max(4096).optional(),
 });
 export const CreateSessionResult = z.object({ sessionId: SessionId });
 
@@ -70,6 +78,35 @@ export const ClearUntrustedResult = z.object({ cleared: z.boolean() });
  */
 export const InterruptRequest = z.strictObject({ sessionId: SessionId });
 export const InterruptResult = z.object({ interrupted: z.boolean() });
+
+/**
+ * 应答一次权限审批。
+ *
+ * ── `requestId` 为什么必须带 ──
+ *
+ * 不带的话，主进程只能"把当前挂着的那个请求应答掉"。而一次工具调用可能连着问两个
+ * 能力，用户看到的是第一个、点下去时第二个已经上来了——那就是把"允许读"错当成
+ * "允许写"。带上 id 之后，对不上的应答直接被丢掉。
+ *
+ * ── 没有 `by` 字段 ──
+ *
+ * 与 `ClearUntrustedRequest` 同一条纪律：应答者永远是人，这条 IPC 的到达本身就是
+ * 全部含义。让渲染层报出自己是谁，等于给一个将来可能被 XSS 或插件 UI 驱动的进程
+ * 一个可以撒谎的字段。
+ */
+export const RespondPermissionRequest = z.strictObject({
+  sessionId: SessionId,
+  requestId: RequestId,
+  effect: z.enum(['allow', 'deny']),
+  scope: z.enum(['once', 'session', 'always']),
+});
+export const RespondPermissionResult = z.object({
+  /** 有没有真的对上一个在等的请求。对不上时 UI 该把那张卡片收起来 */
+  accepted: z.boolean(),
+});
+
+/** 选工作目录。用户取消时 `path` 缺省——取消不是错误 */
+export const ChooseWorkspaceResult = z.object({ path: z.string().optional() });
 
 /**
  * 运行状态。**注意这里面没有任何密钥的值**——只有"配没配"。

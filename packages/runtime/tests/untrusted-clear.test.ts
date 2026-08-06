@@ -3,7 +3,8 @@ import { z } from 'zod';
 import type { Capability, PersistedEvent } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { ToolContext } from '@xm/kernel';
-import { MemoryEventStore, ToolRegistry, builtinRules, defineTool } from '@xm/kernel';
+import { MemoryEventStore, ToolRegistry, builtinLayers,
+  pureGateway, defineTool } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
 
 /**
@@ -110,12 +111,12 @@ async function harness(extra?: ReturnType<typeof spyTool>) {
   const deps = {
     runtime,
     tools,
-    rules: builtinRules(ENV),
+    layers: builtinLayers(ENV),
     tier: 'balanced' as const,
     model: 'scripted-1',
-    targetOf,
+    gateway: pureGateway(targetOf),
     // ask 一律放行：防御失效时 push 会真的跑起来，用例才拦得住回归
-    decide: () => Promise.resolve('allow' as const),
+    decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
   };
 
   const turn = (text: string, ...calls: { chunks: unknown }[]): Promise<unknown> =>

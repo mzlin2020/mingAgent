@@ -1,8 +1,19 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { Config, ConfigPatch } from '@xm/contracts';
-import { Config as ConfigSchema, findPlaintextSecrets, mergeConfigLayers } from '@xm/contracts';
-import type { XmPaths } from '@xm/kernel';
+import { mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import type {
+  Config,
+  ConfigPatch,
+  PolicyRule,
+  PolicyRuleSet as PolicyRuleSetType,
+} from '@xm/contracts';
+import {
+  Config as ConfigSchema,
+  PolicyRuleSet,
+  findPlaintextSecrets,
+  mergeConfigLayers,
+} from '@xm/contracts';
+import type { PolicyEnv, XmPaths } from '@xm/kernel';
+import { composeRules, tightenOnly } from '@xm/kernel';
 
 /**
  * 配置加载。
@@ -25,7 +36,23 @@ export interface LoadConfigOptions {
 }
 
 export interface LoadedConfig {
+  /**
+   * 合并后的配置。
+   *
+   * ⚠️ `permission.rules` 在这里**恒为空数组**——权限规则不走合并，走分层
+   * （ADR-0023），真正的内容在 `permissionRules` 里。留一份合并后的副本等于留两份
+   * 真相，而这一份恰好是错的：数组的合并语义是整体替换，于是项目级的规则会把
+   * 用户级的**整个抹掉**，那与"后一层覆盖前一层"完全不是一回事。
+   */
   readonly config: Config;
+  /**
+   * 按层分开的权限规则。项目层已经过 `tightenOnly()`——
+   * 被丢掉的条目在 `problems` 里有一条对应的记录。
+   */
+  readonly permissionRules: {
+    readonly user: PolicyRuleSetType;
+    readonly project: PolicyRuleSetType;
+  };
   /** 每一层的来源与结果，供 UI 显示"这个值是从哪来的" */
   readonly sources: readonly ConfigSource[];
   /** 加载过程中的问题。**不抛**，由调用方转成 notice 事件 */
@@ -38,7 +65,12 @@ export interface ConfigSource {
 }
 
 export interface ConfigProblem {
-  readonly code: 'config.unreadable' | 'config.invalid' | 'config.plaintext_secret';
+  readonly code:
+    | 'config.unreadable'
+    | 'config.invalid'
+    | 'config.plaintext_secret'
+    | 'config.rules_invalid'
+    | 'config.project_rules_dropped';
   readonly message: string;
 }
 
@@ -68,14 +100,21 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
   const problems: ConfigProblem[] = [];
   const sources: ConfigSource[] = [];
   const layers: ConfigPatch[] = [DEFAULT_CONFIG];
+  const raw: (ConfigPatch | undefined)[] = [];
 
   for (const file of files) {
     const layer = await readLayer(file, problems);
     sources.push({ file, loaded: layer !== undefined });
+    raw.push(layer);
     if (layer !== undefined) layers.push(layer);
   }
 
-  const merged = mergeConfigLayers(...layers);
+  const permissionRules = {
+    user: rulesOf(raw[0], files[0] ?? '', problems),
+    project: projectRules(rulesOf(raw[1], files[1] ?? '', problems), files[1] ?? '', problems),
+  };
+
+  const merged = mergeConfigLayers(...layers, { permission: { rules: [] } });
 
   /*
    * 明文密钥的检查**排在 schema 校验之前**。
@@ -95,7 +134,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
   }
 
   const parsed = ConfigSchema.safeParse(merged);
-  if (parsed.success) return { config: parsed.data, sources, problems };
+  if (parsed.success) return { config: parsed.data, permissionRules, sources, problems };
 
   problems.push({
     code: 'config.invalid',
@@ -105,8 +144,154 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
       .join('；')}`,
   });
 
-  // 内置默认必须永远能过校验。过不了是我们自己的 bug，那时抛是对的
-  return { config: ConfigSchema.parse(DEFAULT_CONFIG), sources, problems };
+  /*
+   * 内置默认必须永远能过校验。过不了是我们自己的 bug，那时抛是对的。
+   *
+   * 权限规则**一并退回空**：配置整体不合法时，继续用从里面抠出来的那几条规则，
+   * 等于在一份我们已经判定读不懂的文件上做安全判定。
+   */
+  return {
+    config: ConfigSchema.parse(DEFAULT_CONFIG),
+    permissionRules: { user: [], project: [] },
+    sources,
+    problems,
+  };
+}
+
+export interface AppendUserRuleOptions {
+  readonly paths: XmPaths;
+  /** 红线所需的环境事实。构造期闸门要用（见下） */
+  readonly env: PolicyEnv;
+  readonly rule: PolicyRule;
+}
+
+/**
+ * 把一条规则追加进**用户级**配置文件 —— 「永久授权」的落盘点。
+ *
+ * ── 三条不能省的 ──
+ *
+ * **一、落盘前先过构造期闸门。** `composeRules()` 会对新的整份规则集断言一遍
+ * （命令类能力不许用 target 匹配、红线不许建在没有规范化契约的 target 上）。
+ * 在**写下来的那一刻**炸掉，是这类问题唯一的治法——否则它下次启动才失败，
+ * 而那时用户早忘了自己点过什么。路线图对这一段的要求就是这一句。
+ *
+ * **二、原子写。** 读—改—写一份配置文件，中途断电会留下半截 JSON，
+ * 而那会让下次启动整份配置退回内置默认——包括用户的模型设置。
+ * 临时文件与目标同目录（跨设备 rename 不是原子的）。
+ *
+ * **三、同 id 覆盖而不是重复追加。** 授权规则的 id 里带着 requestId，本来就不会重复；
+ * 但用户可能对同一个目标反复授权，那时留一条比留十条清楚。
+ *
+ * ⚠️ 这条写入**不经过 PolicyEngine**——它不是工具调用，是用户在 UI 上的直接操作，
+ * 与审计库的写入同理。红线保护的是"模型让工具去改这些文件"那条路。
+ */
+export async function appendUserRule(options: AppendUserRuleOptions): Promise<void> {
+  const file = join(options.paths.config, 'config.json');
+  const current = await readJson(file);
+  const permission = isRecord(current.permission) ? current.permission : {};
+  const existing = PolicyRuleSet.safeParse(permission.rules);
+  const before = existing.success ? existing.data : [];
+
+  const next = [...before.filter((r) => r.id !== options.rule.id), options.rule];
+
+  // 闸门：抛出去，由调用方转成"这次只在本会话生效"的 notice
+  composeRules({ env: options.env, user: next });
+
+  const merged = { ...current, permission: { ...permission, rules: next } };
+  await writeJsonAtomic(file, merged);
+}
+
+async function readJson(file: string): Promise<Record<string, unknown>> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    /*
+     * 读不到或读不懂就从空对象开始。
+     *
+     * ⚠️ 这会**覆盖掉一份读不懂的配置文件**。取舍：走到这里说明用户刚在 UI 上
+     * 点了"永久允许"，他期待的是这条授权被记住；而一份 JSON 语法坏掉的配置文件
+     * 此刻已经完全没有生效（`loadConfig` 会带着一条 notice 退回内置默认）。
+     * 两害相权，保住用户刚做的决定。
+     */
+    return {};
+  }
+}
+
+async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  await mkdir(dirname(file), { recursive: true });
+  const tmp = join(dirname(file), `.xm-config-${String(process.pid)}-${String(Date.now())}.tmp`);
+  const handle = await open(tmp, 'wx');
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  try {
+    await rename(tmp, file);
+  } catch (e) {
+    await rm(tmp, { force: true });
+    throw e;
+  }
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+/**
+ * 从一层原始配置里取出权限规则并校验。
+ *
+ * **单独校验、单独失败**：一条写坏的规则不该让整份配置退回默认（那会连模型配置一起丢），
+ * 但它也绝不能被当成"没写"而静默跳过——安全规则失效的沉默代价太大。
+ * 所以这里的做法是：整层丢弃 + 一条说清是哪个文件的 problem。
+ */
+function rulesOf(
+  layer: ConfigPatch | undefined,
+  file: string,
+  problems: ConfigProblem[],
+): PolicyRuleSetType {
+  const rules: unknown = (layer?.permission as { rules?: unknown } | undefined)?.rules;
+  if (rules === undefined) return [];
+
+  const parsed = PolicyRuleSet.safeParse(rules);
+  if (parsed.success) return parsed.data;
+
+  problems.push({
+    code: 'config.rules_invalid',
+    message:
+      `${file} 里的 permission.rules 不合法，**整层权限规则已忽略**：` +
+      parsed.error.issues
+        .slice(0, 3)
+        .map((i) => `${i.path.join('.')} ${i.message}`)
+        .join('；'),
+  });
+  return [];
+}
+
+/**
+ * 项目层**只能收紧**（ADR-0023）。
+ *
+ * `.xiaoming/config.json` 的作者不是用户——它躺在 clone 下来的仓库里，而小明自己
+ * 有 `fs.write`，模型完全可以在干活的过程中把它写出来。层序里项目层排在用户层之后，
+ * 它要是能放松，就等于"仓库里的一个文件可以撤销用户的设置"。
+ */
+function projectRules(
+  rules: PolicyRuleSetType,
+  file: string,
+  problems: ConfigProblem[],
+): PolicyRuleSetType {
+  const { rules: kept, dropped } = tightenOnly(rules);
+  if (dropped.length > 0) {
+    problems.push({
+      code: 'config.project_rules_dropped',
+      message:
+        `${file} 是项目级配置，其中 ${String(dropped.length)} 条放松权限的规则已被忽略` +
+        `（${dropped.join('、')}）。项目配置只能收紧权限——它随仓库分发，作者不一定是你。` +
+        `确实需要放宽，请写在用户级配置里。`,
+    });
+  }
+  return kept;
 }
 
 async function readLayer(file: string, problems: ConfigProblem[]): Promise<ConfigPatch | undefined> {

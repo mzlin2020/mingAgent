@@ -74,6 +74,24 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: 'tools-core-不得依赖-electron',
+      comment:
+        '基础工具集要能在 CLI（M3）与 headless 冒烟下使用，也要能在换掉执行后端时原样复用' +
+        '（M1-d 的 container / ssh 执行器）。它用 node:fs 是本分，认识 electron 就不是了。',
+      severity: 'error',
+      from: { path: '^packages/tools-core/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
+      name: 'tools-core-不得依赖-runtime',
+      comment:
+        '依赖方向：runtime 装配工具，工具不认识装配层。反过来就会出现"工具直接往事件流里写"' +
+        '——而 ToolContext 里没有记录事件的入口是刻意的（ADR-0019：工具在结构上发不出 trust.cleared）。',
+      severity: 'error',
+      from: { path: '^packages/tools-core/src' },
+      to: { path: '^packages/(runtime|storage|platform)/src' },
+    },
+    {
       name: 'runtime-不得依赖-electron',
       comment:
         'CLI 形态延后到 M3，但架构约束从 M0 起生效（ADR-0007 / docs/09 A2）。runtime 泄漏 electron 依赖，CLI 就永远起不来。',

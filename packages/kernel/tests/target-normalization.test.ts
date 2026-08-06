@@ -12,6 +12,22 @@ import {
 } from '@xm/kernel';
 
 /**
+ * 单层求值的便捷包装。
+ *
+ * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
+ * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
+ * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
+ */
+type EvalInput = Parameters<typeof evaluate>[0];
+const judge = (
+  input: Omit<EvalInput, 'layers'> & { rules: EvalInput['layers'][number]['rules'] },
+): ReturnType<typeof evaluate> => {
+  const { rules, ...rest } = input;
+  return evaluate({ ...rest, layers: [{ id: 'builtin', rules }] });
+};
+
+/**
  * ── 非路径能力的 target 规范化契约（docs/09 C4 / G3，ADR-0020）──
  *
  * 路径那一种在 ADR-0012 ① 付过一次学费：红线写一种写法、请求传另一种写法，
@@ -161,14 +177,14 @@ describe('端到端：deny net.fetch *.evil.com 挡得住全部写法', () => {
     'https://x.evil.com:443/',
     'https://good.com@evil.com/',
   ])('%s → deny', (target) => {
-    const v = evaluate({ request: req('net.fetch', target), rules: RULES, tier: 'balanced' });
+    const v = judge({ request: req('net.fetch', target), rules: RULES, tier: 'balanced' });
     expect(v.effect).toBe('deny');
     expect(v.ruleId).toBe('user.no-evil');
   });
 
   it('判不了的写法也是 deny，而不是悄悄落到 ask', () => {
     // ask 的下一步是用户点"允许"，所以判不了必须比 ask 更严
-    const v = evaluate({
+    const v = judge({
       request: req('net.fetch', 'http://2130706433/'),
       rules: RULES,
       tier: 'balanced',
@@ -178,7 +194,7 @@ describe('端到端：deny net.fetch *.evil.com 挡得住全部写法', () => {
   });
 
   it('无关域名照常走默认规则 —— 防线不能宽到把一切都拦下', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('net.fetch', 'https://good.example/'),
       rules: [...RULES, ...builtinRules(ENV)],
       tier: 'balanced',
@@ -190,7 +206,7 @@ describe('端到端：deny net.fetch *.evil.com 挡得住全部写法', () => {
 
 describe('command：契约未落地，闸门失败关闭', () => {
   it('带 target 的命令类判定一律 deny', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('shell.exec', 'git push'),
       rules: builtinRules(ENV),
       tier: 'balanced',
@@ -200,7 +216,7 @@ describe('command：契约未落地，闸门失败关闭', () => {
   });
 
   it('YOLO 也跳不过去 —— 它跳的是 ask，不是 deny', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('shell.exec', 'rm -rf /'),
       rules: builtinRules(ENV),
       tier: 'yolo',
@@ -209,7 +225,7 @@ describe('command：契约未落地，闸门失败关闭', () => {
   });
 
   it('空 target 照常走能力级规则 —— 闸门拦的是假防线，不是能力本身', () => {
-    const v = evaluate({
+    const v = judge({
       request: req('shell.exec', ''),
       rules: builtinRules(ENV),
       tier: 'balanced',
@@ -235,22 +251,23 @@ describe('🔴 构造期闸门：写不出假防线', () => {
   });
 
   it('命令类能力不许用 target 匹配 —— 这条规则写下的那一刻就炸', () => {
-    expect(() => composeRules(ENV, [bad({ match: { target: 'rm -rf /*' } })])).toThrow(
+    expect(() => composeRules({ env: ENV, user: [bad({ match: { target: 'rm -rf /*' } })] })).toThrow(
       /命令类能力/,
     );
   });
 
   it('红线不许建立在 opaque target 上 —— 它只是个自由字符串', () => {
     expect(() =>
-      composeRules(ENV, [
-        bad({ capability: 'git.push', immutable: true, match: { target: 'origin' } }),
-      ]),
+      composeRules({
+        env: ENV,
+        user: [bad({ capability: 'git.push', immutable: true, match: { target: 'origin' } })],
+      }),
     ).toThrow(/没有规范化契约/);
   });
 
   it('普通规则用 opaque target 允许 —— 便利过滤不是安全边界，但它有用', () => {
     expect(() =>
-      composeRules(ENV, [bad({ capability: 'git.push', match: { target: 'origin' } })]),
+      composeRules({ env: ENV, user: [bad({ capability: 'git.push', match: { target: 'origin' } })] }),
     ).not.toThrow();
   });
 

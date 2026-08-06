@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron';
+import { dialog, ipcMain } from 'electron';
 import type { BrowserWindow } from 'electron';
 import type { z } from 'zod';
 import { CH } from '../shared/channels.js';
@@ -7,6 +7,7 @@ import {
   CreateSessionRequest,
   InterruptRequest,
   ReadSessionRequest,
+  RespondPermissionRequest,
   SendUserMessageRequest,
   SetApiKeyRequest,
 } from '../shared/ipc.js';
@@ -39,7 +40,10 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   });
 
   handle(CH.createSession, CreateSessionRequest, async (req) => ({
-    sessionId: await services.createSession(req.title),
+    sessionId: await services.createSession({
+      ...(req.title === undefined ? {} : { title: req.title }),
+      ...(req.cwd === undefined ? {} : { cwd: req.cwd }),
+    }),
   }));
 
   handle(CH.sendUserMessage, SendUserMessageRequest, async (req) => ({
@@ -61,6 +65,35 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
     // 同步执行、立刻返回：停止这条路径上不该有任何 await（见 services.interrupt 的注释）
     Promise.resolve({ interrupted: services.interrupt(req.sessionId) }),
   );
+
+  /*
+   * 审批应答。`requestId` 对不上就返回 accepted:false，**不去猜"用户大概是想答那个"**——
+   * 一次工具调用可能连着问两个能力，猜错就是把"允许读"当成了"允许写"。
+   */
+  handle(CH.respondPermission, RespondPermissionRequest, (req) =>
+    Promise.resolve({
+      accepted: services.respondPermission(req.requestId, {
+        effect: req.effect,
+        scope: req.scope,
+      }),
+    }),
+  );
+
+  /*
+   * 选工作目录。**路径由主进程的原生对话框产生。**
+   *
+   * 渲染层送一个字符串上来在权限上是等价的（判定看的是网关解析出的绝对路径），
+   * 但"这个目录是用户自己选的"这件事只有原生对话框能保证——而工作目录决定了
+   * 模型给的相对路径落在哪，这个前提值得用一次系统对话框换。
+   */
+  handle(CH.chooseWorkspace, undefined, async () => {
+    const win = windows()[0];
+    const result = await (win === undefined
+      ? dialog.showOpenDialog({ properties: ['openDirectory'] })
+      : dialog.showOpenDialog(win, { properties: ['openDirectory'] }));
+    const picked = result.filePaths[0];
+    return picked === undefined || result.canceled ? {} : { path: picked };
+  });
 
   handle(CH.status, undefined, async () => {
     const s = await services.status();

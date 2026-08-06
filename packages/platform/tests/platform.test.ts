@@ -4,6 +4,22 @@ import { builtinRules, evaluate, policyEnvFromPaths, xmDataLayout } from '@xm/ke
 import { newRequestId, newSessionId } from '@xm/contracts';
 import { nodePlatform, resolvePaths, withCapabilities } from '@xm/platform';
 
+/**
+ * 单层求值的便捷包装。
+ *
+ * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
+ * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
+ * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
+ */
+type EvalInput = Parameters<typeof evaluate>[0];
+const judge = (
+  input: Omit<EvalInput, 'layers'> & { rules: EvalInput['layers'][number]['rules'] },
+): ReturnType<typeof evaluate> => {
+  const { rules, ...rest } = input;
+  return evaluate({ ...rest, layers: [{ id: 'builtin', rules }] });
+};
+
 const APP_ROOT = '/opt/xiaoming';
 
 describe('resolvePaths', () => {
@@ -91,7 +107,7 @@ describe('平台路径 → 红线 的整段接线', () => {
     const rules = builtinRules(policyEnvFromPaths(platform.paths()));
     const { auditDb } = xmDataLayout(platform.paths().data);
 
-    const v = evaluate({
+    const v = judge({
       request: {
         requestId: newRequestId(),
         sessionId: newSessionId(),

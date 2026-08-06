@@ -2,6 +2,7 @@ import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
 import { targetKindOf } from '@xm/contracts';
 import type { XmPaths } from '../port/platform.js';
 import { xmDataLayout } from '../port/platform.js';
+import type { RuleLayer } from './engine.js';
 import { normalizedOrThrow } from './target.js';
 
 /**
@@ -345,10 +346,15 @@ function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
 
 /**
  * 内置规则集 = 红线 + 平衡档默认。
- * 用户级与项目级规则拼在它**后面**，从而能覆盖默认但覆盖不了红线。
+ * 用户级与项目级规则是**后面的层**，从而能覆盖默认但覆盖不了红线。
  */
 export const builtinRules = (env: PolicyEnv): PolicyRuleSet =>
   assertRules([...redLineRules(env), ...BALANCED_DEFAULT_RULES]);
+
+/** 只有内置一层的规则集。测试与 headless 里最常用的形状 */
+export const builtinLayers = (env: PolicyEnv): readonly RuleLayer[] => [
+  { id: 'builtin', rules: builtinRules(env) },
+];
 
 /**
  * `PlatformPort.paths()` → `PolicyEnv` 的**唯一**转换点。
@@ -363,12 +369,38 @@ export const policyEnvFromPaths = (paths: XmPaths): PolicyEnv => ({
   dataDir: paths.data,
 });
 
+export interface ComposeInput {
+  readonly env: PolicyEnv;
+  /** 用户级配置文件里的规则。可以放松，也可以收紧 */
+  readonly user?: PolicyRuleSet;
+  /** 项目级 `.xiaoming/config.json` 里的规则。**必须先过 `tightenOnly()`** */
+  readonly project?: PolicyRuleSet;
+  /** 本会话的授权，由 `grantsToRules()` 合成 */
+  readonly session?: PolicyRuleSet;
+}
+
 /**
- * 拼接分层规则。顺序即优先级：后面的胜。
+ * 拼出分层规则。**顺序即优先级：后面的层胜**（求值细节见 engine.ts）。
  *
- * 用户级与项目级规则**同样过构造期闸门**——它们才是最可能写出"看起来在防、其实没防"
- * 的那一批（内置规则至少经过评审）。宁可让用户的配置文件在加载时报错，
- * 也不要让他以为自己已经挡住了 `rm -rf /`。
+ * 每一层都过构造期闸门——用户级、项目级、会话授权才是最可能写出
+ * "看起来在防、其实没防"的那一批（内置规则至少经过评审）。宁可让用户的配置文件
+ * 在加载时报错，也不要让他以为自己已经挡住了 `rm -rf /`。
+ *
+ * ⚠️ 这个函数**不替调用方做 `tightenOnly`**。项目层能不能放松是一条安全取舍，
+ * 它必须发生在调用方那里，因为被丢掉的规则要变成一条用户看得见的 notice——
+ * 在这里悄悄过滤掉，用户就只会觉得"我写的规则没生效"。
  */
-export const composeRules = (env: PolicyEnv, ...layers: readonly PolicyRuleSet[]): PolicyRuleSet =>
-  assertRules([...builtinRules(env), ...layers.flat()]);
+export function composeRules(input: ComposeInput): readonly RuleLayer[] {
+  const layers: RuleLayer[] = [{ id: 'builtin', rules: builtinRules(input.env) }];
+  if (input.user !== undefined && input.user.length > 0) {
+    layers.push({ id: 'user', rules: input.user });
+  }
+  if (input.project !== undefined && input.project.length > 0) {
+    layers.push({ id: 'project', rules: input.project });
+  }
+  if (input.session !== undefined && input.session.length > 0) {
+    layers.push({ id: 'session', rules: input.session });
+  }
+  for (const layer of layers) assertRules(layer.rules);
+  return layers;
+}

@@ -69,6 +69,20 @@ export interface ToolSpec<I> {
   readonly source?: ToolDescriptor['source'];
 
   /**
+   * 哪些入参字段是**文件系统路径**，按判权重要性排序（第一个用作 target）。
+   *
+   * 能力网关据此把相对路径变绝对、把符号链接与 Windows 短名解析掉，
+   * 并**回写进入参**——判定与执行因此用的是同一个字符串（见 `port/tool-gateway.ts`）。
+   *
+   * ⚠️ **不进 `ToolDescriptor`。** 模型不需要知道我们内部怎么解析它给的路径，
+   * 而描述符的每个字段都要进提示词、占 token。
+   *
+   * 声明了路径类能力（`fs.*` / `self.modify`）却不声明这个字段，就等于告诉网关
+   * "这次调用没有路径"——`nodeToolGateway` 会当场拒绝，而不是默默按未解析的路径判。
+   */
+  readonly pathInputs?: readonly string[];
+
+  /**
    * 动态可用性：不满足条件时该工具**不进模型视野**（docs/04 §4.3）。
    *
    * 典型用途：无 git 仓库就不暴露 git 工具集；Linux 上 `computer.*` 探测为不可用，
@@ -103,6 +117,8 @@ export interface ToolSpec<I> {
 export interface RegisteredTool {
   readonly descriptor: ToolDescriptor;
   readonly inputSchema: z.ZodType;
+  /** 见 `ToolSpec.pathInputs`。空数组表示"这个工具没有路径入参" */
+  readonly pathInputs: readonly string[];
   /**
    * 只校验、不执行。不通过抛 `ToolInputError`。
    *

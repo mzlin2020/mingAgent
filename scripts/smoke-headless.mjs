@@ -12,7 +12,7 @@
  *
  *   node scripts/smoke-headless.mjs
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
@@ -20,13 +20,19 @@ import process from 'node:process';
 import { newCallId, newSessionId } from '../packages/contracts/dist/index.js';
 import {
   ToolRegistry,
-  builtinRules,
+  builtinLayers,
+  pureGateway,
   emptySessionState,
   policyEnvFromPaths,
   reduce,
 } from '../packages/kernel/dist/index.js';
 import { nodePlatform } from '../packages/platform/dist/index.js';
 import { openStores } from '../packages/storage/dist/index.js';
+import {
+  coreTools,
+  nodeCheckpointer,
+  nodeToolGateway,
+} from '../packages/tools-core/dist/index.js';
 import {
   DEMO_ECHO,
   DEMO_FAKE_DELETE,
@@ -41,6 +47,8 @@ import {
 
 const APP_ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const dataDir = mkdtempSync(join(tmpdir(), 'xm-headless-'));
+/** 主 DoD 任务的工作区。真文件、真读写——闸门第一次被真实输入喂 */
+const workspace = mkdtempSync(join(tmpdir(), 'xm-workspace-'));
 
 const fail = (msg) => {
   console.error(`✗ ${msg}`);
@@ -51,7 +59,7 @@ try {
   const platform = nodePlatform({ appRoot: APP_ROOT, dataDir });
   const paths = platform.paths();
   const stores = await openStores(paths);
-  const rules = builtinRules(policyEnvFromPaths(paths));
+  const layers = builtinLayers(policyEnvFromPaths(paths));
 
   const bus = new EventBus();
   const seen = [];
@@ -61,12 +69,14 @@ try {
   const runtime = await SessionRuntime.open({ sessionId, store: stores.events, bus });
   await runtime.record({
     type: 'session.created',
-    payload: { cwd: process.cwd(), modelRef: 'scripted/scripted-1', title: 'headless 冒烟' },
+    // 会话的工作目录就是那个临时工作区：网关据此把模型给的相对路径变成绝对路径
+    payload: { cwd: workspace, modelRef: 'scripted/scripted-1', title: 'headless 冒烟' },
   });
 
   const tools = new ToolRegistry();
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
+  for (const t of coreTools()) tools.register(t);
 
   const echoCall = newCallId();
   const denyCall = newCallId();
@@ -104,13 +114,62 @@ try {
       runtime,
       provider,
       tools,
-      rules,
+      layers,
       tier: 'balanced',
       model: 'scripted-1',
-      targetOf: demoTargetOf,
+      gateway: pureGateway(demoTargetOf),
       pathCaseInsensitive: platform.os === 'windows',
     },
     '试一下这两个工具',
+  );
+
+  // ── 第二段：主 DoD 任务的形状（读目录 → 读文件 → 写 README）──
+  //
+  // M1 的主 DoD 任务是"读这个目录、总结代码结构、写一个 README"。这里用脚本化
+  // Provider 走同一条链子：真实文件工具、真实临时目录、真实审批。
+  // 它验的不是模型会不会总结，是**闸门与工具在真实输入下配合得对不对**。
+  mkdirSync(join(workspace, 'src'), { recursive: true });
+  writeFileSync(join(workspace, 'src', 'index.ts'), 'export const hello = 1;\n');
+
+  const asked = [];
+  const listCall = newCallId();
+  const readCall = newCallId();
+  const write1 = newCallId();
+  const write2 = newCallId();
+
+  const fileProvider = new ScriptedProvider({
+    turns: [
+      { chunks: [...toolCall(listCall, 'fs.list', { path: '.', depth: 2 }),
+                 ...toolCall(readCall, 'fs.read', { path: 'src/index.ts' }),
+                 { kind: 'stop', reason: 'tool_use' }] },
+      { chunks: [...toolCall(write1, 'fs.write', { path: 'README.md', content: '# 项目\n' }),
+                 { kind: 'stop', reason: 'tool_use' }] },
+      // 第二次写**同一个文件**：本会话授权之后不该再问
+      { chunks: [...toolCall(write2, 'fs.write', { path: 'README.md', content: '# 项目\n\n补一句。\n' }),
+                 { kind: 'stop', reason: 'tool_use' }] },
+      { chunks: [{ kind: 'text_delta', text: 'README 写好了。' }, { kind: 'stop', reason: 'end_turn' }] },
+    ],
+  });
+
+  const fileReason = await runTurn(
+    {
+      runtime,
+      provider: fileProvider,
+      tools,
+      layers,
+      tier: 'balanced',
+      model: 'scripted-1',
+      gateway: nodeToolGateway(),
+      checkpointer: nodeCheckpointer({ blobs: stores.blobs }),
+      blobs: stores.blobs,
+      pathCaseInsensitive: platform.os === 'windows',
+      decide: (request) => {
+        asked.push(request);
+        // 第一次问就给"本会话都允许"——第二次写同一个文件不该再来问
+        return Promise.resolve({ effect: 'allow', scope: 'session' });
+      },
+    },
+    '读一下这个目录，总结结构，写一个 README',
   );
 
   const memoryState = runtime.state;
@@ -146,14 +205,53 @@ try {
     fail('重开库回放出的状态与进程内不一致 —— 事件流不再是唯一真相');
   }
 
+  // ── 主 DoD 任务这一段的断言 ────────────────────────────────
+  if (fileReason !== 'end_turn') fail(`文件回合应正常结束，实际 ${fileReason}`);
+
+  const readme = join(workspace, 'README.md');
+  let readmeText = '';
+  try {
+    readmeText = readFileSync(readme, 'utf8');
+  } catch {
+    fail('README.md 没有被真的写出来 —— 工具链没有跑通');
+  }
+  if (readmeText !== '' && !readmeText.includes('补一句')) {
+    fail('第二次写入没有生效 —— 本会话授权之后那一次调用被拦下了');
+  }
+
+  const writeAsks = asked.filter((r) => r.capability === 'fs.write');
+  if (writeAsks.length !== 1) {
+    fail(`fs.write 应只问一次（本会话授权），实际问了 ${String(writeAsks.length)} 次`);
+  }
+  if (asked.some((r) => r.capability === 'fs.read')) {
+    fail('fs.read 在平衡档默认放行，不该弹审批');
+  }
+  if (!types.includes('checkpoint.created')) {
+    fail('覆盖 README 之前没有还原点 —— ADR-0003 的"无条件还原点"没落地');
+  }
+  if (!seen.some((e) => e.type === 'tool.progress')) {
+    fail('总线上没有 tool.progress —— 工具进度显示不出来');
+  }
+
   if (process.exitCode !== 1) {
     console.log(
       `✓ headless 冒烟通过：${String(types.length)} 条持久事件、` +
-        `${String(seen.length)} 条总线事件，回放状态一致`,
+        `${String(seen.length)} 条总线事件，回放状态一致；` +
+        `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，审批只问一次）`,
     );
   }
 } finally {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  rmSync(workspace, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
+/** 一次工具调用的三个 chunk */
+function toolCall(id, name, args) {
+  return [
+    { kind: 'tool_call_start', id, name },
+    { kind: 'tool_call_delta', id, argsJson: JSON.stringify(args) },
+    { kind: 'tool_call_end', id },
+  ];
 }
 
 /** Map 不能直接 JSON 序列化，这里只用于比较，不追求好看 */

@@ -7,6 +7,22 @@ import { builtinRules, evaluate, policyEnvFromPaths } from '@xm/kernel';
 import { nodePlatform } from '@xm/platform';
 import { openStores } from '@xm/storage';
 
+/**
+ * 单层求值的便捷包装。
+ *
+ * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
+ * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
+ * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
+ */
+type EvalInput = Parameters<typeof evaluate>[0];
+const judge = (
+  input: Omit<EvalInput, 'layers'> & { rules: EvalInput['layers'][number]['rules'] },
+): ReturnType<typeof evaluate> => {
+  const { rules, ...rest } = input;
+  return evaluate({ ...rest, layers: [{ id: 'builtin', rules }] });
+};
+
 const ROOT = mkdtempSync(join(tmpdir(), 'xm-open-'));
 afterAll(() => {
   rmSync(ROOT, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -31,7 +47,7 @@ describe('平台路径 → 存储落盘位置 → 红线，是同一份定义', 
       expect(existsSync(stores.layout.eventsDb)).toBe(true);
       expect(existsSync(stores.layout.blobsDir)).toBe(true);
 
-      const verdict = evaluate({
+      const verdict = judge({
         request: {
           requestId: newRequestId(),
           sessionId: newSessionId(),
