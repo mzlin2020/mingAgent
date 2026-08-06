@@ -192,15 +192,23 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      # `scripts/check-secrets.mjs` 零依赖（只用 node: 内置模块），这个 job 其实不需要 pnpm。
-      # 但 `actions/setup-node@v5` 会读 package.json 的 `packageManager` 字段**自动开启缓存**，
-      # 于是它去找 pnpm、找不到，7 秒就挂在 setup 步骤上：
-      #   Error: Unable to locate executable file: pnpm.
-      # 六个 job 里只有这一个没装 pnpm，也只有这一个红——差异本身就是 bug 的来源。
-      - uses: pnpm/action-setup@v4
+      # `scripts/check-secrets.mjs` 零依赖（只用 node: 内置模块），这个 job **不装依赖**。
+      #
+      # 而 `actions/setup-node@v5` 的 `package-manager-cache` 默认是 true：它读
+      # package.json 的 `packageManager` 字段就自动开缓存。于是这个 job 两次翻车——
+      #
+      #   一、pre 步骤找不到 pnpm：Unable to locate executable file: pnpm（run #2 前后）
+      #   二、post 步骤存不了缓存：Path Validation Error: Path(s) ... do(es) not exist（run #9）
+      #
+      # 第一次的修法是给它装上 pnpm。那治的是症状：**一个从不 install 的 job，
+      # 根本不该进缓存这条路。** 病因没动，于是它换了个步骤又回来了，
+      # 而且这次是在 "Post job cleanup" 里——离真正的原因更远，更难认。
+      #
+      # 现在直接关掉自动缓存，pnpm 也就不必装了（它当初只是为了喂饱缓存那一步）。
       - uses: actions/setup-node@v5
         with:
           node-version: 22
+          package-manager-cache: false
       # 本地 pre-commit 钩子可以被 --no-verify 绕过，CI 这一道不行。
       # 扫描 PR 的全部改动，而不只是最后一次提交。
       - name: 密钥扫描
