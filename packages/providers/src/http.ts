@@ -107,6 +107,16 @@ export async function postSse(options: PostSseOptions): Promise<ReadableStream<U
   }
 }
 
+/**
+ * 这个异常是不是"用户点了停止"造成的。
+ *
+ * 判据只看 `signal.aborted`，**不看异常的 name 或 message**：`AbortError` 是
+ * undici 的形状，别的 fetch 实现（浏览器、Deno、测试替身）未必一样，而
+ * "我们自己请求过取消"这个事实在任何实现下都成立。按异常形状判等于把
+ * 一条端口级约定绑死在某个运行时的实现细节上。
+ */
+export const abortedBy = (signal: AbortLike): boolean => signal.aborted;
+
 // ── 取消桥接 ────────────────────────────────────────────────────
 
 /**

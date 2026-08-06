@@ -24,6 +24,11 @@ const ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.local/
  *
  * 这是取消用例唯一有意义的形状：只要上游还在源源不断吐字，"循环里检查 aborted"
  * 的实现也能过关；挂住之后才分得出真停与假停。
+ *
+ * **它刻意不守端口约定**：`model-provider.ts` 现在明写「取消时正常结束迭代，不抛」，
+ * 而这个假货照旧抛。留着是故意的——M2 的子 Agent 与 M3 的 MCP 会带进不受我们控制的
+ * Provider 实现，`turn.ts` 那道兜底必须有东西一直压着它。守约定的那一份由
+ * `packages/providers` 自己的用例覆盖。
  */
 class HangingProvider implements ModelProvider {
   readonly id = 'hanging';
@@ -150,6 +155,24 @@ describe('停止按钮', () => {
      */
     expect(r.deltas.join('')).toBe('我正在慢慢地想…');
     expect(r.persistedText).toBe(r.deltas.join(''));
+  });
+
+  /**
+   * 🔴 **这条是一次真调用照出来的。**
+   *
+   * 之前这一组只断言了 `message.end` 与 `message.interrupted` **存在**，
+   * 从没断言 `error.raised` **不存在**——于是一个"点停止收到红色报错"的 bug
+   * 在全绿的测试下活了一整段。
+   *
+   * 中断不是失败：用户要的就是它停下来。记成错误会让 UI 亮红、让重试逻辑
+   * 把它当成可重试的故障，而它压根不是故障。
+   *
+   * 一般化的教训：**只断言"该发生的发生了"，是抓不到"不该发生的也发生了"的。**
+   */
+  it('🔴 中断不记 error.raised —— 用户点的是停止，不是撞上了错误', async () => {
+    const r = await runAndInterrupt(20);
+    expect(r.types).toContain('message.interrupted');
+    expect(r.types).not.toContain('error.raised');
   });
 
   it('🔴 被中断的消息在回放里是可分辨的，不长得像一条正常回复', async () => {

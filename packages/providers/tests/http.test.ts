@@ -72,7 +72,13 @@ describe('取消桥接', () => {
       try {
         for await (const f of readSseFrames(body)) seen.push(f.data);
       } catch {
-        // 取消表现为读取抛错，这正是 Turn 循环那一侧要接住的形状
+        /*
+         * 在**这一层**（裸的 SSE 读取器），取消确实表现为读取抛错。
+         *
+         * 它到不了 Turn 循环：适配器按端口约定把它吃掉，换成一条
+         * `stop: aborted`（见 abort-contract.test.ts）。这里保留 catch 是因为
+         * `readSseFrames` 是底层原语，它不知道有没有人取消过，也不该知道。
+         */
       }
     })();
 

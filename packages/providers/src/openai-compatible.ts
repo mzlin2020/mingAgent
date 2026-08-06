@@ -4,7 +4,7 @@ import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm
 import { capabilitiesFor } from './catalog.js';
 import { parseJson, pickHttpDeps } from './anthropic.js';
 import type { HttpDeps } from './http.js';
-import { ProviderHttpError, postSse } from './http.js';
+import { ProviderHttpError, abortedBy, postSse } from './http.js';
 import { readSseFrames } from './sse.js';
 
 /**
@@ -66,16 +66,24 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async *stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk> {
-    const body = await postSse({
-      url: `${this.#baseUrl}/chat/completions`,
-      headers: this.#headers(),
-      body: toWire(req),
-      signal,
-      providerId: this.id,
-      ...pickHttpDeps(this.#options),
-    });
+    let body: ReadableStream<Uint8Array>;
+    try {
+      body = await postSse({
+        url: `${this.#baseUrl}/chat/completions`,
+        headers: this.#headers(),
+        body: toWire(req),
+        signal,
+        providerId: this.id,
+        ...pickHttpDeps(this.#options),
+      });
+    } catch (e) {
+      // 连接还没建起来就被取消：照样按端口约定收尾，不把 AbortError 抛给调用方
+      if (!abortedBy(signal)) throw e;
+      yield { kind: 'stop', reason: 'aborted' };
+      return;
+    }
 
-    yield* decodeStream(body);
+    yield* decodeStream(body, signal);
   }
 
   #headers(): Record<string, string> {
@@ -202,77 +210,97 @@ function unsupportedBlob(kind: string): never {
 
 export async function* decodeStream(
   body: ReadableStream<Uint8Array>,
+  signal?: AbortLike,
 ): AsyncGenerator<ModelChunk, void, undefined> {
   /** OpenAI 的 tool_calls 用 `index` 定位，`id` 只在第一个分片出现 */
   const callByIndex = new Map<number, CallId>();
   const started = new Set<number>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   let stopReason: StopReason = 'end_turn';
+  let aborted = false;
 
-  for await (const frame of readSseFrames(body)) {
-    // 这一家用 `data: [DONE]` 收尾，不是一个 JSON
-    if (frame.data.trim() === '[DONE]') break;
-    const data = parseJson(frame.data);
-    if (data === undefined) continue;
+  try {
+    for await (const frame of readSseFrames(body)) {
+      // 这一家用 `data: [DONE]` 收尾，不是一个 JSON
+      if (frame.data.trim() === '[DONE]') break;
+      const data = parseJson(frame.data);
+      if (data === undefined) continue;
 
-    const err = data.error;
-    if (typeof err === 'object' && err !== null) {
-      const message = str((err as Record<string, unknown>).message) ?? '模型侧报错。';
-      throw new ProviderHttpError(xmError('provider_error', message));
+      const err = data.error;
+      if (typeof err === 'object' && err !== null) {
+        const message = str((err as Record<string, unknown>).message) ?? '模型侧报错。';
+        throw new ProviderHttpError(xmError('provider_error', message));
+      }
+
+      const u = data.usage;
+      if (typeof u === 'object' && u !== null) usage = { ...usage, ...readUsage(u as Record<string, unknown>) };
+
+      const choices = data.choices;
+      if (!Array.isArray(choices)) continue;
+      const choice = choices[0] as Record<string, unknown> | undefined;
+      if (choice === undefined) continue;
+
+      const finish = str(choice.finish_reason);
+      if (finish !== undefined) stopReason = mapStopReason(finish);
+
+      const delta = choice.delta as Record<string, unknown> | undefined;
+      if (delta === undefined) continue;
+
+      const content = str(delta.content);
+      if (content !== undefined && content !== '') yield { kind: 'text_delta', text: content };
+
+      /*
+       * 兼容服务把推理内容放在 `reasoning_content`（DeepSeek 系）或 `reasoning`（其余）。
+       * 两个都认，因为它们都是"同一件事的不同拼写"——正是适配器该消化的那类差异。
+       */
+      const reasoning = str(delta.reasoning_content) ?? str(delta.reasoning);
+      if (reasoning !== undefined && reasoning !== '') {
+        yield { kind: 'thinking_delta', text: reasoning };
+      }
+
+      const toolCalls = delta.tool_calls;
+      if (!Array.isArray(toolCalls)) continue;
+
+      for (const raw of toolCalls) {
+        const tc = raw as Record<string, unknown>;
+        const index = num(tc.index) ?? 0;
+        const fn = tc.function as Record<string, unknown> | undefined;
+
+        let callId = callByIndex.get(index);
+        if (callId === undefined) {
+          // 换成我们的 CallId，理由同 anthropic.ts：CallId 是品牌化 UUID，`call_abc123` 过不了校验
+          callId = newCallId();
+          callByIndex.set(index, callId);
+        }
+
+        const name = fn === undefined ? undefined : str(fn.name);
+        if (name !== undefined && name !== '' && !started.has(index)) {
+          started.add(index);
+          yield { kind: 'tool_call_start', id: callId, name };
+        }
+
+        const args = fn === undefined ? undefined : str(fn.arguments);
+        if (args !== undefined && args !== '') {
+          yield { kind: 'tool_call_delta', id: callId, argsJson: args };
+        }
+      }
     }
+  } catch (e) {
+    // 端口约定：取消时正常结束迭代，不抛。理由见 anthropic.ts 同名处与 model-provider.ts
+    if (signal === undefined || !abortedBy(signal)) throw e;
+    aborted = true;
+  }
 
-    const u = data.usage;
-    if (typeof u === 'object' && u !== null) usage = { ...usage, ...readUsage(u as Record<string, unknown>) };
-
-    const choices = data.choices;
-    if (!Array.isArray(choices)) continue;
-    const choice = choices[0] as Record<string, unknown> | undefined;
-    if (choice === undefined) continue;
-
-    const finish = str(choice.finish_reason);
-    if (finish !== undefined) stopReason = mapStopReason(finish);
-
-    const delta = choice.delta as Record<string, unknown> | undefined;
-    if (delta === undefined) continue;
-
-    const content = str(delta.content);
-    if (content !== undefined && content !== '') yield { kind: 'text_delta', text: content };
-
+  if (aborted) {
     /*
-     * 兼容服务把推理内容放在 `reasoning_content`（DeepSeek 系）或 `reasoning`（其余）。
-     * 两个都认，因为它们都是"同一件事的不同拼写"——正是适配器该消化的那类差异。
+     * 中断时**不发 usage**，也**不补 tool_call_end**。
+     *
+     * 后者尤其要紧：一个被截断的 tool_call 的参数 JSON 必然是残缺的
+     * （录制里能看到参数是一个字符一个字符来的），补上 end 等于告诉上层
+     * "这个调用完整了"，而 `parseArgs` 会拿到半截 JSON。
      */
-    const reasoning = str(delta.reasoning_content) ?? str(delta.reasoning);
-    if (reasoning !== undefined && reasoning !== '') {
-      yield { kind: 'thinking_delta', text: reasoning };
-    }
-
-    const toolCalls = delta.tool_calls;
-    if (!Array.isArray(toolCalls)) continue;
-
-    for (const raw of toolCalls) {
-      const tc = raw as Record<string, unknown>;
-      const index = num(tc.index) ?? 0;
-      const fn = tc.function as Record<string, unknown> | undefined;
-
-      let callId = callByIndex.get(index);
-      if (callId === undefined) {
-        // 换成我们的 CallId，理由同 anthropic.ts：CallId 是品牌化 UUID，`call_abc123` 过不了校验
-        callId = newCallId();
-        callByIndex.set(index, callId);
-      }
-
-      const name = fn === undefined ? undefined : str(fn.name);
-      if (name !== undefined && name !== '' && !started.has(index)) {
-        started.add(index);
-        yield { kind: 'tool_call_start', id: callId, name };
-      }
-
-      const args = fn === undefined ? undefined : str(fn.arguments);
-      if (args !== undefined && args !== '') {
-        yield { kind: 'tool_call_delta', id: callId, argsJson: args };
-      }
-    }
+    yield { kind: 'stop', reason: 'aborted' };
+    return;
   }
 
   for (const callId of callByIndex.values()) yield { kind: 'tool_call_end', id: callId };

@@ -3,7 +3,7 @@ import { newCallId, xmError } from '@xm/contracts';
 import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
 import { capabilitiesFor } from './catalog.js';
 import type { HttpDeps } from './http.js';
-import { ProviderHttpError, postSse } from './http.js';
+import { ProviderHttpError, abortedBy, postSse } from './http.js';
 import { readSseFrames } from './sse.js';
 
 /**
@@ -64,16 +64,24 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async *stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk> {
-    const body = await postSse({
-      url: `${this.#baseUrl}/v1/messages`,
-      headers: this.#headers(),
-      body: toWire(req),
-      signal,
-      providerId: this.id,
-      ...pickHttpDeps(this.#options),
-    });
+    let body: ReadableStream<Uint8Array>;
+    try {
+      body = await postSse({
+        url: `${this.#baseUrl}/v1/messages`,
+        headers: this.#headers(),
+        body: toWire(req),
+        signal,
+        providerId: this.id,
+        ...pickHttpDeps(this.#options),
+      });
+    } catch (e) {
+      // 连接还没建起来就被取消：照样按端口约定收尾，不把 AbortError 抛给调用方
+      if (!abortedBy(signal)) throw e;
+      yield { kind: 'stop', reason: 'aborted' };
+      return;
+    }
 
-    yield* decodeStream(body);
+    yield* decodeStream(body, signal);
   }
 
   #headers(): Record<string, string> {
@@ -227,110 +235,131 @@ function unsupportedBlob(kind: string): never {
  */
 export async function* decodeStream(
   body: ReadableStream<Uint8Array>,
+  signal?: AbortLike,
 ): AsyncGenerator<ModelChunk, void, undefined> {
   const callIds = new Map<string, CallId>();
   const blockKinds = new Map<number, 'text' | 'thinking' | 'tool_use'>();
   const blockCalls = new Map<number, CallId>();
   let usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
   let stopReason: StopReason = 'end_turn';
+  let aborted = false;
 
-  for await (const frame of readSseFrames(body)) {
-    const data = parseJson(frame.data);
-    if (data === undefined) continue;
+  try {
+    for await (const frame of readSseFrames(body)) {
+      const data = parseJson(frame.data);
+      if (data === undefined) continue;
 
-    switch (frame.event) {
-      case 'message_start': {
-        const u = pick(pick(data, 'message'), 'usage');
-        usage = { ...usage, ...readUsage(u) };
-        break;
-      }
-
-      case 'content_block_start': {
-        const index = num(data.index);
-        const block = pick(data, 'content_block');
-        if (index === undefined || block === undefined) break;
-        const type = str(block.type);
-
-        if (type === 'tool_use') {
-          const rawId = str(block.id) ?? '';
-          const name = str(block.name) ?? '';
-          const callId = callIds.get(rawId) ?? newCallId();
-          callIds.set(rawId, callId);
-          blockKinds.set(index, 'tool_use');
-          blockCalls.set(index, callId);
-          yield { kind: 'tool_call_start', id: callId, name };
-        } else if (type === 'thinking') {
-          blockKinds.set(index, 'thinking');
-        } else {
-          blockKinds.set(index, 'text');
+      switch (frame.event) {
+        case 'message_start': {
+          const u = pick(pick(data, 'message'), 'usage');
+          usage = { ...usage, ...readUsage(u) };
+          break;
         }
-        break;
-      }
 
-      case 'content_block_delta': {
-        const index = num(data.index);
-        const delta = pick(data, 'delta');
-        if (index === undefined || delta === undefined) break;
+        case 'content_block_start': {
+          const index = num(data.index);
+          const block = pick(data, 'content_block');
+          if (index === undefined || block === undefined) break;
+          const type = str(block.type);
 
-        switch (str(delta.type)) {
-          case 'text_delta': {
-            const text = str(delta.text);
-            if (text !== undefined && text !== '') yield { kind: 'text_delta', text };
-            break;
+          if (type === 'tool_use') {
+            const rawId = str(block.id) ?? '';
+            const name = str(block.name) ?? '';
+            const callId = callIds.get(rawId) ?? newCallId();
+            callIds.set(rawId, callId);
+            blockKinds.set(index, 'tool_use');
+            blockCalls.set(index, callId);
+            yield { kind: 'tool_call_start', id: callId, name };
+          } else if (type === 'thinking') {
+            blockKinds.set(index, 'thinking');
+          } else {
+            blockKinds.set(index, 'text');
           }
-          case 'thinking_delta': {
-            const text = str(delta.thinking);
-            if (text !== undefined && text !== '') yield { kind: 'thinking_delta', text };
-            break;
-          }
-          case 'signature_delta': {
-            const signature = str(delta.signature);
-            if (signature !== undefined) yield { kind: 'thinking_signature', signature };
-            break;
-          }
-          case 'input_json_delta': {
-            const callId = blockCalls.get(index);
-            const argsJson = str(delta.partial_json);
-            if (callId !== undefined && argsJson !== undefined) {
-              yield { kind: 'tool_call_delta', id: callId, argsJson };
+          break;
+        }
+
+        case 'content_block_delta': {
+          const index = num(data.index);
+          const delta = pick(data, 'delta');
+          if (index === undefined || delta === undefined) break;
+
+          switch (str(delta.type)) {
+            case 'text_delta': {
+              const text = str(delta.text);
+              if (text !== undefined && text !== '') yield { kind: 'text_delta', text };
+              break;
             }
-            break;
+            case 'thinking_delta': {
+              const text = str(delta.thinking);
+              if (text !== undefined && text !== '') yield { kind: 'thinking_delta', text };
+              break;
+            }
+            case 'signature_delta': {
+              const signature = str(delta.signature);
+              if (signature !== undefined) yield { kind: 'thinking_signature', signature };
+              break;
+            }
+            case 'input_json_delta': {
+              const callId = blockCalls.get(index);
+              const argsJson = str(delta.partial_json);
+              if (callId !== undefined && argsJson !== undefined) {
+                yield { kind: 'tool_call_delta', id: callId, argsJson };
+              }
+              break;
+            }
+            default:
+              // 未知的 delta 类型：忽略。上游加一种新块不该让会话崩掉
+              break;
           }
-          default:
-            // 未知的 delta 类型：忽略。上游加一种新块不该让会话崩掉
-            break;
+          break;
         }
-        break;
-      }
 
-      case 'content_block_stop': {
-        const index = num(data.index);
-        if (index === undefined) break;
-        const callId = blockCalls.get(index);
-        if (callId !== undefined) yield { kind: 'tool_call_end', id: callId };
-        break;
-      }
+        case 'content_block_stop': {
+          const index = num(data.index);
+          if (index === undefined) break;
+          const callId = blockCalls.get(index);
+          if (callId !== undefined) yield { kind: 'tool_call_end', id: callId };
+          break;
+        }
 
-      case 'message_delta': {
-        const delta = pick(data, 'delta');
-        const reason = delta === undefined ? undefined : str(delta.stop_reason);
-        if (reason !== undefined) stopReason = mapStopReason(reason);
-        const u = pick(data, 'usage');
-        if (u !== undefined) usage = { ...usage, ...readUsage(u) };
-        break;
-      }
+        case 'message_delta': {
+          const delta = pick(data, 'delta');
+          const reason = delta === undefined ? undefined : str(delta.stop_reason);
+          if (reason !== undefined) stopReason = mapStopReason(reason);
+          const u = pick(data, 'usage');
+          if (u !== undefined) usage = { ...usage, ...readUsage(u) };
+          break;
+        }
 
-      case 'error': {
-        const err = pick(data, 'error');
-        const message = (err === undefined ? undefined : str(err.message)) ?? '模型侧报错。';
-        throw new ProviderHttpError(xmError('provider_error', message));
-      }
+        case 'error': {
+          const err = pick(data, 'error');
+          const message = (err === undefined ? undefined : str(err.message)) ?? '模型侧报错。';
+          throw new ProviderHttpError(xmError('provider_error', message));
+        }
 
-      case 'message_stop':
-      case 'ping':
-      default:
-        break;
+        case 'message_stop':
+        case 'ping':
+        default:
+          break;
+      }
     }
+  } catch (e) {
+    /*
+     * 端口约定：取消时**正常结束迭代，不抛**（见 model-provider.ts）。
+     * 这条不是洁癖——真实 fetch 在 abort 时让正文读取抛 `AbortError`，
+     * 而调用方分辨"取消 vs 真错"分辨错一次，用户点停止就会收到一条红色报错。
+     *
+     * 不是取消造成的异常照常往外抛：那才是真的出错了。
+     */
+    if (signal === undefined || !abortedBy(signal)) throw e;
+    aborted = true;
+  }
+
+  if (aborted) {
+    // 中断时**不发 usage**：服务端没给最终用量，编一个 outputTokens: 0 出来
+    // 就是把"不知道"写成"是零"
+    yield { kind: 'stop', reason: 'aborted' };
+    return;
   }
 
   yield { kind: 'usage', usage };

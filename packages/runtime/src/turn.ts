@@ -221,7 +221,22 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
     stopReason = failure.code === 'aborted' ? 'aborted' : 'error';
   }
 
-  if (signal.aborted) stopReason = 'aborted';
+  /*
+   * 兜底：Provider 没守约定（取消时抛而不是干净收尾）时也要判对。
+   *
+   * 端口现在明写了「取消时正常结束迭代」，两个自家适配器都守。但这道兜底不能撤——
+   * M3 的 MCP、M2 的子 Agent 都会带进不受我们控制的实现，而"取消被记成失败"
+   * 是一个用户当场看得见的错。
+   *
+   * **`failure` 必须一并清掉。** 这是一次真调用照出来的 bug：真实 fetch 在 abort 时
+   * 抛 `AbortError`，上面的 catch 把它记成 `provider_error`，这里只纠正了 stopReason
+   * 而没动 failure——于是用户点了停止，却收到一条红色的 `error.raised`。
+   * 单元测试没抓到，因为它只断言了两条事件**存在**，从没断言 error.raised **不存在**。
+   */
+  if (signal.aborted) {
+    stopReason = 'aborted';
+    failure = undefined;
+  }
 
   const blocks: ContentBlock[] = [];
   if (thinking !== '') {

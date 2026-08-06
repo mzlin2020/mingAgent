@@ -52,6 +52,21 @@ export interface ModelProvider {
    * 取消信号用 `AbortLike`（定义在 `tool/types.ts`），不是 `AbortSignal`：
    * 后者来自 DOM lib 或 @types/node，把任一个引进内核都会削弱"零 I/O"的编译期保证。
    * 真实的 `AbortSignal` 结构上兼容，适配层直接传即可。
+   *
+   * ── 取消时**正常结束迭代，不许抛** ──
+   *
+   * 实现方必须把 `signal` 触发后底层抛出的 `AbortError` 吃掉，以一条
+   * `{ kind: 'stop', reason: 'aborted' }` 收尾并返回。
+   *
+   * 这条是被一次真调用逼出来的：真实 `fetch` 在 abort 时让正文读取抛 `AbortError`，
+   * 而端口此前对此**只字未提**。于是每个调用方都得自己分辨"这是用户取消还是真出错"，
+   * 而第一个调用方就分辨错了——把中断记成了 `error.raised`，用户点停止收到一条红色报错。
+   *
+   * 让流自己说清楚它为什么结束，比让每个调用方各猜一次可靠。M2 的子 Agent
+   * 是下一个调用方，它不该重新踩一遍。
+   *
+   * **中断时不发 `usage`**：服务端没给最终用量，编一个 `outputTokens: 0` 出来
+   * 就是把"不知道"写成"是零"——与 `costOf()` 算不出时返回 `undefined` 同一条纪律。
    */
   stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk>;
 
