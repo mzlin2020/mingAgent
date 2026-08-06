@@ -3,8 +3,11 @@ import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
 import type { LiveBuffer, SessionState } from '@xm/kernel';
 import { applyLive, emptySessionState, reduce } from '@xm/kernel';
-import type { ListSessionsResult, PushedEvent } from '../shared/ipc.js';
+import type { ListSessionsResult, PushedEvent, StatusResult } from '../shared/ipc.js';
+import type { z } from 'zod';
 import { api } from './bridge.js';
+
+type Status = z.infer<typeof StatusResult>;
 
 /**
  * 渲染层状态。
@@ -39,6 +42,13 @@ interface UiState {
   live: LiveBuffer | undefined;
   busy: boolean;
   error: string | undefined;
+  /**
+   * 运行状态：Provider 配没配好、密钥后端是哪一档、配置有没有问题。
+   *
+   * 这**不是**会话状态的一部分，所以它待在 `session` 之外是对的——它讲的是这台机器
+   * 此刻的装配情况，不是任何一条事件流的投影，回放也回放不出来。
+   */
+  status: Status | undefined;
 
   // 写成箭头属性而不是方法：zustand 的选择器会把它们从对象上摘下来单独传，
   // 方法类型在那时会触发 unbound-method——而这里确实不需要 this
@@ -46,7 +56,10 @@ interface UiState {
   readonly newSession: () => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
   readonly send: (text: string) => Promise<void>;
+  readonly stop: () => Promise<void>;
   readonly clearUntrusted: () => Promise<void>;
+  readonly refreshStatus: () => Promise<void>;
+  readonly setApiKey: (providerId: string, key: string) => Promise<void>;
   readonly applyEvent: (event: PushedEvent) => void;
 }
 
@@ -67,6 +80,7 @@ export const useUi = create<UiState>((set, get) => ({
   live: undefined,
   busy: false,
   error: undefined,
+  status: undefined,
 
   refreshSessions: async () => {
     try {
@@ -105,6 +119,40 @@ export const useUi = create<UiState>((set, get) => ({
       set({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       set({ busy: false });
+    }
+  },
+
+  /**
+   * 停止。与 `clearUntrusted` 同一个姿态：**发出去就完了，不乐观更新**。
+   *
+   * 真正的"已停止"由主进程推回来的 `message.interrupted` 经 reduce 得出。
+   * 在这里顺手把 busy 置回 false 会快一帧，代价是取消若没生效，
+   * 用户看到的是"已停止"而模型还在吐字——那比慢一帧糟得多。
+   */
+  stop: async () => {
+    const id = get().currentId;
+    if (id === undefined) return;
+    try {
+      await api.interrupt(id);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  refreshStatus: async () => {
+    try {
+      set({ status: await api.status() });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  setApiKey: async (providerId, key) => {
+    try {
+      await api.setApiKey(providerId, key);
+      await get().refreshStatus();
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
     }
   },
 

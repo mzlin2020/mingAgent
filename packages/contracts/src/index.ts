@@ -38,6 +38,7 @@ export * from './permission/policy.js';
 export * from './model/request.js';
 export * from './model/chunk.js';
 export * from './model/usage.js';
+export * from './model/price.js';
 
 // ── 配置 ──
 export * from './config/secret.js';

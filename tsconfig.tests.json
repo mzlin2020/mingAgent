@@ -17,6 +17,7 @@
       "@xm/contracts": ["./packages/contracts/src/index.ts"],
       "@xm/kernel": ["./packages/kernel/src/index.ts"],
       "@xm/platform": ["./packages/platform/src/index.ts"],
+      "@xm/providers": ["./packages/providers/src/index.ts"],
       "@xm/storage": ["./packages/storage/src/index.ts"],
       "@xm/runtime": ["./packages/runtime/src/index.ts"]
     }

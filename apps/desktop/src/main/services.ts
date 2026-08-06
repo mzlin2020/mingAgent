@@ -1,9 +1,12 @@
 import { app, safeStorage } from 'electron';
-import type { PolicyRuleSet, SessionId } from '@xm/contracts';
+import { join } from 'node:path';
+import type { Config, PolicyRuleSet, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
-import type { PlatformPort, SecretBackend } from '@xm/kernel';
+import type { ModelProvider, PlatformPort, SecretBackend, SecretStore } from '@xm/kernel';
 import { ToolRegistry, builtinRules, policyEnvFromPaths } from '@xm/kernel';
-import { nodePlatform, withCapabilities } from '@xm/platform';
+import type { ConfigProblem } from '@xm/platform';
+import { loadConfig, nodePlatform, parseModelRef, unavailableSecretStore, withCapabilities } from '@xm/platform';
+import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
 import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
 import {
@@ -15,6 +18,7 @@ import {
   fakeDeleteTool,
   runTurn,
 } from '@xm/runtime';
+import { keychainSecretStore } from './secrets.js';
 
 /**
  * 主进程的装配。
@@ -22,6 +26,16 @@ import {
  * 这个文件是整个应用**唯一**知道"Electron"与"业务"同时存在的地方——
  * 再往下的每一层都不认识 electron（depcruise 强制），再往上的渲染层没有 Node 权限。
  */
+
+export interface RuntimeStatus {
+  readonly providerReady: boolean;
+  readonly providerId: string;
+  readonly model: string;
+  readonly secretBackend: SecretBackend;
+  readonly hasApiKey: boolean;
+  readonly configProblems: readonly ConfigProblem[];
+}
+
 export interface Services {
   readonly platform: PlatformPort;
   readonly stores: OpenedStores;
@@ -32,6 +46,10 @@ export interface Services {
   sendUserMessage(sessionId: SessionId, text: string): Promise<string>;
   /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
+  /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
+  interrupt(sessionId: SessionId): boolean;
+  status(): Promise<RuntimeStatus>;
+  setApiKey(providerId: string, key: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -48,12 +66,12 @@ export async function startServices(): Promise<Services> {
    * `safeStorage.isEncryptionAvailable()` 在无 keyring 的 Linux 会话里返回 false，
    * 那时后端只能是口令加密文件——**不能退化成明文**，所以三态里没有 plaintext 这一项。
    */
-  const secrets: SecretBackend = safeStorage.isEncryptionAvailable()
+  const secretBackend: SecretBackend = safeStorage.isEncryptionAvailable()
     ? 'keychain'
-    : 'encrypted-file';
+    : 'plaintext-unavailable';
 
   const platform = withCapabilities(base, {
-    secrets,
+    secrets: secretBackend,
     tray: true,
     notifications: true,
   });
@@ -63,11 +81,28 @@ export async function startServices(): Promise<Services> {
   const rules = builtinRules(policyEnvFromPaths(paths));
   const bus = new EventBus();
 
+  /*
+   * 密钥存储。**没有第三条路**：要么钥匙串，要么明确地存不了。
+   *
+   * 口令加密文件那一档（`fileSecretStore`）已经实现，但需要一个"设置主口令"的
+   * 界面才能用上，而那是配置中心的一部分（M3）。在它出现之前，无钥匙串环境下
+   * 正确的行为是**明确拒绝**并告诉用户怎么办——不是找个地方先存着。
+   */
+  const secrets: SecretStore =
+    secretBackend === 'keychain'
+      ? keychainSecretStore({ file: join(paths.config, 'secrets.json') })
+      : unavailableSecretStore('系统钥匙串不可用');
+
+  const loaded = await loadConfig({ paths, cwd: app.getPath('home') });
+  let config: Config = loaded.config;
+
   const tools = new ToolRegistry();
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
 
   const runtimes = new Map<SessionId, SessionRuntime>();
+  /** 每会话一个 AbortController。它的存在期就是"这一轮正在跑" */
+  const running = new Map<SessionId, AbortController>();
 
   const runtimeFor = async (sessionId: SessionId): Promise<SessionRuntime> => {
     const existing = runtimes.get(sessionId);
@@ -76,6 +111,42 @@ export async function startServices(): Promise<Services> {
     const created = await SessionRuntime.open({ sessionId, store: stores.events, bus });
     runtimes.set(sessionId, created);
     return created;
+  };
+
+  const modelRef = (): { provider: string; model: string } => parseModelRef(config.model.main);
+
+  /**
+   * 按配置造 Provider。**每轮现造，不缓存。**
+   *
+   * 缓存住一个 Provider 实例意味着用户换了 key 或换了 baseUrl 之后，
+   * 直到重启才生效——而"改了配置没反应"是最难自查的一类问题。
+   * 造一个实例的成本只是几个字段赋值，没有连接池要复用。
+   */
+  const providerFor = async (): Promise<ModelProvider | undefined> => {
+    const { provider: providerId, model } = modelRef();
+    const cfg = config.providers[providerId];
+    if (cfg?.apiKey === undefined) return undefined;
+
+    const apiKey = await secrets.get(cfg.apiKey);
+    if (apiKey === undefined || apiKey === '') return undefined;
+
+    const common = {
+      apiKey,
+      ...(cfg.baseUrl === undefined ? {} : { baseUrl: cfg.baseUrl }),
+      ...(cfg.models.length > 0 ? { models: cfg.models } : {}),
+    };
+
+    switch (cfg.kind) {
+      case 'anthropic':
+        return new AnthropicProvider(common);
+      case 'openai':
+      case 'openai-compatible':
+        return new OpenAICompatibleProvider({ ...common, id: providerId });
+      default:
+        // google / ollama 还没实现。**返回 undefined 而不是悄悄换一家**
+        void model;
+        return undefined;
+    }
   };
 
   return {
@@ -92,37 +163,77 @@ export async function startServices(): Promise<Services> {
         type: 'session.created',
         payload: {
           cwd: app.getPath('home'),
-          modelRef: 'scripted/scripted-1',
+          modelRef: config.model.main,
           ...(title === undefined ? {} : { title }),
         },
       });
+
+      /*
+       * 降级与配置问题**在会话里留痕**，不只是在界面上闪一下。
+       *
+       * `config/secret.ts` 写着「SecretStore 退化必须发 notice 事件显式告知，
+       * 绝不静默明文」——在此之前没有任何代码会发这条 notice，那句话一直是纸面的。
+       * 记进事件流的好处是它会被回放出来：三个月后回看这个会话，
+       * 仍然能看到"当时密钥存不了"，而不是对着一堆失败的调用猜。
+       */
+      if (secretBackend !== 'keychain') {
+        await runtime.record({
+          type: 'notice.posted',
+          payload: {
+            level: 'warn',
+            code: 'secrets.degraded',
+            message:
+              '系统钥匙串不可用，当前无法保存 API key（不会退化成明文保存）。' +
+              '在 Linux 上通常是缺少 gnome-keyring 或 kwallet。',
+          },
+        });
+      }
+      for (const problem of loaded.problems) {
+        await runtime.record({
+          type: 'notice.posted',
+          payload: { level: 'warn', code: problem.code, message: problem.message },
+        });
+      }
+
       return sessionId;
     },
 
-    /**
-     * M0-b 里发出去的是**脚本化**的一轮。真实 Provider 是 M1。
-     *
-     * 之所以现在就走完整的 `runTurn`，是为了让外壳与装配层的接缝在本轮就被真实检验：
-     * M1 换掉的只是 Provider 这一个参数，而不是重新想一遍事件怎么流到 UI。
-     */
     async sendUserMessage(sessionId: SessionId, text: string): Promise<string> {
       const runtime = await runtimeFor(sessionId);
-      const provider = demoProvider(text);
-      return runTurn(
-        {
-          runtime,
-          provider,
-          tools,
-          rules,
-          tier: 'balanced',
-          model: 'scripted-1',
-          targetOf: demoTargetOf,
-          pathCaseInsensitive: platform.os === 'windows',
-          // 审批 UI 是 M1。在那之前 ask 一律拒绝——默认放行等于没有闸门
-          decide: () => Promise.resolve('deny'),
-        },
-        text,
-      );
+      const { provider: providerId, model } = modelRef();
+      const provider = (await providerFor()) ?? demoProvider(text);
+
+      /*
+       * 一个会话同时只跑一轮。已经在跑时**拒绝**而不是排队：
+       * 排队会让用户连点两次发送后看到两条回复依次出现，而他以为第二次覆盖了第一次。
+       */
+      if (running.has(sessionId)) return 'busy';
+
+      const controller = new AbortController();
+      running.set(sessionId, controller);
+
+      try {
+        return await runTurn(
+          {
+            runtime,
+            provider,
+            tools,
+            rules,
+            tier: config.permission.tier,
+            model: provider.id === 'scripted' ? 'scripted-1' : model,
+            prices: config.prices,
+            targetOf: demoTargetOf,
+            pathCaseInsensitive: platform.os === 'windows',
+            signal: controller.signal,
+            // 审批 UI 是 M1-c。在那之前 ask 一律拒绝——默认放行等于没有闸门
+            decide: () => Promise.resolve('deny'),
+          },
+          text,
+        );
+      } finally {
+        running.delete(sessionId);
+        void providerId;
+      }
     },
 
     /**
@@ -134,7 +245,66 @@ export async function startServices(): Promise<Services> {
       return runtime.clearUntrusted(reason);
     },
 
+    /**
+     * 停止。**同步**，且只做一件事：`abort()`。
+     *
+     * 不 await 任何东西是刻意的——"200ms 内真停"这条 DoD 里，这一层不能是瓶颈。
+     * 真正的停止发生在 `@xm/providers` 的取消桥接里（fetch 的正文读取当场抛错），
+     * `message.interrupted` 由 Turn 循环在收尾时落下。
+     */
+    interrupt(sessionId: SessionId): boolean {
+      const controller = running.get(sessionId);
+      if (controller === undefined) return false;
+      controller.abort();
+      return true;
+    },
+
+    async status(): Promise<RuntimeStatus> {
+      const { provider: providerId, model } = modelRef();
+      const provider = await providerFor().catch(() => undefined);
+      const cfg = config.providers[providerId];
+      return {
+        providerReady: provider !== undefined,
+        providerId,
+        model,
+        secretBackend,
+        hasApiKey: cfg?.apiKey !== undefined,
+        configProblems: loaded.problems,
+      };
+    },
+
+    /**
+     * 录入 API key。
+     *
+     * 两步：密钥进 SecretStore，**配置里只写引用**。这正是 `SecretRef` 存在的理由——
+     * 参考项目那个含真实 key 且已提交进 git 的 `config.yaml`，就是因为当时
+     * 没有"只写引用"这条路。
+     *
+     * 配置在内存里更新即可：写回配置文件是配置中心（M3）的事，而那时这段逻辑
+     * 会整体搬过去。现在写回去反而会把用户手写的注释与格式冲掉。
+     */
+    async setApiKey(providerId: string, key: string): Promise<void> {
+      const ref = { $secret: `${providerId}.apiKey` };
+      await secrets.set(ref, key);
+
+      const existing = config.providers[providerId];
+      config = {
+        ...config,
+        providers: {
+          ...config.providers,
+          [providerId]: {
+            kind: existing?.kind ?? guessKind(providerId),
+            ...(existing?.baseUrl === undefined ? {} : { baseUrl: existing.baseUrl }),
+            apiKey: ref,
+            models: existing?.models ?? [],
+          },
+        },
+      };
+    },
+
     async close(): Promise<void> {
+      for (const controller of running.values()) controller.abort();
+      running.clear();
       for (const runtime of runtimes.values()) await runtime.close();
       runtimes.clear();
       await stores.close();
@@ -142,14 +312,25 @@ export async function startServices(): Promise<Services> {
   };
 }
 
-/** 空壳期的"模型"：把用户输入回显一遍，好让事件流在 UI 上看得见 */
+/** 没有配置过这一家时的兜底判断。只在"用户刚录入 key"这一步用得到 */
+const guessKind = (providerId: string): Config['providers'][string]['kind'] =>
+  providerId === 'anthropic' ? 'anthropic' : 'openai-compatible';
+
+/**
+ * 没有配好 Provider 时的兜底"模型"。
+ *
+ * 保留它而不是直接报错，是为了让**没有 key 的人也能把界面跑起来**并看到
+ * 该去哪里录入 key。一旦真 Provider 配好，这段代码就再也不会被走到。
+ */
 function demoProvider(text: string): ScriptedProvider {
   return new ScriptedProvider({
     turns: [
       {
         chunks: [
-          { kind: 'thinking_delta', text: '（这是空壳期的脚本化回复）' },
-          { kind: 'text_delta', text: `收到：${text}` },
+          {
+            kind: 'text_delta',
+            text: `还没有配置模型 API key，所以这条是本地回显：${text}`,
+          },
           {
             kind: 'usage',
             usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },

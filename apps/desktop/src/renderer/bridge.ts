@@ -2,11 +2,14 @@ import { z } from 'zod';
 import {
   ClearUntrustedResult,
   CreateSessionResult,
+  InterruptResult,
   IpcEnvelope,
   ListSessionsResult,
   PushedEvent,
   ReadSessionResult,
   SendUserMessageResult,
+  SetApiKeyResult,
+  StatusResult,
 } from '../shared/ipc.js';
 
 /**
@@ -26,6 +29,9 @@ interface XmBridge {
   sendUserMessage(req: unknown): Promise<unknown>;
   readSession(req: unknown): Promise<unknown>;
   clearUntrusted(req: unknown): Promise<unknown>;
+  interrupt(req: unknown): Promise<unknown>;
+  status(): Promise<unknown>;
+  setApiKey(req: unknown): Promise<unknown>;
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -76,6 +82,14 @@ export const api = {
       bridge().clearUntrusted(reason === undefined ? { sessionId } : { sessionId, reason }),
       ClearUntrustedResult,
     ),
+
+  interrupt: (sessionId: string) => call(bridge().interrupt({ sessionId }), InterruptResult),
+
+  status: () => call(bridge().status(), StatusResult),
+
+  /** 录入密钥。**注意没有对应的读取方法**——渲染层永远拿不到密钥的值 */
+  setApiKey: (providerId: string, key: string) =>
+    call(bridge().setApiKey({ providerId, key }), SetApiKeyResult),
 
   /**
    * 事件推送。**解析不了的事件原样忽略并继续**，不让整条流断掉——

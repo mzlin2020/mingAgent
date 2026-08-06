@@ -5,8 +5,10 @@ import { CH } from '../shared/channels.js';
 import {
   ClearUntrustedRequest,
   CreateSessionRequest,
+  InterruptRequest,
   ReadSessionRequest,
   SendUserMessageRequest,
+  SetApiKeyRequest,
 } from '../shared/ipc.js';
 import type { Services } from './services.js';
 
@@ -54,6 +56,33 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   handle(CH.clearUntrusted, ClearUntrustedRequest, async (req) => ({
     cleared: await services.clearUntrusted(req.sessionId, req.reason),
   }));
+
+  handle(CH.interrupt, InterruptRequest, (req) =>
+    // 同步执行、立刻返回：停止这条路径上不该有任何 await（见 services.interrupt 的注释）
+    Promise.resolve({ interrupted: services.interrupt(req.sessionId) }),
+  );
+
+  handle(CH.status, undefined, async () => {
+    const s = await services.status();
+    return {
+      providerReady: s.providerReady,
+      providerId: s.providerId,
+      model: s.model,
+      secretBackend: s.secretBackend,
+      hasApiKey: s.hasApiKey,
+      configProblems: s.configProblems.map((p) => ({ code: p.code, message: p.message })),
+    };
+  });
+
+  /*
+   * 录入密钥。**这个处理器不返回任何与 key 有关的东西**——连"存进去的是什么"都不回显。
+   * 失败时走统一的 IpcFailure，而那条路径上的 message 来自 SecretUnavailableError，
+   * 它讲的是后端为什么不可用，里面没有密钥。
+   */
+  handle(CH.setApiKey, SetApiKeyRequest, async (req) => {
+    await services.setApiKey(req.providerId, req.key);
+    return { ok: true as const };
+  });
 
   /*
    * 事件推送。**订阅在总线上，不在存储上**（ADR-0013 不变量五）：

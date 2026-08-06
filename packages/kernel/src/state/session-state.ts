@@ -134,6 +134,13 @@ export interface UsageTotals {
   readonly usage: Usage;
   readonly costUsd: number;
   readonly turns: number;
+  /**
+   * 有多少次往返**没有价格可查**。
+   *
+   * 没有它，`costUsd` 就是一个不可解释的数：0.42 美元里可能还漏着三次不知价的调用，
+   * 而 UI 会把它当成全部花销显示出来。有了它，UI 能诚实地说"至少 $0.42（3 次未计价）"。
+   */
+  readonly unpricedTurns: number;
 }
 
 export interface Compaction {
@@ -180,7 +187,7 @@ export const emptySessionState = (id: SessionId): SessionState => ({
   interruptedCalls: [],
   runningSubagents: new Map(),
   config: {},
-  usage: { usage: EMPTY_USAGE, costUsd: 0, turns: 0 },
+  usage: { usage: EMPTY_USAGE, costUsd: 0, turns: 0, unpricedTurns: 0 },
   compactions: [],
   checkpoints: [],
   notices: [],

@@ -57,6 +57,23 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: 'providers-零-node内置',
+      comment:
+        'Provider 适配器只用 Web 平台 API（fetch / AbortController / TextDecoder）。' +
+        '这不是洁癖：包里读不到 node:process，密钥就**只能**来自调用方传进来的 apiKey，' +
+        '而那个值只能出自 SecretStore。一个"顺手"的 process.env.ANTHROPIC_API_KEY ' +
+        '会在这条规则下直接失败。顺带保住了跑在浏览器/Worker 里那条退路。',
+      severity: 'error',
+      from: { path: '^packages/providers/src' },
+      to: { dependencyTypes: ['core'] },
+    },
+    {
+      name: 'providers-不得依赖-electron',
+      severity: 'error',
+      from: { path: '^packages/providers/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
       name: 'runtime-不得依赖-electron',
       comment:
         'CLI 形态延后到 M3，但架构约束从 M0 起生效（ADR-0007 / docs/09 A2）。runtime 泄漏 electron 依赖，CLI 就永远起不来。',

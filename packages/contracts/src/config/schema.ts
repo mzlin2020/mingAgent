@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PriceTable } from '../model/price.js';
 import { PermissionTier, PolicyRuleSet } from '../permission/policy.js';
 import { SecretRef } from './secret.js';
 
@@ -13,7 +14,13 @@ import { SecretRef } from './secret.js';
 export const ProviderConfig = z.object({
   kind: z.enum(['anthropic', 'openai', 'openai-compatible', 'google', 'ollama']),
   baseUrl: z.string().optional(),
-  /** 只能是引用，不能是明文 */
+  /**
+   * 只能是引用，不能是明文。
+   *
+   * `SecretRef` 是 `z.strictObject({ $secret })`，所以一个明文字符串在这里**本来就过不了**——
+   * 但 zod 给出的报错是「期望对象，收到字符串」，用户看不懂自己错在哪。
+   * `assertNoPlaintextSecrets()` 在校验之前先扫一遍，给出能照着改的那句话。
+   */
   apiKey: SecretRef.optional(),
   models: z.array(z.string()).default([]),
 });
@@ -27,6 +34,8 @@ export const Config = z.object({
     summarize: z.string().optional(),
   }),
   providers: z.record(z.string(), ProviderConfig).default({}),
+  /** 见 model/price.ts：默认空表，算不出成本时 UI 显示"未配置价格"而不是 $0.00 */
+  prices: PriceTable.default({}),
   permission: z.object({
     tier: PermissionTier.default('balanced'),
     /** 用户/项目自定义规则，与内置规则合并后统一求值 */

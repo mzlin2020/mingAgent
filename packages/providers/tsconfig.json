@@ -1,0 +1,21 @@
+{
+  "//": [
+    "lib 里加 DOM，types 仍然是空的（继承 base）。",
+    "",
+    "这是刻意的组合：本包要用 fetch / AbortController / TextDecoder / ReadableStream，",
+    "它们是 **Web 平台** API 而不是 Node API。开 DOM 拿到的正好是这一组；",
+    "开 types:['node'] 则会连 process、Buffer、node:fs 的全局一起放进来——",
+    "那样一个'顺手'的 process.env.ANTHROPIC_API_KEY 就能通过类型检查，",
+    "而密钥的唯一来源必须是 SecretStore。",
+    "",
+    "代价是 document / window 也可见，由 eslint 的 no-restricted-globals 按包拦掉。"
+  ],
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "lib": ["ES2023", "DOM"]
+  },
+  "include": ["src/**/*.ts"],
+  "references": [{ "path": "../contracts" }, { "path": "../kernel" }]
+}

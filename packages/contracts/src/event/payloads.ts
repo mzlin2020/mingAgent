@@ -230,6 +230,14 @@ export const UsagePayload = z.looseObject({
   usage: Usage,
   /** 由 CostAccountant 查价格表算出，不由 Provider 提供 */
   costUsd: z.number().nonnegative(),
+  /**
+   * 这个数字是**算出来的**还是**因为没有价格而填的 0**。
+   *
+   * 缺了它，`costUsd: 0` 就有两种读法："这次没花钱"和"我们不知道花了多少"，
+   * 而 UI 只能显示前者——于是用户看到一个精确的 $0.00。
+   * 可选字段：M0 期的历史事件没有它，按"已计价"读（那时确实全是 0 成本的脚本化回合）。
+   */
+  priced: z.boolean().optional(),
 });
 
 export const CheckpointCreatedPayload = z.looseObject({

@@ -16,13 +16,15 @@ import { useUi } from './store.js';
 export function App(): ReactNode {
   const { currentId, session, busy, error } = useUi();
   const refreshSessions = useUi((s) => s.refreshSessions);
+  const refreshStatus = useUi((s) => s.refreshStatus);
   const applyEvent = useUi((s) => s.applyEvent);
 
   useEffect(() => {
     void refreshSessions();
+    void refreshStatus();
     // 订阅主进程推来的事件。总线在主进程，这里只是消费端（ADR-0013 不变量五）
     return api.onEvent(applyEvent);
-  }, [refreshSessions, applyEvent]);
+  }, [refreshSessions, refreshStatus, applyEvent]);
 
   return (
     <div className="flex h-screen bg-[var(--xm-bg)] text-[var(--xm-fg)]">
@@ -32,9 +34,7 @@ export function App(): ReactNode {
           <span className="truncate text-sm font-medium">
             {session?.title === '' || session === undefined ? '小明' : session.title}
           </span>
-          <span className="text-xs text-[var(--xm-fg-muted)]">
-            {session === undefined ? '' : `seq ${String(session.lastSeq)} · ${session.status}`}
-          </span>
+          <UsageBadge />
         </header>
 
         {error !== undefined && (
@@ -45,11 +45,11 @@ export function App(): ReactNode {
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {currentId === undefined ? (
-            <p className="mt-16 text-center text-sm text-[var(--xm-fg-muted)]">
-              左侧新建一个会话开始。M0-b 是空壳期：模型回复是脚本化的。
-            </p>
+            <p className="mt-16 text-center text-sm text-[var(--xm-fg-muted)]">左侧新建一个会话开始。</p>
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
+              <SetupBanner />
+              <NoticeBanner />
               <UntrustedBanner />
               {(session?.messages ?? []).map((m) => (
                 <MessageView key={m.id} message={m} />
@@ -59,8 +59,123 @@ export function App(): ReactNode {
           )}
         </div>
 
-        <Composer disabled={currentId === undefined || busy} />
+        {/*
+          `busy` 是"这次 IPC 还没返回"，`session.status === 'running'` 是"事件流说它在跑"。
+          停止按钮认后者：前者在网络往返期间也为真，而那时还没有任何东西可停。
+        */}
+        <Composer
+          disabled={currentId === undefined || busy}
+          running={session?.status === 'running'}
+        />
       </main>
+    </div>
+  );
+}
+
+/**
+ * 用量与成本。
+ *
+ * ── 未计价的回合必须显示出来，不能并进那个数字 ──
+ *
+ * 仓库里不带默认价格表（`contracts/model/price.ts` 说明了为什么：带一份就等于发布一个
+ * 会过期的事实）。于是"$0.00"有两种可能：真没花钱，或者我们不知道花了多少。
+ * 把后者显示成前者，用户就拿到了一个自信的错数字——比诚实地说"未计价"糟糕得多。
+ */
+function UsageBadge(): ReactNode {
+  const session = useUi((s) => s.session);
+  if (session === undefined) return null;
+
+  const { usage, costUsd, unpricedTurns } = session.usage;
+  const tokens = usage.inputTokens + usage.outputTokens;
+
+  return (
+    <span className="text-xs text-[var(--xm-fg-muted)]">
+      {tokens > 0 && `${tokens.toLocaleString()} tok · `}
+      {unpricedTurns > 0
+        ? `≥ $${costUsd.toFixed(4)}（${String(unpricedTurns)} 次未计价）`
+        : costUsd > 0 && `$${costUsd.toFixed(4)} · `}
+      {`seq ${String(session.lastSeq)} · ${session.status}`}
+    </span>
+  );
+}
+
+/**
+ * 还没配好模型时的引导 —— 也是本轮唯一的密钥录入口。
+ *
+ * 刻意做成一条横幅而不是一个设置页：配置中心是 M3 的交付项，现在长出半个来，
+ * 到时候要么推翻要么带着走。横幅只干一件事——让"没有 key"这个状态有出路。
+ *
+ * 录入框是 `type="password"`，且**没有任何回显**：主进程那边也没有读密钥的通道
+ * （`shared/channels.ts` 的注释），所以这里显示不出已存的 key，只显示"已配置"。
+ */
+function SetupBanner(): ReactNode {
+  const status = useUi((s) => s.status);
+  const setApiKey = useUi((s) => s.setApiKey);
+  const [key, setKey] = useState('');
+
+  if (status === undefined || status.providerReady) return null;
+
+  const blocked = status.secretBackend === 'plaintext-unavailable';
+
+  return (
+    <div className="rounded-md border border-[var(--xm-border)] bg-[var(--xm-surface-2)] px-3 py-2 text-xs">
+      <p className="font-medium">还没有配置模型</p>
+      <p className="mt-1 text-[var(--xm-fg-muted)]">
+        当前模型：<span className="font-mono">{status.providerId}</span> /{' '}
+        <span className="font-mono">{status.model}</span>
+        {status.hasApiKey && '（配置里有密钥引用，但取不到值）'}
+      </p>
+
+      {blocked ? (
+        <p className="mt-2 text-[var(--xm-fg-muted)]">
+          系统钥匙串不可用，因此**无法保存密钥**——不会退化成明文保存。
+          在 Linux 上通常是缺少 gnome-keyring 或 kwallet，装好并启动后重开小明。
+        </p>
+      ) : (
+        <div className="mt-2 flex items-center gap-2">
+          <input
+            type="password"
+            value={key}
+            placeholder={`${status.providerId} 的 API key`}
+            onChange={(e) => {
+              setKey(e.target.value);
+            }}
+            className="min-w-0 flex-1 rounded border border-[var(--xm-border)] bg-[var(--xm-surface)] px-2 py-1 font-mono"
+          />
+          <Button
+            disabled={key.trim() === ''}
+            onClick={() => {
+              const value = key.trim();
+              setKey('');
+              void setApiKey(status.providerId, value);
+            }}
+          >
+            保存到钥匙串
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 会话里的 notice —— 目前主要是密钥后端降级与配置问题。
+ *
+ * 读的是 `session.notices`（reduce 出来的），不是某个 UI 局部状态：
+ * 这些事在事件流里留了痕，三个月后回看这个会话仍然看得到"当时密钥存不了"。
+ */
+function NoticeBanner(): ReactNode {
+  const session = useUi((s) => s.session);
+  const notices = session?.notices ?? [];
+  if (notices.length === 0) return null;
+
+  return (
+    <div className="rounded-md border border-[var(--xm-border)] bg-[var(--xm-surface-2)] px-3 py-2 text-xs">
+      {notices.map((n, i) => (
+        <p key={i} className={n.level === 'warn' ? '' : 'text-[var(--xm-fg-muted)]'}>
+          {n.message}
+        </p>
+      ))}
     </div>
   );
 }
@@ -183,8 +298,16 @@ function SessionList(): ReactNode {
   );
 }
 
-function Composer({ disabled }: { readonly disabled: boolean }): ReactNode {
+/**
+ * 输入区。跑起来之后发送按钮**变成**停止按钮，不是并排多一个。
+ *
+ * 并排两个按钮意味着"发送"在跑动期间是可点的，那要么排队要么静默丢弃——
+ * 两种都会让用户以为第二条消息生效了。原地替换的语义没有歧义：
+ * 这一刻要么能发，要么能停。
+ */
+function Composer({ disabled, running }: { readonly disabled: boolean; readonly running: boolean }): ReactNode {
   const send = useUi((s) => s.send);
+  const stop = useUi((s) => s.stop);
   const [text, setText] = useState('');
 
   const submit = (): void => {
@@ -212,9 +335,19 @@ function Composer({ disabled }: { readonly disabled: boolean }): ReactNode {
             }
           }}
         />
-        <Button onClick={submit} disabled={disabled}>
-          发送
-        </Button>
+        {running ? (
+          <Button
+            onClick={() => {
+              void stop();
+            }}
+          >
+            停止
+          </Button>
+        ) : (
+          <Button onClick={submit} disabled={disabled}>
+            发送
+          </Button>
+        )}
       </div>
     </div>
   );

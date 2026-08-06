@@ -7,13 +7,14 @@ import type {
   PermissionRequest,
   PermissionTier,
   PolicyRuleSet,
+  PriceTable,
   ResultBlock,
   StopReason,
   TurnId,
 } from '@xm/contracts';
 import { newMessageId, newRequestId, newTurnId, xmError } from '@xm/contracts';
 import type { AbortLike, ModelProvider, RegisteredTool, ToolRegistry } from '@xm/kernel';
-import { ToolInputError, evaluate } from '@xm/kernel';
+import { ToolInputError, costOf, evaluate, lookupPrice } from '@xm/kernel';
 import type { SessionRuntime } from './session-runtime.js';
 
 /**
@@ -50,6 +51,8 @@ export interface TurnDeps {
   readonly decide?: (request: PermissionRequest) => Promise<'allow' | 'deny'>;
   /** 从工具入参提取权限目标。不同工具的 target 语义不同，交给装配方（docs/09 C4） */
   readonly targetOf?: (toolName: string, input: unknown) => string;
+  /** 价格表。缺省或查不到该模型时成本记 0 且标 `priced: false`（见 kernel/model/cost.ts） */
+  readonly prices?: PriceTable;
   /** 防跑飞。真实的停止条件是模型自己不再调工具 */
   readonly maxIterations?: number;
 }
@@ -136,68 +139,89 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
   const order: CallId[] = [];
 
   const signal: AbortLike = deps.signal ?? NEVER_ABORTS;
+  let failure: ReturnType<typeof xmError> | undefined;
 
-  for await (const chunk of provider.stream(buildRequest(deps), signal)) {
-    switch (chunk.kind) {
-      case 'text_delta':
-        text += chunk.text;
-        // 瞬态：不落库、不占 seq，只推给订阅者。ADR-0008 的硬不变量是它不得携带
-        // message.end 里不存在的信息——这里的 text 最后逐字进了 message.end
-        await runtime.record({
-          type: 'message.delta',
-          turnId,
-          payload: { messageId, blockIndex: 0, kind: 'text', text: chunk.text },
-        });
-        break;
-
-      case 'thinking_delta':
-        thinking += chunk.text;
-        await runtime.record({
-          type: 'message.delta',
-          turnId,
-          payload: { messageId, blockIndex: 0, kind: 'thinking', text: chunk.text },
-        });
-        break;
-
-      case 'thinking_signature':
-        thinkingSignature = chunk.signature;
-        break;
-
-      case 'tool_call_start':
-        calls.set(chunk.id, { callId: chunk.id, name: chunk.name, argsJson: '' });
-        order.push(chunk.id);
-        break;
-
-      case 'tool_call_delta': {
-        const pending = calls.get(chunk.id);
-        // 各家的分片边界不同，累积完整之后再一次性 parse 是唯一稳妥做法（contracts/model/chunk.ts）
-        if (pending !== undefined) pending.argsJson += chunk.argsJson;
-        break;
-      }
-
-      case 'tool_call_end':
-        break;
-
-      case 'usage':
-        await runtime.record({
-          type: 'usage.recorded',
-          turnId,
-          payload: {
+  try {
+    for await (const chunk of provider.stream(buildRequest(deps), signal)) {
+      switch (chunk.kind) {
+        case 'text_delta':
+          text += chunk.text;
+          // 瞬态：不落库、不占 seq，只推给订阅者。ADR-0008 的硬不变量是它不得携带
+          // message.end 里不存在的信息——这里的 text 最后逐字进了 message.end
+          await runtime.record({
+            type: 'message.delta',
             turnId,
-            provider: provider.id,
-            model: deps.model,
-            usage: chunk.usage,
-            // 成本由价格表算，Provider 不提供（contracts/model/usage.ts）。M0-b 没有价格表
-            costUsd: 0,
-          },
-        });
-        break;
+            payload: { messageId, blockIndex: 0, kind: 'text', text: chunk.text },
+          });
+          break;
 
-      case 'stop':
-        stopReason = chunk.reason;
-        break;
+        case 'thinking_delta':
+          thinking += chunk.text;
+          await runtime.record({
+            type: 'message.delta',
+            turnId,
+            payload: { messageId, blockIndex: 0, kind: 'thinking', text: chunk.text },
+          });
+          break;
+
+        case 'thinking_signature':
+          thinkingSignature = chunk.signature;
+          break;
+
+        case 'tool_call_start':
+          calls.set(chunk.id, { callId: chunk.id, name: chunk.name, argsJson: '' });
+          order.push(chunk.id);
+          break;
+
+        case 'tool_call_delta': {
+          const pending = calls.get(chunk.id);
+          // 各家的分片边界不同，累积完整之后再一次性 parse 是唯一稳妥做法（contracts/model/chunk.ts）
+          if (pending !== undefined) pending.argsJson += chunk.argsJson;
+          break;
+        }
+
+        case 'tool_call_end':
+          break;
+
+        case 'usage': {
+          // 成本由价格表算，Provider 不提供（contracts/model/usage.ts）
+          const cost = costOf(chunk.usage, lookupPrice(deps.prices, provider.id, deps.model));
+          await runtime.record({
+            type: 'usage.recorded',
+            turnId,
+            payload: {
+              turnId,
+              provider: provider.id,
+              model: deps.model,
+              usage: chunk.usage,
+              costUsd: cost ?? 0,
+              priced: cost !== undefined,
+            },
+          });
+          break;
+        }
+
+        case 'stop':
+          stopReason = chunk.reason;
+          break;
+      }
     }
+  } catch (e) {
+    /*
+     * Provider 抛错**不会跨越这里**。
+     *
+     * 让它往外抛看起来更"干净"，但那样这一段已经推给订阅者的 `message.delta`
+     * 就再也不会有对应的 `message.end`——ADR-0008 的包含性不变量当场破掉，
+     * 表现是用户看着打字机打出半句话，重开会话后那半句凭空消失。
+     * 所以下面照常落 message.end（带已到达的部分），错误另记一条 error.raised。
+     */
+    failure = e instanceof Error ? xmError('provider_error', e.message) : xmError('internal', String(e));
+    const asXm = (e as { xm?: unknown }).xm;
+    if (isXmErrorLike(asXm)) failure = asXm;
+    stopReason = failure.code === 'aborted' ? 'aborted' : 'error';
   }
+
+  if (signal.aborted) stopReason = 'aborted';
 
   const blocks: ContentBlock[] = [];
   if (thinking !== '') {
@@ -222,6 +246,34 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
     ts: Date.now(),
   };
   await runtime.record({ type: 'message.end', turnId, payload: { message } });
+
+  /*
+   * 中断是**两条事件**，不是一条。
+   *
+   * 直觉的写法是"中断时只发 message.interrupted"，但那样已经流出去的 delta
+   * 在持久流里没有任何落点（见上面 catch 里的注释）。所以顺序是：
+   *   message.end        —— 已到达的部分进 messages，模型下一轮看得见自己说到哪
+   *   message.interrupted —— UI 据此标注"已停止"，live buffer 据此归零（ADR-0021）
+   *
+   * 反过来说，只发 message.end 也不行：那样这条被截断的回复看起来和一条正常回复
+   * 完全一样，用户回看历史时无从分辨。
+   */
+  if (stopReason === 'aborted') {
+    await runtime.record({
+      type: 'message.interrupted',
+      turnId,
+      payload: { messageId, reason: 'aborted' },
+    });
+  }
+
+  if (failure !== undefined && failure.code !== 'aborted') {
+    await runtime.record({
+      type: 'error.raised',
+      turnId,
+      // 一次模型调用失败不等于会话完蛋：用户可以改配置、换模型、重试
+      payload: { error: failure, fatal: false },
+    });
+  }
 
   return { stopReason, calls: order.map((id) => calls.get(id)).filter(isPending) };
 }
@@ -470,6 +522,21 @@ function parseArgs(argsJson: string): unknown {
 }
 
 const isPending = (c: PendingCall | undefined): c is PendingCall => c !== undefined;
+
+/**
+ * Provider 抛的错里若挂着结构化 `XmError`（`ProviderHttpError.xm`），原样用它。
+ *
+ * 用结构判断而不是 `instanceof`：runtime 不依赖 `@xm/providers`（依赖方向是
+ * apps 装配时才把两者接上），拿不到那个类。而这里要的信息只是"有没有 code"。
+ */
+function isXmErrorLike(v: unknown): v is ReturnType<typeof xmError> {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    typeof (v as { code?: unknown }).code === 'string' &&
+    typeof (v as { message?: unknown }).message === 'string'
+  );
+}
 
 const NEVER_ABORTS: AbortLike = {
   aborted: false,

@@ -62,6 +62,43 @@ export const ClearUntrustedRequest = z.strictObject({
 });
 export const ClearUntrustedResult = z.object({ cleared: z.boolean() });
 
+/**
+ * 停止本会话正在跑的这一轮。
+ *
+ * 返回"有没有东西被停下"而不是 void：用户连点两次停止时，第二次的答案是 false，
+ * UI 据此不必再显示一遍"正在停止"。
+ */
+export const InterruptRequest = z.strictObject({ sessionId: SessionId });
+export const InterruptResult = z.object({ interrupted: z.boolean() });
+
+/**
+ * 运行状态。**注意这里面没有任何密钥的值**——只有"配没配"。
+ *
+ * `secretBackend` 要暴露给渲染层，是因为降级横幅得说清楚现在是哪一档
+ * （钥匙串 / 加密文件 / 存不了）。这三个字符串本身不敏感。
+ */
+export const StatusResult = z.object({
+  providerReady: z.boolean(),
+  providerId: z.string(),
+  model: z.string(),
+  secretBackend: z.enum(['keychain', 'encrypted-file', 'plaintext-unavailable']),
+  hasApiKey: z.boolean(),
+  configProblems: z.array(z.object({ code: z.string(), message: z.string() })),
+});
+
+/**
+ * 录入 API key。
+ *
+ * `key` 有长度上限但**没有格式校验**：各家的 key 形状不同，兼容端点更是五花八门，
+ * 在这里做格式判断只会把合法的 key 挡在门外，而挡不住任何攻击——
+ * 这个通道的风险不是"传进来一个坏 key"，是"把 key 传出去"，而那条路根本不存在。
+ */
+export const SetApiKeyRequest = z.strictObject({
+  providerId: z.string().min(1).max(64),
+  key: z.string().min(1).max(4096),
+});
+export const SetApiKeyResult = z.object({ ok: z.literal(true) });
+
 /** 主进程 → 渲染层的事件推送 */
 export const PushedEvent = EventEnvelope;
 export type PushedEvent = z.infer<typeof PushedEvent>;

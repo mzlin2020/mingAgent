@@ -2,6 +2,10 @@
  * IPC 通道名。**只有常量，没有依赖。**
  *
  * 单独成文件是为了让 preload 能 import 它而不引入任何别的东西——
+ *
+ * ⚠️ 这里**没有**"读密钥"通道，而且不该有。密钥只从渲染层流向主进程，
+ * 反向那条路一旦开出来，一次 XSS 或一个失控的插件 UI 就能把它读走。
+ * 渲染层需要知道的只是"配没配"，那是 `status` 通道的一个 boolean。
  * preload 跑在 `sandbox: true` 的上下文里，它每多一个依赖，隔离就薄一分。
  * depcruise 有一条规则盯着"preload 只许依赖 electron 与本文件"。
  *
@@ -18,6 +22,12 @@ export const CH = {
   readSession: 'xm:read-session',
   /** 解除本会话的不可信标记。**只有人能按**，见 ADR-0019 */
   clearUntrusted: 'xm:clear-untrusted',
+  /** 停止本会话正在跑的这一轮。ADR-0021 遗留的那个"没人发 message.interrupted"由它闭合 */
+  interrupt: 'xm:interrupt',
+  /** 取运行状态：Provider 配没配好、密钥后端是哪一档、配置有没有问题 */
+  status: 'xm:status',
+  /** 录入 API key。**只进不出**——没有对应的"读密钥"通道 */
+  setApiKey: 'xm:set-api-key',
   /** 主进程 → 渲染层，单向推送 */
   event: 'xm:event',
 } as const;

@@ -15,6 +15,7 @@
     "@xm/contracts": "workspace:*",
     "@xm/kernel": "workspace:*",
     "@xm/platform": "workspace:*",
+    "@xm/providers": "workspace:*",
     "@xm/runtime": "workspace:*",
     "@xm/storage": "workspace:*",
     "zod": "4.4.3"

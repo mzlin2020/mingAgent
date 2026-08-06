@@ -59,6 +59,9 @@ importers:
       '@xm/platform':
         specifier: workspace:*
         version: link:../../packages/platform
+      '@xm/providers':
+        specifier: workspace:*
+        version: link:../../packages/providers
       '@xm/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
@@ -138,6 +141,15 @@ importers:
       env-paths:
         specifier: ^3.0.0
         version: 3.0.0
+
+  packages/providers:
+    dependencies:
+      '@xm/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@xm/kernel':
+        specifier: workspace:*
+        version: link:../kernel
 
   packages/runtime:
     dependencies:

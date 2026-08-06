@@ -142,6 +142,25 @@ export default tseslint.config(
     },
   },
 
+  // ── Provider 包：开了 DOM lib，但只许用其中的网络那几样 ──────
+  //
+  // `packages/providers/tsconfig.json` 里 lib 加了 DOM，为的是 fetch / AbortController /
+  // TextDecoder / ReadableStream。代价是 document / window / localStorage 也一起可见了。
+  // 这条按包把它们拦回去——一个"顺手"在适配器里 localStorage.setItem('key', apiKey)
+  // 在类型上是完全合法的。
+  {
+    files: ['packages/providers/src/**/*.ts'],
+    rules: {
+      'no-restricted-globals': [
+        'error',
+        { name: 'document', message: 'Provider 适配器不碰 DOM。lib 里的 DOM 只为 fetch 那几样而开。' },
+        { name: 'window', message: '同上：这个包要能在 Worker 与 Node 里跑。' },
+        { name: 'localStorage', message: '密钥与状态都不落在这里，唯一来源是调用方传入的 apiKey。' },
+        { name: 'sessionStorage', message: '同 localStorage。' },
+      ],
+    },
+  },
+
   // ── 契约包专属：只导出数据（docs/10 铁律 2）────────────────
   {
     files: ['packages/contracts/src/**/*.ts'],

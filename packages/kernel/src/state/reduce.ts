@@ -241,6 +241,9 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
           usage: addUsage(state.usage.usage, e.payload.usage),
           costUsd: state.usage.costUsd + e.payload.costUsd,
           turns: state.usage.turns + 1,
+          // `priced` 缺省按"已计价"读：M0 期的历史事件没有这个字段，而那时确实全是
+          // 脚本化的 0 成本回合。把它们记成"未计价"会在 UI 上凭空长出一堆问号。
+          unpricedTurns: state.usage.unpricedTurns + (e.payload.priced === false ? 1 : 0),
         },
         lastSeq: e.seq,
       };

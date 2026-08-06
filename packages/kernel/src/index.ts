@@ -19,6 +19,9 @@ export * from './policy/normalize.js';
 
 export * from './port/platform.js';
 export * from './port/model-provider.js';
+export * from './port/secret-store.js';
+
+export * from './model/cost.js';
 
 export * from './port/event-store.js';
 export * from './port/summary-projection.js';
