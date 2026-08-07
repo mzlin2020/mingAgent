@@ -149,7 +149,15 @@ describe('🔴 已有的规则自动覆盖命令', () => {
 
   it('往 .zshrc 追加撞上 ADR-0027 的写入 deny', async () => {
     const { exec } = await harness();
-    const all = await exec(['sh', '-c', `echo evil >> ${join(home, '.zshrc')}`]);
+    /*
+     * 这一段是 **shell 源码**，不是 argv 数组——`>>` 要能被 `parseShellSource` 认成
+     * 重定向。词法器的转义规则和真实 shell 一致：反斜杠转义下一个字符。Windows 上
+     * `join()` 产出反斜杠分隔的路径，直接拼进去会被逐个吃掉分隔符（真实 `sh` 面对
+     * 反斜杠路径同样会这样解析，这不是我们的词法器特有的行为）。正斜杠在 Windows
+     * 文件系统里同样合法，用它拼接才是这段 shell 源码该有的写法。
+     */
+    const target = join(home, '.zshrc').replace(/\\/g, '/');
+    const all = await exec(['sh', '-c', `echo evil >> ${target}`]);
     expect(decisions(all)[0]?.ruleId).toBe('def.no-write-zshrc');
   });
 

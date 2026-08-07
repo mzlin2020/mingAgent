@@ -66,6 +66,26 @@ export const redLineRules = (env: PolicyEnv): readonly PolicyRule[] => {
     reason: '删除文件系统根目录。这不存在任何正当用途。',
     immutable: true,
   },
+  /*
+   * Windows 没有单一的 `/`——盘符根目录（`C:/`、`D:/`……）才是它的等价物。
+   * `normalizePathTarget` 从不把两者归成同一个串（各自的坐标系不同），所以上面那条
+   * 拦不住 `rm -rf C:\`。`?` 匹配单个非 `/` 字符（globMatch 的极简 glob 语法），
+   * `?:/` 因此命中任意单字母盘符的根，不命中更深的路径。
+   *
+   * 这条红线在 M1-d 之前从未被真实触发过——能删除 `fs.delete` 的第一个真实调用点
+   * 就是这一段的 `shell.exec`（ADR-0026）。命令拆出 `rm -rf /` 的主张后，网关按
+   * 会话的 cwd 把 POSIX 写法的 `/` 解析成 Windows 上的当前盘符根，第一次真实喂给
+   * 这两条红线时，只有大小写不敏感能救它们，坐标系本身对不上——2026-08-07 CI
+   * 三平台矩阵的 windows-latest job 当场照出。
+   */
+  {
+    id: 'red.fs-delete-drive-root',
+    effect: 'deny',
+    capability: 'fs.delete',
+    match: { target: '?:/' },
+    reason: '删除 Windows 盘符根目录。这不存在任何正当用途。',
+    immutable: true,
+  },
   {
     id: 'red.fs-delete-home-root',
     effect: 'deny',

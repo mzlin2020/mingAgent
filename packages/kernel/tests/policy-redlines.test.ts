@@ -92,6 +92,27 @@ describe('红线：删除根目录', () => {
       expect(v.ruleId, target).toBe('red.fs-delete-filesystem-root');
     }
   });
+
+  /*
+   * Windows 没有单一的 `/`——盘符根目录才是它的等价物，而 `normalizePathTarget`
+   * 从不把两者归成同一个串。这条红线在 M1-d 之前从来没有被真实触发过：
+   * 第一个能产出 fs.delete 到盘符根的真实调用点是 shell.exec（ADR-0026）的
+   * `rm -rf /`——网关按会话 cwd 把 POSIX 写法的 `/` 解析到当前盘符根，
+   * 而当时只有 `red.fs-delete-filesystem-root` 一条，坐标系对不上，
+   * windows-latest 的 CI 矩阵第一次真实喂给它时当场照出（ADR-0026）。
+   */
+  it('🔴 Windows 盘符根目录同样命中，且是另一条红线（POSIX 的 "/" 救不了它）', () => {
+    for (const target of ['C:/', 'D:/', 'Z:/']) {
+      const v = verdict('fs.delete', target);
+      expect(v.effect, target).toBe('deny');
+      expect(v.ruleId, target).toBe('red.fs-delete-drive-root');
+    }
+  });
+
+  it('盘符根目录的红线不会误伤更深的路径', () => {
+    const v = verdict('fs.delete', 'C:/work/build');
+    expect(v.ruleId).not.toBe('red.fs-delete-drive-root');
+  });
 });
 
 describe('红线：删除家目录', () => {

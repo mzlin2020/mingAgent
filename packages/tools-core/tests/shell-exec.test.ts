@@ -6,7 +6,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { ResultBlock } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
 import type { AbortLike, ToolContext } from '@xm/kernel';
+import { osFamily } from '@xm/platform';
 import { shellExecTool } from '@xm/tools-core';
+
+/**
+ * 真实的操作系统，**不是**写死的 `'linux'`。
+ *
+ * `killTree()` 按 `os` 分派——POSIX 用进程组 `kill(-pid)`，Windows 用 `taskkill /T`。
+ * 喂错的那一侧不会报错，只会**默默不生效**：`process.kill(-pid, ...)` 在 Windows 上
+ * 走的是完全不同的语义，被 `killTree` 的 try/catch 当成"进程已经退出"吞掉。
+ * 表现是超时 / 中断测试全部"通过"（子进程只是自然跑完了 sleep），直到测一条真正
+ * 跑不完的命令（`yes` 无限输出）——那条会一直挂到 afterAll 都清不掉临时目录
+ * （`EBUSY: resource busy or locked`，2026-08-07 windows-latest 照出）。
+ */
+const os = osFamily();
 
 /**
  * ── `shell.exec` 的进程级约束（ADR-0026 决策五 / docs/09 C2）──
@@ -59,7 +72,7 @@ async function run(
   signal: AbortLike = NEVER,
 ): Promise<string> {
   let out = '';
-  const tool = shellExecTool({ os: 'linux', ...options });
+  const tool = shellExecTool({ os, ...options });
   for await (const p of tool.execute(input, ctx(signal))) {
     if (p.kind === 'result') {
       out += p.forModel
@@ -97,12 +110,19 @@ describe.skipIf(!posixShell)('跑一条命令', () => {
 
 describe.skipIf(!posixShell)('🔴 进程级的硬约束', () => {
   it('🔴 env 是白名单 —— 不白名单，一条命令就能读出小明自己的密钥', async () => {
+    /*
+     * 用真实的 `process.env.PATH`，不要另造一个 POSIX 写法的字面量——
+     * Windows 上 `/usr/bin:/bin:/usr/local/bin` 既不是有效的分隔符（`;` 才是），
+     * 也没有一段是真实存在的目录，`sh` 会因为解析不出自己需要的东西而找不到子命令，
+     * 表现成"命令没跑起来"而不是"密钥漏没漏"，这条用例就测不出它本来要测的事。
+     */
     const out = await run({ argv: ['sh', '-c', 'echo "[$XM_SECRET][$PATH]"'] }, {
-      env: { XM_SECRET: 'sk-must-not-leak', PATH: '/usr/bin:/bin:/usr/local/bin' },
+      env: { ...process.env, XM_SECRET: 'sk-must-not-leak' },
     });
     expect(out).not.toContain('sk-must-not-leak');
     // 白名单里的确实传下去了，否则这条用例可能只是因为命令没跑起来
-    expect(out).toContain('/bin');
+    const printedPath = /\[.*\]\[(.*)\]/.exec(out)?.[1];
+    expect(printedPath).toBe(process.env.PATH);
   });
 
   it('🔴 超时会结束进程，并且说出来', async () => {

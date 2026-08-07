@@ -303,10 +303,16 @@ describe('命令分支', () => {
   });
 
   it('段中间的 ~ 不动 —— 那是合法文件名', async () => {
-    const claims = await claimsOf(['rm', 'a~1.txt'], outside);
+    /*
+     * 不能用 `a~1.txt`：它同时是 emacs 备份文件的形状，**也**是 Windows 8.3 短名
+     * 的形状（ADR-0018 的 SHORT_NAME_8_3：`[^/]{1,6}~\d{1,3}(\.ext)?`）。
+     * 在 Windows CI 上会被后者的失败关闭规则拒绝——那条规则管的是完全不同的一件事，
+     * 这里选一个 `~` 后面不是纯数字的文件名，避开两个检查的交集。
+     */
+    const claims = await claimsOf(['rm', 'note~backup.txt'], outside);
     expect(claims).toContainEqual({
       capability: 'fs.delete',
-      target: await realOf(join(root, 'a~1.txt')),
+      target: await realOf(join(root, 'note~backup.txt')),
     });
   });
 
