@@ -175,9 +175,11 @@ describe('🔴 永久授权落盘', () => {
       appendUserRule({
         paths,
         env,
+        // 红线仍然不许建立在命令 target 上（ADR-0026 决策四保留了 ADR-0020 的这一半）
         rule: rule({
           id: 'grant.always.bad',
           capability: 'shell.exec',
+          immutable: true,
           match: { target: 'rm -rf /*' },
         }),
       }),

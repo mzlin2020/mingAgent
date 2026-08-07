@@ -1,4 +1,5 @@
 import type { RegisteredTool, ToolContext } from '../tool/types.js';
+import type { PermissionClaim } from './tool-gateway.js';
 
 /**
  * 还原点端口（ADR-0003「平衡档 + **无条件**还原点」的执行点）。
@@ -32,6 +33,14 @@ export interface Checkpointer {
     tool: RegisteredTool,
     input: unknown,
     ctx: ToolContext,
+    /**
+     * 这次调用的全部主张（ADR-0026）。判据从"工具声明了 `fs.write` 且有 `pathInputs`"
+     * 变成"主张里有 `fs.write` / `fs.delete` 的具体路径"——否则 `rm foo.txt` 这类
+     * 经由 `shell.exec` 发生的删除**一个还原点都没有**，而 ADR-0003 承诺的是
+     * "平衡档 + **无条件**还原点"。判据仍然与权限判定同源，只是同源的那份东西
+     * 从能力声明换成了主张。
+     */
+    claims: readonly PermissionClaim[],
   ): Promise<CheckpointRecord | undefined>;
 }
 

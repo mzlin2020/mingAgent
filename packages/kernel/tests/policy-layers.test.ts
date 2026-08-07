@@ -241,8 +241,20 @@ describe('grantsToRules：把用户当场的决定变成规则', () => {
     expect(grantsToRules([grant({ scope: 'always' })])).toHaveLength(1);
   });
 
-  it('🔴 命令类能力的授权被跳过 —— 它的 target 还没有规范化契约（ADR-0020 决策三）', () => {
-    expect(grantsToRules([grant({ capability: 'shell.exec', target: 'rm -rf /' })])).toHaveLength(0);
+  /**
+   * 这条以前断言的是"命令类能力的授权被跳过"（ADR-0020 决策三：没有契约）。
+   * ADR-0026 把契约补上之后，它反过来了——而且必须反过来：不给这个选项的话，
+   * 用户唯一能点的是"允许 `shell.exec` 这个能力"，一次授权放开的是**所有**命令。
+   */
+  it('🔴 命令类能力的授权合成得出来，且只匹配那一条命令', () => {
+    const [rule] = grantsToRules([grant({ capability: 'shell.exec', target: '/bin/ls  -l' })]);
+    expect(rule?.match?.target).toBe('ls -l');
+  });
+
+  it('🔴 判不了的命令授权仍然被丢弃 —— 失败关闭', () => {
+    expect(
+      grantsToRules([grant({ capability: 'shell.exec', target: 'rm -rf $(cat x)' })]),
+    ).toHaveLength(0);
   });
 
   it('🔴 合成出来的规则过得了构造期闸门', () => {
@@ -306,10 +318,13 @@ describe('composeRules：层的拼装', () => {
   });
 
   it('🔴 每一层都过构造期闸门 —— 用户写的规则才是最可能"看起来在防"的那批', () => {
+    // 命令类 target 上的**红线**仍然禁止：`rm -fr /` 与 `rm -rf /` 归一后还是两个串，
+    // 而红线不可覆盖、用户没有兜底手段（ADR-0026 决策四保留了 ADR-0020 的这一半）
     const bad = rule({
       id: 'u.bad',
       effect: 'deny',
       capability: 'shell.exec',
+      immutable: true,
       match: { target: 'rm -rf /*' },
     });
     expect(() => composeRules({ env: ENV, user: [bad] })).toThrow(/命令类能力/);

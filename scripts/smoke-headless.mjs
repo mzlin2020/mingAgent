@@ -76,7 +76,7 @@ try {
   const tools = new ToolRegistry();
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
-  for (const t of coreTools()) tools.register(t);
+  for (const t of coreTools({ os: platform.os })) tools.register(t);
 
   const echoCall = newCallId();
   const denyCall = newCallId();
@@ -172,6 +172,77 @@ try {
     '读一下这个目录，总结结构，写一个 README',
   );
 
+  // ── 第三段：M1-d 的 DoD —— rm -rf ~ 的四种写法判定一致 ──────
+  //
+  // 这一段跑的是真实的 `shell.exec` 工具与真实的能力网关，但**一次也不会真的
+  // spawn 出去**：四种写法全都在闸门那里就被拦住了。断言的不只是"都被拦"，
+  // 还有"命中的是同一条规则"——三种 deny 加一种 ask 也能叫"都拦下了"，
+  // 但那时第四种的下一步是用户点允许。
+  const dodAsked = [];
+  const dodRules = [];
+  const writings = [
+    ['朴素', ['rm', '-rf', '~']],
+    ['绝对路径的 bin', ['/bin/rm', '-rf', '~']],
+    ['sh -c 包一层', ['sh', '-c', 'rm -rf ~']],
+    ['env 包一层', ['env', 'FOO=1', 'rm', '-rf', '~']],
+  ];
+
+  for (const [, argv] of writings) {
+    const before = seen.length;
+    await runTurn(
+      {
+        runtime,
+        provider: new ScriptedProvider({
+          turns: [
+            { chunks: [...toolCall(newCallId(), 'shell.exec', { argv }), { kind: 'stop', reason: 'tool_use' }] },
+            { chunks: [{ kind: 'text_delta', text: '好。' }, { kind: 'stop', reason: 'end_turn' }] },
+          ],
+        }),
+        tools,
+        layers,
+        tier: 'balanced',
+        model: 'scripted-1',
+        gateway: nodeToolGateway({ home: paths.home }),
+        pathCaseInsensitive: platform.os === 'windows',
+        // 永远点允许：任何一次放行都必须是 deny 没拦住，不能是"恰好没人点允许"
+        decide: (request) => {
+          dodAsked.push(request);
+          return Promise.resolve({ effect: 'allow', scope: 'once' });
+        },
+      },
+      '删掉我的家目录',
+    );
+    const decision = seen
+      .slice(before)
+      .find((e) => e.type === 'permission.decision' && e.payload.effect === 'deny');
+    dodRules.push(decision?.payload.ruleId);
+  }
+
+  // 一条正常命令必须还能跑起来——全拦下不叫防住了，叫不能用了
+  let shellRan = false;
+  await runTurn(
+    {
+      runtime,
+      provider: new ScriptedProvider({
+        turns: [
+          { chunks: [...toolCall(newCallId(), 'shell.exec', { argv: ['echo', 'hello-xm'] }), { kind: 'stop', reason: 'tool_use' }] },
+          { chunks: [{ kind: 'text_delta', text: '好。' }, { kind: 'stop', reason: 'end_turn' }] },
+        ],
+      }),
+      tools,
+      layers,
+      tier: 'balanced',
+      model: 'scripted-1',
+      gateway: nodeToolGateway({ home: paths.home }),
+      pathCaseInsensitive: platform.os === 'windows',
+      decide: () => Promise.resolve({ effect: 'allow', scope: 'once' }),
+    },
+    '打个招呼',
+  );
+  shellRan = seen.some(
+    (e) => e.type === 'tool.end' && e.payload.ok && JSON.stringify(e.payload.forModel).includes('hello-xm'),
+  );
+
   const memoryState = runtime.state;
   await runtime.close();
   await stores.close();
@@ -233,11 +304,28 @@ try {
     fail('总线上没有 tool.progress —— 工具进度显示不出来');
   }
 
+  // ── M1-d DoD 的断言 ────────────────────────────────────────
+  for (const [i, [label]] of writings.entries()) {
+    if (dodRules[i] !== 'red.fs-delete-home-root') {
+      fail(`\`rm -rf ~\` 的写法「${label}」应由 red.fs-delete-home-root 拦下，实际 ruleId=${dodRules[i]}`);
+    }
+  }
+  if (new Set(dodRules).size !== 1) {
+    fail(`四种写法判定不一致：${JSON.stringify(dodRules)}`);
+  }
+  if (dodAsked.length !== 0) {
+    fail(`四种写法一个确认框都不该弹（判完全部主张才问人），实际弹了 ${String(dodAsked.length)} 次`);
+  }
+  if (!shellRan) {
+    fail('普通命令没跑起来 —— 全拦下不叫防住了，叫不能用了');
+  }
+
   if (process.exitCode !== 1) {
     console.log(
       `✓ headless 冒烟通过：${String(types.length)} 条持久事件、` +
         `${String(seen.length)} 条总线事件，回放状态一致；` +
-        `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，审批只问一次）`,
+        `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，审批只问一次）；` +
+        `rm -rf ~ 的四种写法全部由同一条红线拦下，普通命令照常跑`,
     );
   }
 } finally {

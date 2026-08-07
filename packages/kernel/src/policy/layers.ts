@@ -1,5 +1,4 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
-import { targetKindOf } from '@xm/contracts';
 import type { PermissionGrant } from '../state/session-state.js';
 import { normalizeTarget } from './normalize.js';
 
@@ -70,11 +69,11 @@ export const GRANT_RULE_PREFIX = 'grant.';
  * 三、**deny 的授权照样合成。** 用户点"本会话都拒绝"和点"本会话都允许"一样是决定，
  *     只合成 allow 就等于回放出来的会话比当时更松。
  *
- * 不可授权的（见 `grantable`）直接跳过——**失败关闭**：那一条不生效，
- * 用户下次还会被问一遍，而不是拿到一条建立在没有契约的 target 上的规则。
+ * 规范化不了的直接跳过——**失败关闭**：那一条授权不生效，用户下次还会被问一遍，
+ * 而不是拿到一条建立在判不了的 target 上的规则。
  */
 export const grantsToRules = (grants: readonly PermissionGrant[]): PolicyRuleSet =>
-  grants.filter(grantable).flatMap((g) => {
+  grants.flatMap((g) => {
     const normalized = normalizeTarget(g.capability, g.target);
     if (!normalized.ok) return [];
     return [grantRule(g, normalized.value)];
@@ -105,12 +104,17 @@ const grantRule = (g: PermissionGrant, target: string): PolicyRule => ({
 export const escapeGlobPattern = (literal: string): string =>
   literal.replace(/[\\*?]/g, '\\$&');
 
-/**
- * 授权能不能安全地变成规则。
+/*
+ * ── 这里曾经有一个 `grantable()` ──
  *
- * `command` 类 target 不行：它的规范化契约还没落地（ADR-0020 决策三），
- * 一条基于命令行字符串的授权是一层假防线。M1-d 的 `shell.exec` 上来之前，
- * 这类操作的"本会话都允许"只能不提供——**宁可每次都问，也不要给一个错的承诺。**
+ * 它挡的是命令类能力：ADR-0020 决策三说命令行 target 没有规范化契约，
+ * 于是这类操作的"本会话都允许"干脆不提供——宁可每次都问，也不要给一个错的承诺。
+ *
+ * ADR-0026 把契约补上之后，它没有存在的理由了，所以整个删掉而不是留一个恒真的函数。
+ * 留下来的那道防线是上面的**失败关闭**：规范化不了的授权一律丢弃。它比一份名单可靠——
+ * 名单要有人记得维护，而失败关闭是规范化本身的副产品。
+ *
+ * 顺带说清楚为什么 `opaque` 仍然可以授权（`git.push origin` 这类）：
+ * opaque 上的**放松**方向失效时是"下次又问了一遍"，落在安全的那一侧。
+ * 危险的是在 opaque 上写 deny 并以为它挡住了，而那件事由 `assertRules` 的红线闸门管。
  */
-export const grantable = (grant: Pick<PermissionGrant, 'capability'>): boolean =>
-  targetKindOf(grant.capability) !== 'command';

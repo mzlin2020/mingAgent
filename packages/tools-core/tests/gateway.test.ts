@@ -23,6 +23,15 @@ import { nodeToolGateway } from '@xm/tools-core';
 let root: string;
 let outside: string;
 
+/**
+ * 判权用的主 target = **第一条主张**的目标。
+ *
+ * `ResolvedCall` 上曾经有个 `target` 字段，ADR-0026 把它换成了 `claims`：
+ * 一次调用不只作用在一个地方。对路径工具来说两者等价——它的每条主张
+ * 共用同一个 target。
+ */
+const primary = (r: { claims: readonly { target: string }[] }): string => r.claims[0]?.target ?? '';
+
 const ctx = (cwd: string): ToolContext => ({
   sessionId: newSessionId(),
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
@@ -79,8 +88,8 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
     );
 
     // 关键断言：target 不是工作区里那个人畜无害的名字
-    expect(resolved.target).not.toContain('looks-innocent');
-    expect(resolved.target).toBe(await realOf(join(outside, 'id_rsa')));
+    expect(primary(resolved)).not.toContain('looks-innocent');
+    expect(primary(resolved)).toBe(await realOf(join(outside, 'id_rsa')));
   });
 
   it('穿过符号链接目录的路径同样被解析', async () => {
@@ -90,7 +99,7 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
       { path: 'link-dir/id_rsa' },
       ctx(root),
     );
-    expect(resolved.target).toBe(await realOf(join(outside, 'id_rsa')));
+    expect(primary(resolved)).toBe(await realOf(join(outside, 'id_rsa')));
   });
 
   it('🔴 没有网关时，同一条规则拦不住它 —— 这就是网关存在的全部理由', () => {
@@ -156,36 +165,36 @@ describe('🔴 大小写不敏感的卷上，改大小写绕不过规则', () =>
     }
 
     const r = await nodeToolGateway().resolve(tool(), { path: 'SRC/a.ts' }, ctx(root));
-    expect(r.target).toBe(await realOf(join(root, 'src', 'a.ts')));
+    expect(primary(r)).toBe(await realOf(join(root, 'src', 'a.ts')));
   });
 });
 
 describe('解析规则', () => {
   it('相对路径按会话的 cwd 绝对化', async () => {
     const r = await nodeToolGateway().resolve(tool(), { path: 'src/a.ts' }, ctx(root));
-    expect(r.target).toBe(await realOf(join(root, 'src', 'a.ts')));
+    expect(primary(r)).toBe(await realOf(join(root, 'src', 'a.ts')));
   });
 
   it('.. 被消解', async () => {
     const r = await nodeToolGateway().resolve(tool(), { path: 'src/../src/a.ts' }, ctx(root));
-    expect(r.target).toBe(await realOf(join(root, 'src', 'a.ts')));
+    expect(primary(r)).toBe(await realOf(join(root, 'src', 'a.ts')));
   });
 
   it('🔴 还不存在的文件也能解析 —— 否则 fs.write 永远新建不了文件', async () => {
     const r = await nodeToolGateway().resolve(tool(), { path: 'src/new/deep/x.md' }, ctx(root));
-    expect(r.target).toBe(await realOf(join(root, 'src'), 'new', 'deep', 'x.md'));
+    expect(primary(r)).toBe(await realOf(join(root, 'src'), 'new', 'deep', 'x.md'));
   });
 
   it('🔴 不存在的文件穿过符号链接目录时，链接那一段仍然被解析', async () => {
     // 这一条是"取最深的存在祖先"真正要保证的东西：
     // 逃逸的载体是**已经存在**的那一段，剩下的段按定义没有链接可解
     const r = await nodeToolGateway().resolve(tool(), { path: 'link-dir/brand-new.txt' }, ctx(root));
-    expect(r.target).toBe(await realOf(outside, 'brand-new.txt'));
+    expect(primary(r)).toBe(await realOf(outside, 'brand-new.txt'));
   });
 
   it('🔴 入参被回写 —— 判定与执行用的是同一个字符串', async () => {
     const r = await nodeToolGateway().resolve(tool(), { path: 'src/a.ts', other: 'x' }, ctx(root));
-    expect((r.input as { path: string }).path).toBe(r.target);
+    expect((r.input as { path: string }).path).toBe(primary(r));
     // 非路径字段原样保留
     expect((r.input as { other: string }).other).toBe('x');
   });
@@ -196,7 +205,7 @@ describe('解析规则', () => {
       pathInputs: ['dst', 'src'],
     });
     const r = await nodeToolGateway().resolve(t, { src: 'src/a.ts', dst: 'out.txt' }, ctx(root));
-    expect(r.target).toBe(await realOf(root, 'out.txt'));
+    expect(primary(r)).toBe(await realOf(root, 'out.txt'));
     expect((r.input as { src: string }).src).toBe(await realOf(join(root, 'src', 'a.ts')));
   });
 });
@@ -212,7 +221,7 @@ describe('🔴 失败关闭', () => {
   it('不碰路径的工具照常放行，target 为空', async () => {
     const t = tool({ capabilities: [], pathInputs: [] });
     const r = await nodeToolGateway().resolve(t, { path: 'whatever' }, ctx(root));
-    expect(r.target).toBe('');
+    expect(primary(r)).toBe('');
   });
 
   it('cwd 不是绝对路径 → 拒绝', async () => {
@@ -225,6 +234,120 @@ describe('🔴 失败关闭', () => {
     await expect(
       nodeToolGateway().resolve(tool(), { path: 42 }, ctx(root)),
     ).rejects.toThrow(/非空路径字符串/);
+  });
+});
+
+/**
+ * ── 命令分支（ADR-0026）──
+ *
+ * 网关在这里做的事与路径分支是同一件：把内核拆出来的主张里那些**还是原始串**的路径
+ * 展开 `~`、绝对化、realpath。用的是同一个 `resolveDeep` / `canonical`——
+ * 一个文件无论来自 `fs.read {path}` 还是 `rm <path>`，解析它的代码只有一份。
+ */
+describe('命令分支', () => {
+  const shell = (over: Partial<Parameters<typeof defineTool>[0]> = {}): RegisteredTool =>
+    defineTool({
+      name: 'shell.probe',
+      group: 'shell',
+      description: '探针',
+      inputSchema: z.strictObject({ argv: z.array(z.string()), cwd: z.string().optional() }),
+      risk: 'medium',
+      capabilities: ['shell.exec'],
+      commandInputs: { argv: 'argv', cwd: 'cwd' },
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *execute() {
+        yield { kind: 'result' as const, forModel: [] };
+      },
+      ...over,
+    });
+
+  const claimsOf = async (argv: string[], home?: string) =>
+    (
+      await nodeToolGateway(home === undefined ? {} : { home }).resolve(
+        shell(),
+        { argv },
+        ctx(root),
+      )
+    ).claims;
+
+  it('🔴 相对路径的操作数按 cwd 绝对化', async () => {
+    const claims = await claimsOf(['rm', 'src/a.ts']);
+    expect(claims).toContainEqual({
+      capability: 'fs.delete',
+      target: await realOf(join(root, 'src', 'a.ts')),
+    });
+  });
+
+  it('🔴 符号链接照样解开 —— 与路径工具走的是同一段代码', async () => {
+    const link = join(root, 'link-to-secret');
+    await symlink(join(outside, 'id_rsa'), link).catch(() => undefined);
+    const claims = await claimsOf(['cat', 'link-to-secret']);
+    expect(claims).toContainEqual({
+      capability: 'fs.read',
+      target: await realOf(join(outside, 'id_rsa')),
+    });
+  });
+
+  it('🔴 词首的 ~ 按家目录展开 —— DoD 的 `rm -rf ~` 全靠这一步', async () => {
+    const claims = await claimsOf(['rm', '-rf', '~'], outside);
+    expect(claims).toContainEqual({ capability: 'fs.delete', target: await realOf(outside) });
+  });
+
+  it('~ 也回写进 argv —— 没有 shell 参与，不回写的话执行的是一个叫 `~` 的文件', async () => {
+    const r = await nodeToolGateway({ home: outside }).resolve(
+      shell(),
+      { argv: ['rm', '-rf', '~/x'] },
+      ctx(root),
+    );
+    expect((r.input as { argv: string[] }).argv[2]).toBe(join(outside, 'x'));
+  });
+
+  it('段中间的 ~ 不动 —— 那是合法文件名', async () => {
+    const claims = await claimsOf(['rm', 'a~1.txt'], outside);
+    expect(claims).toContainEqual({
+      capability: 'fs.delete',
+      target: await realOf(join(root, 'a~1.txt')),
+    });
+  });
+
+  it('命令类主张的 target 是规范形式', async () => {
+    const claims = await claimsOf(['/bin/echo', 'hi']);
+    expect(claims).toContainEqual({ capability: 'shell.exec', target: 'echo hi' });
+  });
+
+  it('🔴 声明了命令类能力却没有 commandInputs → 拒绝，不放行', async () => {
+    const naked = defineTool({
+      name: 'shell.naked',
+      group: 'shell',
+      description: '忘了声明',
+      inputSchema: z.strictObject({ argv: z.array(z.string()) }),
+      risk: 'medium',
+      capabilities: ['shell.exec'],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *execute() {
+        yield { kind: 'result' as const, forModel: [] };
+      },
+    });
+    await expect(
+      nodeToolGateway().resolve(naked, { argv: ['ls'] }, ctx(root)),
+    ).rejects.toThrow(/commandInputs/);
+  });
+
+  it('argv 不是字符串数组 → 拒绝', async () => {
+    await expect(
+      nodeToolGateway().resolve(shell(), { argv: 'rm -rf /' }, ctx(root)),
+    ).rejects.toThrow(/字符串数组/);
+  });
+
+  it('判不了的命令 → 拒绝，且理由是"判不了"', async () => {
+    await expect(
+      nodeToolGateway().resolve(shell(), { argv: ['sh', '-c', 'rm $(cat x)'] }, ctx(root)),
+    ).rejects.toThrow(/命令替换|变量替换/);
+  });
+
+  it('cwd 入参会被 realpath 并回写', async () => {
+    const r = await nodeToolGateway().resolve(shell(), { argv: ['ls'], cwd: 'src' }, ctx(root));
+    expect((r.input as { cwd: string }).cwd).toBe(await realOf(join(root, 'src')));
   });
 });
 

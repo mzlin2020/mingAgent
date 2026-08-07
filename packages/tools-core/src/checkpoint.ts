@@ -1,10 +1,11 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import type { BlobRef } from '@xm/contracts';
 import type {
   BlobStore,
   CheckpointRecord,
   Checkpointer,
+  PermissionClaim,
   RegisteredTool,
   ToolContext,
 } from '@xm/kernel';
@@ -12,12 +13,17 @@ import type {
 /**
  * 文件还原点的 Node 实现：把**将被改动的文件的当前内容**存进内容寻址的 blob。
  *
- * ── 判据来自工具的自描述，不是一份名单 ──
+ * ── 判据来自这次调用的主张，不是一份名单 ──
  *
- * "哪些调用需要还原点" = 声明了 `fs.write` / `fs.delete` 且声明了 `pathInputs` 的调用。
- * 与权限判定读的是同一份声明。维护第二份名单的下场在这个仓库里已经见过一次：
+ * "哪些调用需要还原点" = **主张里带着 `fs.write` / `fs.delete` 的具体路径**（ADR-0026）。
+ * 与权限判定读的是同一份东西。维护第二份名单的下场在这个仓库里已经见过一次：
  * 自改红线只挂 `self.modify`，而一个普通写文件工具声明的是 `fs.write`，
  * 于是九条红线被整体绕过（ADR-0012 复审）。
+ *
+ * 判据从"工具声明了什么能力"换成"这次调用主张了什么"之后白拿一样东西：
+ * `shell.exec` 跑 `rm foo.txt` 也有还原点了——它主张的是 `fs.delete <绝对路径>`，
+ * 与 `fs.delete` 工具主张的是同一种东西。而按能力声明判的话，
+ * `shell.exec` 声明的是 `shell.exec`，一个还原点都不会建。
  *
  * ── 只存"改之前"，不存"改之后" ──
  *
@@ -40,17 +46,21 @@ const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
 
 export const nodeCheckpointer = (options: NodeCheckpointerOptions): Checkpointer => ({
   async before(
-    tool: RegisteredTool,
-    input: unknown,
+    _tool: RegisteredTool,
+    _input: unknown,
     ctx: ToolContext,
+    claims: readonly PermissionClaim[],
   ): Promise<CheckpointRecord | undefined> {
-    const destructive = tool.descriptor.capabilities.some(
-      (c) => c === 'fs.write' || c === 'fs.delete',
-    );
-    if (!destructive || tool.pathInputs.length === 0) return undefined;
     if (ctx.signal.aborted) return undefined;
 
-    const paths = pathsOf(input, tool.pathInputs);
+    const paths = [
+      ...new Set(
+        claims
+          .filter((c) => c.capability === 'fs.write' || c.capability === 'fs.delete')
+          .map((c) => c.target)
+          .filter((t) => t !== ''),
+      ),
+    ];
     if (paths.length === 0) return undefined;
 
     const refs: string[] = [];
@@ -72,6 +82,22 @@ interface OneSnapshot {
 }
 
 async function snapshotOne(blobs: BlobStore, path: string): Promise<OneSnapshot> {
+  /*
+   * 目录快照做不了，**而且要说出来**。
+   *
+   * `rm -rf dir` 是经由 `shell.exec` 最容易发生的破坏，偏偏也是这里覆盖不了的一种：
+   * 存一棵目录树需要打包与 GC，那是 M2 的事。宁可让用户看到"这一步没有还原点"，
+   * 也不要让还原点列表里出现一条指向空内容、回退时什么也恢复不了的记录。
+   */
+  try {
+    const info = await stat(path);
+    if (info.isDirectory()) {
+      return { ref: '', label: `${path}（目录，**这一步没有还原点**，ADR-0026 遗留）` };
+    }
+  } catch {
+    // 不存在：下面按"原本不存在"处理
+  }
+
   let data: Uint8Array | undefined;
   try {
     data = await readFile(path);
@@ -106,10 +132,3 @@ async function snapshotOne(blobs: BlobStore, path: string): Promise<OneSnapshot>
 /** `sha256:<hex>:<size>` —— 事件里的 `ref` 是字符串，要能一眼看出指向哪个 blob */
 const refString = (ref: BlobRef): string => `sha256:${ref.hash}:${String(ref.size)}`;
 
-function pathsOf(input: unknown, fields: readonly string[]): string[] {
-  if (typeof input !== 'object' || input === null) return [];
-  const record = input as Record<string, unknown>;
-  return fields
-    .map((f) => record[f])
-    .filter((v): v is string => typeof v === 'string' && v !== '');
-}

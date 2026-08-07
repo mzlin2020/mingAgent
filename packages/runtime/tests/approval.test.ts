@@ -63,7 +63,7 @@ async function harness(options: HarnessOptions = {}) {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools()) tools.register(t);
+  for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
   const blobs = new MemoryBlobStore(sha256);
   const asked: PermissionRequest[] = [];
@@ -357,7 +357,7 @@ describe('🔴 挂起的审批不许把回合卡死', () => {
     });
 
     const tools = new ToolRegistry();
-    for (const t of coreTools()) tools.register(t);
+    for (const t of coreTools({ os: 'linux' })) tools.register(t);
     const controller = new AbortController();
 
     const done = runTurn(
@@ -394,7 +394,7 @@ describe('🔴 挂起的审批不许把回合卡死', () => {
     const h = await harness();
     const runtime = h.runtime;
     const tools = new ToolRegistry();
-    for (const t of coreTools()) tools.register(t);
+    for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
     await runTurn(
       {

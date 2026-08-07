@@ -83,6 +83,22 @@ export interface ToolSpec<I> {
   readonly pathInputs?: readonly string[];
 
   /**
+   * 哪个入参字段是**命令行**（ADR-0026）。与 `pathInputs` 并列，同样不进 `ToolDescriptor`。
+   *
+   * `argv` 字段必须是一个字符串数组——**不接受一整条命令串**。接受整串就等于把
+   * "这条命令到底分成几个词"这个问题留给某一层去猜，而那正是命令行判定所有麻烦的源头。
+   *
+   * 声明了命令类能力（`shell.exec` / `process.spawn`）却不声明这个字段，
+   * 网关会当场拒绝——与 `pathInputs` 那道检查同一个形状、同一个理由：
+   * 不知道命令是什么，就判不出它会动什么，而"判不出"绝不能落成"放行"。
+   */
+  readonly commandInputs?: {
+    readonly argv: string;
+    /** 命令的工作目录字段。省略则用会话的 cwd */
+    readonly cwd?: string;
+  };
+
+  /**
    * 动态可用性：不满足条件时该工具**不进模型视野**（docs/04 §4.3）。
    *
    * 典型用途：无 git 仓库就不暴露 git 工具集；Linux 上 `computer.*` 探测为不可用，
@@ -119,6 +135,8 @@ export interface RegisteredTool {
   readonly inputSchema: z.ZodType;
   /** 见 `ToolSpec.pathInputs`。空数组表示"这个工具没有路径入参" */
   readonly pathInputs: readonly string[];
+  /** 见 `ToolSpec.commandInputs`。缺席表示"这个工具不跑命令" */
+  readonly commandInputs?: ToolSpec<unknown>['commandInputs'];
   /**
    * 只校验、不执行。不通过抛 `ToolInputError`。
    *

@@ -16,6 +16,8 @@ export * from './policy/defaults.js';
 export * from './policy/layers.js';
 export * from './policy/target.js';
 export * from './policy/host-target.js';
+export * from './policy/command-target.js';
+export * from './policy/command-claims.js';
 export * from './policy/normalize.js';
 
 export * from './port/platform.js';

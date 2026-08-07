@@ -6,7 +6,14 @@ import type { ResultBlock, ToolProgress } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
 import type { RegisteredTool, ToolContext } from '@xm/kernel';
 import { MemoryBlobStore, defineTool } from '@xm/kernel';
-import { coreTools, fsListTool, fsReadTool, fsWriteTool, nodeCheckpointer } from '@xm/tools-core';
+import {
+  coreTools,
+  fsListTool,
+  fsReadTool,
+  fsWriteTool,
+  nodeCheckpointer,
+  shellExecTool,
+} from '@xm/tools-core';
 
 let dir: string;
 
@@ -150,15 +157,18 @@ describe('fs.write', () => {
 
 describe('工具声明', () => {
   it('🔴 每个碰路径的工具都声明了 pathInputs —— 漏了就等于所有路径规则匹配不上', () => {
-    for (const t of coreTools()) {
+    for (const t of coreTools({ os: 'linux' })) {
       const touchesPath = t.descriptor.capabilities.some((c) => c.startsWith('fs.'));
       expect(t.pathInputs.length, t.descriptor.name).toBeGreaterThan(touchesPath ? 0 : -1);
     }
   });
 
-  it('都声明了资源，因此不会被降级成 exclusive', () => {
-    for (const t of coreTools()) {
-      expect(t.descriptor.concurrency, t.descriptor.name).toBe('parallel');
+  it('都声明了资源，因此不会被默认降级成 exclusive', () => {
+    for (const t of coreTools({ os: 'linux' })) {
+      // shell.exec 是**显式**声明的 exclusive：一条命令能改动的东西无法从入参判断，
+      // 与别的调用并发跑就是数据竞争（ADR-0005 "声明不了就别并发"）
+      const want = t.descriptor.name === 'shell.exec' ? 'exclusive' : 'parallel';
+      expect(t.descriptor.concurrency, t.descriptor.name).toBe(want);
     }
   });
 });
@@ -175,6 +185,7 @@ describe('写前还原点', () => {
       fsWriteTool(),
       { path: target, content: 'NEW' },
       ctx(),
+      [{ capability: 'fs.write', target }],
     );
 
     expect(record?.kind).toBe('fs');
@@ -187,6 +198,7 @@ describe('写前还原点', () => {
       fsWriteTool(),
       { path: join(dir, 'brand-new.md'), content: 'x' },
       ctx(),
+      [{ capability: 'fs.write', target: join(dir, 'brand-new.md') }],
     );
     expect(record?.label).toContain('原本不存在');
   });
@@ -196,12 +208,42 @@ describe('写前还原点', () => {
       fsReadTool(),
       { path: join(dir, 'x') },
       ctx(),
+      [{ capability: 'fs.read', target: join(dir, 'x') }],
     );
     expect(record).toBeUndefined();
   });
 
-  it('🔴 判据来自工具的自描述，不是一份工具名单', async () => {
-    // 一个我们从没听说过的工具，只要声明了 fs.write + pathInputs，就一样有还原点
+  /**
+   * 判据换成主张之后白拿的一格：`shell.exec` 静态声明的只有 `shell.exec`，
+   * 按能力声明判的话 `rm foo.txt` 一个还原点都不会有。
+   */
+  it('🔴 经由 shell.exec 发生的删除也有还原点', async () => {
+    const target = join(dir, 'doomed.md');
+    await writeFile(target, 'OLD');
+    const record = await nodeCheckpointer({ blobs: blobs() }).before(
+      shellExecTool({ os: 'linux' }),
+      { argv: ['rm', target] },
+      ctx(),
+      [
+        { capability: 'shell.exec', target: `rm ${target}` },
+        { capability: 'fs.delete', target },
+      ],
+    );
+    expect(record?.label).toContain('3 字节');
+  });
+
+  it('目录快照做不了，而且说得出来 —— 绝不假装存过', async () => {
+    const record = await nodeCheckpointer({ blobs: blobs() }).before(
+      shellExecTool({ os: 'linux' }),
+      { argv: ['rm', '-rf', dir] },
+      ctx(),
+      [{ capability: 'fs.delete', target: dir }],
+    );
+    expect(record?.label).toContain('没有还原点');
+  });
+
+  it('🔴 判据来自这次调用的主张，不是一份工具名单', async () => {
+    // 一个我们从没听说过的工具，只要主张了 fs.write，就一样有还原点
     const stranger = defineTool({
       name: 'plugin.mangle',
       group: 'plugin',
@@ -217,7 +259,9 @@ describe('写前还原点', () => {
     });
     const target = join(dir, 'y.md');
     await writeFile(target, 'OLD');
-    const record = await nodeCheckpointer({ blobs: blobs() }).before(stranger, { file: target }, ctx());
+    const record = await nodeCheckpointer({ blobs: blobs() }).before(stranger, { file: target }, ctx(), [
+      { capability: 'fs.write', target },
+    ]);
     expect(record).toBeDefined();
   });
 });

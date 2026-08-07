@@ -13,11 +13,14 @@ export * from './checkpoint.js';
 export * from './fs-read.js';
 export * from './fs-list.js';
 export * from './fs-write.js';
+export * from './shell-exec.js';
 
 import type { RegisteredTool } from '@xm/kernel';
 import { fsListTool } from './fs-list.js';
 import { fsReadTool } from './fs-read.js';
 import { fsWriteTool } from './fs-write.js';
+import type { ShellExecOptions } from './shell-exec.js';
+import { shellExecTool } from './shell-exec.js';
 
 /**
  * 这一批的全部工具。
@@ -26,4 +29,20 @@ import { fsWriteTool } from './fs-write.js';
  * `ToolRegistry` 注册没有坏处，但"工具集是现造的"这个形状让将来按配置裁剪
  * （`tools.disabled`）不用改调用方。
  */
-export const coreTools = (): RegisteredTool[] => [fsReadTool(), fsListTool(), fsWriteTool()];
+export interface CoreToolsOptions {
+  /**
+   * 跑在哪个系统上。**必填**——`shell.exec` 要靠它决定怎么杀掉一棵进程树，
+   * 而内核与工具层都不许自己去问 `process.platform`（ADR-0007）。
+   * 装配方手里一定有 `PlatformPort.os`，让它传过来，忘了传就编译不过。
+   */
+  readonly os: ShellExecOptions['os'];
+  /** 允许透传给子进程的额外环境变量名 */
+  readonly extraEnv?: readonly string[];
+}
+
+export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
+  fsReadTool(),
+  fsListTool(),
+  fsWriteTool(),
+  shellExecTool(options),
+];

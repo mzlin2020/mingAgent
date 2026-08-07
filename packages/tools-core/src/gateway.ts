@@ -1,9 +1,15 @@
 import { realpath as realpathCb } from 'node:fs';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
-import { isPathCapability } from '@xm/contracts';
-import type { RegisteredTool, ResolvedCall, ToolContext, ToolGateway } from '@xm/kernel';
-import { GatewayError, normalizePathTarget } from '@xm/kernel';
+import { isPathCapability, targetKindOf } from '@xm/contracts';
+import type {
+  PermissionClaim,
+  RegisteredTool,
+  ResolvedCall,
+  ToolContext,
+  ToolGateway,
+} from '@xm/kernel';
+import { GatewayError, analyzeArgv, claimsOfCapabilities, normalizePathTarget } from '@xm/kernel';
 
 /**
  * **必须是 `.native`。**
@@ -48,10 +54,24 @@ export interface NodeGatewayOptions {
    * 每个会话有自己的工作目录。
    */
   readonly cwd?: string;
+  /**
+   * 用户主目录，用来展开命令参数里的 `~`。
+   *
+   * 内核不许展开（零 I/O，`normalizePathTarget` 对 `~` 开头一律失败关闭），
+   * 而 `rm -rf ~` 这条命令的判定**必须**建立在展开之后的路径上——
+   * 不展开的话它判成"删一个叫 `~` 的文件"，与模型的本意不是一回事，
+   * 而 M1-d 的 DoD 第一条正是这条命令要被拦下。
+   *
+   * 省略则不展开：带 `~` 的路径会在内核那里失败关闭地 deny，行为仍然是安全的。
+   */
+  readonly home?: string;
 }
 
 export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway => ({
   async resolve(tool: RegisteredTool, input: unknown, ctx: ToolContext): Promise<ResolvedCall> {
+    const needsCommand = tool.descriptor.capabilities.some((c) => targetKindOf(c) === 'command');
+    if (needsCommand) return resolveCommand(tool, input, ctx, options);
+
     const needsPath = tool.descriptor.capabilities.some(isPathCapability);
 
     if (tool.pathInputs.length === 0) {
@@ -70,7 +90,7 @@ export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway =
           { tool: tool.descriptor.name },
         );
       }
-      return { input, target: '' };
+      return { input, claims: claimsOfCapabilities(tool.descriptor.capabilities, '') };
     }
 
     const cwd = options.cwd ?? ctx.cwd;
@@ -102,9 +122,121 @@ export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway =
       if (target === '') target = resolved;
     }
 
-    return { input: out, target };
+    return { input: out, claims: claimsOfCapabilities(tool.descriptor.capabilities, target) };
   },
 });
+
+/**
+ * 命令类调用的解析（ADR-0026）。
+ *
+ * 与路径分支的分工是一样的：内核把命令拆成一组「能力 + 目标」的**主张**（纯函数），
+ * 这里负责它做不了的那一半——把主张里的路径展开 `~`、绝对化、realpath。
+ * 用的是**同一个** `resolveDeep` / `canonical`：一个文件无论来自 `fs.read {path}`
+ * 还是 `rm <path>`，解析它的代码只有一份，两条路不会慢慢分叉。
+ *
+ * ── 为什么不像路径分支那样把解析后的路径写回 argv ──
+ *
+ * 路径工具必须回写，因为判定看到 realpath、执行拿着符号链接就是两个东西。
+ * 命令不同：它执行时由**操作系统**按同一个 cwd 去解析同一个相对路径 / 符号链接，
+ * 落到的是同一个文件。判定用的是解析后的（更严的）那个，执行落到同一处，
+ * 两边不会分叉。而回写会实实在在地改变命令的行为（`git status`、`find .` 的输出
+ * 都依赖参数原样）。
+ *
+ * **唯一的例外是 `~`**，它必须回写：没有 shell 参与时 `~` 就是一个普通文件名，
+ * 判定按家目录判、执行按字面量跑，那才是两个东西。
+ */
+async function resolveCommand(
+  tool: RegisteredTool,
+  input: unknown,
+  ctx: ToolContext,
+  options: NodeGatewayOptions,
+): Promise<ResolvedCall> {
+  const name = tool.descriptor.name;
+  const fields = tool.commandInputs;
+
+  if (fields === undefined) {
+    /*
+     * 声明了命令类能力却没有 `commandInputs`——**拒绝，不放行**。
+     * 与 `pathInputs` 那道检查同一个理由：不知道命令是什么，就判不出它会动什么，
+     * 而这次调用会以一个空 target 通过所有基于目标的规则（含红线）。
+     */
+    throw new GatewayError(
+      `工具 ${name} 声明了命令类能力，却没有声明 commandInputs——` +
+        `网关无法知道哪个入参是命令，也就拆不出它会动什么。` +
+        `这会让所有基于目标的规则（含红线）匹配不上，因此直接拒绝。`,
+      { tool: name },
+    );
+  }
+
+  const record = asRecord(input, name);
+  const rawArgv = record[fields.argv];
+  if (!Array.isArray(rawArgv) || rawArgv.some((a) => typeof a !== 'string')) {
+    throw new GatewayError(`工具 ${name} 的入参 "${fields.argv}" 应当是一个字符串数组。`, {
+      tool: name,
+      field: fields.argv,
+    });
+  }
+
+  const cwdField = fields.cwd === undefined ? undefined : record[fields.cwd];
+  const cwd = await resolveCwd(cwdField, options.cwd ?? ctx.cwd, name);
+  const argv = (rawArgv as string[]).map((a) => expandHome(a, options.home));
+
+  const analysis = analyzeArgv(argv);
+  if (!analysis.ok) throw new GatewayError(analysis.reason, { tool: name });
+
+  const claims: PermissionClaim[] = tool.descriptor.capabilities
+    .filter((c) => targetKindOf(c) === 'command')
+    .map((capability) => ({ capability, target: analysis.canonical }));
+
+  for (const claim of analysis.claims) {
+    if (claim.target.kind === 'literal') {
+      claims.push({ capability: claim.capability, target: claim.target.value });
+      continue;
+    }
+    const expanded = expandHome(claim.target.raw, options.home);
+    claims.push({
+      capability: claim.capability,
+      target: canonical(await resolveDeep(resolve(cwd, expanded)), name, fields.argv),
+    });
+  }
+
+  const out: Record<string, unknown> = { ...record, [fields.argv]: argv };
+  if (fields.cwd !== undefined) out[fields.cwd] = cwd;
+
+  return { input: out, claims: dedupeClaims(claims) };
+}
+
+/** 命令的工作目录：给了就 realpath 它，没给就用会话的 */
+async function resolveCwd(raw: unknown, fallback: string, tool: string): Promise<string> {
+  if (!isAbsolute(fallback)) {
+    throw new GatewayError(`会话的工作目录 "${fallback}" 不是绝对路径，无法据此解析。`, {
+      cwd: fallback,
+    });
+  }
+  const candidate = typeof raw === 'string' && raw !== '' ? resolve(fallback, raw) : fallback;
+  return canonical(await resolveDeep(candidate), tool, 'cwd');
+}
+
+/**
+ * 展开**词首**的 `~`。只认 `~` 与 `~/…`——`~user` 在内核的词法器那里已经被拒了，
+ * 而段中间的 `~` 是合法文件名（Windows 8.3 短名、emacs 备份文件），碰不得。
+ */
+function expandHome(arg: string, home: string | undefined): string {
+  if (home === undefined) return arg;
+  if (arg === '~') return home;
+  if (arg.startsWith('~/') || arg.startsWith('~\\')) return join(home, arg.slice(2));
+  return arg;
+}
+
+const dedupeClaims = (claims: readonly PermissionClaim[]): readonly PermissionClaim[] => {
+  const seen = new Set<string>();
+  return claims.filter((c) => {
+    const key = `${c.capability} ${c.target}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
 
 /**
  * 把 realpath 出来的**平台原生**路径，变成内核判定用的那个坐标系里的字符串。

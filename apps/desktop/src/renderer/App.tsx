@@ -306,7 +306,12 @@ function PermissionCard(): ReactNode {
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
         <dt className="text-[var(--xm-fg-muted)]">操作</dt>
         <dd className="font-mono">{request.capability}</dd>
-        <dt className="text-[var(--xm-fg-muted)]">目标</dt>
+        {/*
+          一次调用可能过好几道闸门（ADR-0026：一条 `rm foo` 同时主张"执行命令"
+          与"删除某个文件"），卡片一次显示一道，逐个应答。目标这一栏的名字随之而变——
+          命令类能力下它是一条命令，路径类下它是一个文件。
+        */}
+        <dt className="text-[var(--xm-fg-muted)]">{request.capability.startsWith('shell.') ? '命令' : '目标'}</dt>
         <dd className="break-all font-mono">{request.target === '' ? '（无）' : request.target}</dd>
         <dt className="text-[var(--xm-fg-muted)]">风险</dt>
         <dd>{request.risk}</dd>

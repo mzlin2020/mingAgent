@@ -204,10 +204,24 @@ describe('端到端：deny net.fetch *.evil.com 挡得住全部写法', () => {
   });
 });
 
-describe('command：契约未落地，闸门失败关闭', () => {
-  it('带 target 的命令类判定一律 deny', () => {
+/**
+ * command 的契约在 ADR-0026 落地了。这一组从"闸门失败关闭"改成"归一之后照常判"，
+ * 但**判不了的构造仍然失败关闭**——那一半一个字没松。
+ */
+describe('command：归一到规范形式，判不了的仍然失败关闭', () => {
+  it('带 target 的命令类判定不再一律 deny —— 它现在有契约了', () => {
     const v = judge({
       request: req('shell.exec', 'git push'),
+      rules: builtinRules(ENV),
+      tier: 'balanced',
+    });
+    expect(v.effect).toBe('ask');
+    expect(v.ruleId).toBe('def.shell-exec');
+  });
+
+  it('🔴 展开结果取决于运行时环境的写法，照旧 deny', () => {
+    const v = judge({
+      request: req('shell.exec', 'rm -rf $(cat target)'),
       rules: builtinRules(ENV),
       tier: 'balanced',
     });
@@ -215,13 +229,23 @@ describe('command：契约未落地，闸门失败关闭', () => {
     expect(v.ruleId).toBe('builtin.invalid-target');
   });
 
-  it('YOLO 也跳不过去 —— 它跳的是 ask，不是 deny', () => {
+  it('🔴 YOLO 也跳不过去 —— 它跳的是 ask，不是 deny', () => {
     const v = judge({
-      request: req('shell.exec', 'rm -rf /'),
+      request: req('shell.exec', 'rm -rf /tmp/*'),
       rules: builtinRules(ENV),
       tier: 'yolo',
     });
     expect(v.effect).toBe('deny');
+  });
+
+  it('🔴 判不了的那几个 bin 有内置 deny，且用户可以覆盖', () => {
+    const denied = judge({
+      request: req('shell.exec', 'sudo rm -rf /'),
+      rules: builtinRules(ENV),
+      tier: 'balanced',
+    });
+    expect(denied.effect).toBe('deny');
+    expect(denied.ruleId).toBe('def.no-exec-sudo-args');
   });
 
   it('空 target 照常走能力级规则 —— 闸门拦的是假防线，不是能力本身', () => {
@@ -236,7 +260,8 @@ describe('command：契约未落地，闸门失败关闭', () => {
 
   it('normalizeTarget 直接问也是同一个答案', () => {
     expect(normalizeTarget('shell.exec', '').ok).toBe(true);
-    expect(normalizeTarget('process.spawn', 'ls').ok).toBe(false);
+    expect(normalizeTarget('process.spawn', '/bin/ls  -l')).toEqual({ ok: true, value: 'ls -l' });
+    expect(normalizeTarget('process.spawn', 'ls $HOME').ok).toBe(false);
   });
 });
 
@@ -250,10 +275,18 @@ describe('🔴 构造期闸门：写不出假防线', () => {
     ...r,
   });
 
-  it('命令类能力不许用 target 匹配 —— 这条规则写下的那一刻就炸', () => {
-    expect(() => composeRules({ env: ENV, user: [bad({ match: { target: 'rm -rf /*' } })] })).toThrow(
-      /命令类能力/,
-    );
+  it('🔴 命令类能力上的**红线**仍然不许用 target 匹配 —— 写下的那一刻就炸', () => {
+    // 归一之后 `rm -fr /` 与 `rm -rf /` 还是两个串。命令串够格当便利过滤与授权的载体，
+    // 不够格当红线——红线不可覆盖，用户没有兜底手段（ADR-0026 决策四）
+    expect(() =>
+      composeRules({ env: ENV, user: [bad({ immutable: true, match: { target: 'rm -rf /*' } })] }),
+    ).toThrow(/命令类能力/);
+  });
+
+  it('普通规则可以匹配命令 —— 否则「本会话允许这条命令」根本表达不出来', () => {
+    expect(() =>
+      composeRules({ env: ENV, session: [bad({ effect: 'allow', match: { target: 'ls -l' } })] }),
+    ).not.toThrow();
   });
 
   it('红线不许建立在 opaque target 上 —— 它只是个自由字符串', () => {

@@ -8,6 +8,7 @@ import type {
   PermissionRequest,
   PermissionTier,
   PolicyRule,
+  PolicyVerdict,
   PriceTable,
   ResultBlock,
   StopReason,
@@ -19,6 +20,7 @@ import type {
   BlobStore,
   Checkpointer,
   ModelProvider,
+  PermissionClaim,
   RegisteredTool,
   RuleLayer,
   ToolContext,
@@ -28,6 +30,7 @@ import type {
 import {
   GatewayError,
   ToolInputError,
+  claimsOfCapabilities,
   costOf,
   evaluate,
   grantsToRules,
@@ -402,12 +405,12 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     executor: 'local',
   };
 
-  let target = '';
+  let claims = claimsOfCapabilities(tool.descriptor.capabilities, '');
   if (deps.gateway !== undefined) {
     try {
       const resolved = await deps.gateway.resolve(tool, input, ctx);
       input = resolved.input;
-      target = resolved.target;
+      claims = resolved.claims;
     } catch (e) {
       // 失败关闭：解析不了就不执行，也**不发权限事件**——没有解析出来的目标，
       // 弹给用户看的那个确认框上写什么都是猜的
@@ -449,22 +452,48 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
   /*
    * 权限闸门。**必须在执行之前，且没有旁路。**
    *
-   * 一个工具声明多个能力时逐个判定，任一被拒即整体拒绝——取最严的那个。
-   * 反过来（任一放行即放行）会让"声明了 fs.read 和 fs.delete 的工具"靠 fs.read 蒙混过关。
+   * 判的是**主张**（`PermissionClaim`），不是"工具声明的能力 × 一个 target"。
+   * 一条 `rm -rf ~` 同时主张「执行一条命令」和「删除 /home/ming」，
+   * 后者撞的是一条 M0 就写好的红线（ADR-0026）。
+   *
+   * 任一主张被拒即整体拒绝——取最严的那个。反过来（任一放行即放行）会让
+   * "既主张 fs.read 又主张 fs.delete 的调用"靠 fs.read 蒙混过关。
    */
-  for (const capability of tool.descriptor.capabilities) {
-    const request: PermissionRequest = {
-      requestId: newRequestId(),
-      sessionId: runtime.sessionId,
-      callId: call.callId,
-      capability,
-      target,
-      risk: tool.descriptor.risk,
-      reason: `工具 ${call.name} 需要「${capability}」`,
-      trustLevel,
-    };
+  const missing = tool.descriptor.capabilities.filter(
+    (c) => !claims.some((claim) => claim.capability === c),
+  );
+  if (missing.length > 0) {
+    /*
+     * **主张只能加不能减。** 少一条主张，就意味着这次调用可以绕过它自己声明的能力——
+     * 而这道断言之所以在这里而不是在网关里，是因为网关有好几个实现（Node、pure、
+     * 将来的容器执行器），而这条不变量对每一个都必须成立。
+     */
+    await failCall(
+      deps,
+      turnId,
+      call,
+      xmError(
+        'invalid_input',
+        `工具 ${call.name} 声明了能力「${missing.join('、')}」，` +
+          `但网关没有为它产出对应的主张。这会让针对这些能力的规则整体失效，因此拒绝执行。`,
+      ),
+    );
+    return;
+  }
 
-    const verdict = evaluate({
+  const requestOf = (claim: PermissionClaim): PermissionRequest => ({
+    requestId: newRequestId(),
+    sessionId: runtime.sessionId,
+    callId: call.callId,
+    capability: claim.capability,
+    target: claim.target,
+    risk: tool.descriptor.risk,
+    reason: `工具 ${call.name} 需要「${claim.capability}」`,
+    trustLevel,
+  });
+
+  const judge = (request: PermissionRequest): PolicyVerdict =>
+    evaluate({
       request,
       layers,
       tier: deps.tier,
@@ -473,6 +502,17 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
         : { pathCaseInsensitive: deps.pathCaseInsensitive }),
     });
 
+  /*
+   * ── 先把全部主张判完，再问 ──
+   *
+   * 边判边问是可达的一种糟糕体验：第 1 条主张弹框、用户点了允许、第 2 条主张 deny。
+   * 用户为一次注定失败的调用做了一次决定——而**审批噪音会直接转化成"下次顺手点允许"**，
+   * 这条理由本文件上面为 `parseInput` 的顺序已经写过一遍，这里是它的第二个实例。
+   */
+  const pending: PermissionRequest[] = [];
+  for (const claim of claims) {
+    const request = requestOf(claim);
+    const verdict = judge(request);
     if (verdict.effect === 'allow') continue;
 
     await runtime.record({
@@ -481,8 +521,8 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       payload: {
         requestId: request.requestId,
         callId: call.callId,
-        capability,
-        target,
+        capability: request.capability,
+        target: request.target,
         risk: request.risk,
         reason: verdict.reason,
         trustLevel,
@@ -504,6 +544,16 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       await failCall(deps, turnId, call, xmError('policy_denied', verdict.reason));
       return;
     }
+    pending.push(request);
+  }
+
+  for (const request of pending) {
+    /*
+     * 重判一次：上一条主张的授权可能已经把这一条也覆盖了（同一个路径的读与写、
+     * 或者用户点的"本会话允许"）。不重判就会为同一件事问第二遍。
+     */
+    const verdict = judge(request);
+    if (verdict.effect === 'allow') continue;
 
     // ask：交给注入的应答者。没有应答者就等同于拒绝——headless 下没人能点"允许"，
     // 默认放行会把整条闸门变成摆设
@@ -540,12 +590,12 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     }
 
     /*
-     * 授权立刻生效于**本次循环里剩下的能力**。
+     * 授权立刻生效于**本次调用里剩下的主张**。
      *
-     * 一个工具声明多个能力时逐个判定，而 `layers` 是循环开始前算好的——
-     * 不在这里追加，用户对 `fs.read` 点了"本会话允许"之后，同一次调用里的
-     * `fs.write` 判定用的还是旧的一份。这不影响正确性（那是另一个能力），
-     * 但下一次调用会因为 state 已更新而行为不同，两次之间不一致最难排查。
+     * `layers` 是循环开始前算好的——不在这里刷新，用户对第一条主张点了"本会话允许"
+     * 之后，同一次调用里剩下的主张判定用的还是旧的一份。这不影响正确性
+     * （那是另一条主张），但下一次调用会因为 state 已更新而行为不同，
+     * 两次之间不一致最难排查。
      */
     if (answer.scope !== 'once') {
       layers[layers.length - 1] = {
@@ -555,7 +605,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     }
   }
 
-  await executeCall(deps, turnId, call, tool, input, ctx);
+  await executeCall(deps, turnId, call, tool, input, ctx, claims);
 }
 
 /**
@@ -663,11 +713,12 @@ async function executeCall(
   tool: RegisteredTool,
   input: unknown,
   ctx: ToolContext,
+  claims: readonly PermissionClaim[],
 ): Promise<void> {
   const { runtime } = deps;
   const startedAt = Date.now();
 
-  await recordCheckpoint(deps, turnId, tool, input, ctx);
+  await recordCheckpoint(deps, turnId, tool, input, ctx, claims);
 
   await runtime.record({
     type: 'tool.start',
@@ -678,7 +729,15 @@ async function executeCall(
       name: call.name,
       input,
       risk: tool.descriptor.risk,
-      capabilities: [...tool.descriptor.capabilities],
+      /*
+       * 记的是**主张里的能力全集**，不是工具静态声明的那几个。
+       *
+       * 这一行是"用 shell 跑 curl"不再绕过注入防御的全部原因：`untrustedContext`
+       * 由 `reduce` 从这个字段算出来（`taintOf`），而 `shell.exec` 静态声明的
+       * 只有 `shell.exec` 一个。不改这里，一条 `curl` 命令带回来的网页内容
+       * 就是"进了上下文却没被标记"的——整套 allow→ask、ask→deny 从此对它失效。
+       */
+      capabilities: [...new Set(claims.map((c) => c.capability))],
     },
   });
 
@@ -780,11 +839,12 @@ async function recordCheckpoint(
   tool: RegisteredTool,
   input: unknown,
   ctx: ToolContext,
+  claims: readonly PermissionClaim[],
 ): Promise<void> {
   if (deps.checkpointer === undefined) return;
 
   try {
-    const record = await deps.checkpointer.before(tool, input, ctx);
+    const record = await deps.checkpointer.before(tool, input, ctx, claims);
     if (record === undefined) return;
     await deps.runtime.record({
       type: 'checkpoint.created',

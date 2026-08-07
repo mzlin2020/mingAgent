@@ -1,4 +1,4 @@
-import type { XmError } from '@xm/contracts';
+import type { Capability, XmError } from '@xm/contracts';
 import { xmError } from '@xm/contracts';
 import type { RegisteredTool, ToolContext } from '../tool/types.js';
 
@@ -48,9 +48,49 @@ export interface ToolGateway {
 export interface ResolvedCall {
   /** 回写后的入参。**判定与执行共用它**，不是两份 */
   readonly input: unknown;
-  /** 判权用的 target。路径类能力下它已经是绝对的、realpath 过的 */
+  /**
+   * 判权用的全部主张。见 `PermissionClaim`。
+   *
+   * 这里以前还有一个 `target: string`——"这次调用作用在哪"。它被 `claims` 整个取代了：
+   * 一次调用不只作用在一个地方，而留一个没人读的字段，就是这个仓库反复记过的
+   * "契约写好了、没有任何调用点"。
+   */
+  readonly claims: readonly PermissionClaim[];
+}
+
+/**
+ * 一次调用要过的一条闸门：**这个能力，作用在这个目标上**。
+ *
+ * ── 为什么不是"能力列表 + 一个 target" ──
+ *
+ * 那是这个字段出现之前的形状：`turn.ts` 遍历工具声明的每个能力，全都拿同一个 target 去判。
+ * 对 `fs.read`、`fs.write` 这种"一个工具动一个文件"的工具，两者等价。
+ * 但它让 `shell.exec` 完全没法判——一条 `rm -rf ~` 只能以
+ * 「能力 `shell.exec`、目标 那条命令行」的形式过闸门，命中 `def.shell-exec` 的 ask，
+ * 而挂在 `fs.delete` 上的红线压根不会被查（ADR-0026 背景）。
+ *
+ * 拆成主张之后，一条命令可以同时是「执行一条命令」和「删除 `/home/ming`」，
+ * 后者撞的是一条 M0 就写好的红线。**红线按目标写、不按调用方自称在做什么写**
+ * （ADR-0014 的那半个教训）在这里第三次被用上。
+ *
+ * ⚠️ 主张**只能加不能减**：它必须覆盖工具静态声明的每一个能力，
+ * 否则一个工具就能靠"少声明一条主张"绕开自己的能力声明。`turn.ts` 有断言钉着。
+ */
+export interface PermissionClaim {
+  readonly capability: Capability;
   readonly target: string;
 }
+
+/**
+ * 「工具声明的每个能力 × 同一个 target」—— 路径类工具的主张形状，也是默认形状。
+ *
+ * 网关没给主张时由 `turn.ts` 兜底合成，从而"没有网关"与"零 I/O 网关"这两条路
+ * 与今天的行为完全一致。
+ */
+export const claimsOfCapabilities = (
+  capabilities: readonly Capability[],
+  target: string,
+): readonly PermissionClaim[] => capabilities.map((capability) => ({ capability, target }));
 
 /** 网关解析不了这次调用。转成 `tool.end{ok:false}` 回灌给模型，不产生权限事件 */
 export class GatewayError extends Error {
@@ -78,6 +118,11 @@ export class GatewayError extends Error {
 export const pureGateway = (
   targetOf: (toolName: string, input: unknown) => string,
 ): ToolGateway => ({
-  resolve: (tool, input) =>
-    Promise.resolve({ input, target: targetOf(tool.descriptor.name, input) }),
+  resolve(tool, input) {
+    const target = targetOf(tool.descriptor.name, input);
+    return Promise.resolve({
+      input,
+      claims: claimsOfCapabilities(tool.descriptor.capabilities, target),
+    });
+  },
 });

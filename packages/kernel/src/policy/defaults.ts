@@ -1,5 +1,6 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
 import { targetKindOf } from '@xm/contracts';
+import { DENIED_COMMAND_BINS } from './command-claims.js';
 import type { XmPaths } from '../port/platform.js';
 import { xmDataLayout } from '../port/platform.js';
 import type { RuleLayer } from './engine.js';
@@ -419,6 +420,139 @@ export const sensitiveReadRules = (env: PolicyEnv): readonly PolicyRule[] => {
   ];
 };
 
+// ── 持久化路径不许写 ────────────────────────────────────────────
+
+/**
+ * 写入侧的敏感路径 deny（ADR-0027，ADR-0025 欠下的另一半）。
+ *
+ * ── 挑选标准（同样只有一条）──
+ *
+ * **写一次，之后每次开机 / 开终端 / 开某个工具都会自动执行。**
+ *
+ * 这批路径的共同形状不是"重要文件"，是**持久化**：改动本身不起眼，但它把一次性的
+ * 越权变成了一个此后一直在的后门。`~/.ssh/authorized_keys` 里多一行公钥，
+ * 攻击者从此可以直接登录；`.zshrc` 里多一行，此后每开一个终端都替他跑一次。
+ *
+ * ── 为什么必须是 deny，而不是留在 `def.fs-write` 的 ask ──
+ *
+ * 因为这批路径的攻击形态**恰恰就是一个用户会顺手点掉的确认框**。
+ * 模型在长任务中间说一句"我需要写一下 shell 配置"，确认框和平时那些没有区别。
+ * ADR-0025 对读取侧下过同一个判断，这里是它的对称面。
+ *
+ * ⚠️ **已知代价，照直说**：「帮我往 `.zshrc` 加个 alias」这类完全正当的请求会被拦。
+ * 出口写在拒绝文案里——用户在自己的配置里对那个路径写一条 allow。
+ * 这是刻意的取舍：出口存在、但必须由人显式打开，而不是在一个日常弹窗上顺手点。
+ *
+ * ── 为什么挂 `fs.write` 和 `fs.delete` 两个能力 ──
+ *
+ * 删掉 `.zshrc` 再写一个新的，与直接改它是同一件事。只挂写入侧，
+ * 就留下了一条"先删后建"的路——而这正是 ADR-0014 那半个教训：
+ * 规则要按**目标**写，不能按调用方自称在做哪一步写。
+ */
+interface PersistencePath {
+  readonly id: string;
+  readonly glob: string;
+  readonly why: string;
+}
+
+/** 家目录下的。`glob` 相对家目录，不带前导斜杠 */
+const PERSISTENCE_UNDER_HOME: readonly PersistencePath[] = [
+  { id: 'authorized-keys', glob: '.ssh/authorized_keys', why: '写进去的公钥，此后可以直接登录这台机器' },
+  { id: 'ssh-config', glob: '.ssh/config', why: 'SSH 配置里的 ProxyCommand / LocalCommand 会在每次连接时执行' },
+  { id: 'bashrc', glob: '.bashrc', why: '每开一个 bash 都会执行' },
+  { id: 'bash-profile', glob: '.bash_profile', why: '每次登录都会执行' },
+  { id: 'bash-logout', glob: '.bash_logout', why: '每次退出终端都会执行' },
+  { id: 'profile', glob: '.profile', why: '每次登录都会执行' },
+  { id: 'zshrc', glob: '.zshrc', why: '每开一个 zsh 都会执行' },
+  { id: 'zshenv', glob: '.zshenv', why: '每个 zsh 进程都会执行，连非交互的也算' },
+  { id: 'zprofile', glob: '.zprofile', why: '每次登录都会执行' },
+  { id: 'gitconfig', glob: '.gitconfig', why: 'git 的 alias 与 core.pager 是会被执行的命令' },
+  { id: 'autostart', glob: '.config/autostart/**', why: '开机自启（Linux 桌面）' },
+  { id: 'systemd-user', glob: '.config/systemd/user/**', why: '用户级 systemd 单元 —— 开机自启且能常驻' },
+  { id: 'launch-agents', glob: 'Library/LaunchAgents/**', why: '开机自启（macOS）' },
+  {
+    id: 'startup-win',
+    glob: 'AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/**',
+    why: '开机自启（Windows）',
+  },
+];
+
+/** 跟着项目走的。它们不在家目录下，而是躺在任何一个工作区里 */
+const PERSISTENCE_ANYWHERE: readonly PersistencePath[] = [
+  {
+    id: 'git-hooks',
+    glob: '**/.git/hooks/**',
+    why: 'git 钩子 —— 此后每次 commit / checkout 都会执行它，而这些命令用户自己每天都在敲',
+  },
+];
+
+/** 与 `fs.write` 一样，删掉再重建是同一件事，所以两个能力都挂 */
+const PERSISTENCE_CAPABILITIES = [
+  { capability: 'fs.write' as const, suffix: '', verb: '写入' },
+  { capability: 'fs.delete' as const, suffix: '-delete', verb: '删除' },
+];
+
+export const persistencePathRules = (env: PolicyEnv): readonly PolicyRule[] => {
+  const home = normalizedOrThrow(env.home);
+  const prefix = home === '/' ? '' : home;
+
+  const rules = (p: PersistencePath, target: string): PolicyRule[] =>
+    PERSISTENCE_CAPABILITIES.map(({ capability, suffix, verb }) => ({
+      id: `def.no-write-${p.id}${suffix}`,
+      effect: 'deny' as const,
+      capability,
+      match: { target },
+      reason:
+        `${verb}${p.why}。这类改动只发生一次，效果却是长期的——` +
+        `一个确认框换来的是一个此后一直在的后门。` +
+        `确属你的本意的话，在用户配置里对这个路径写一条 allow 即可放开。`,
+      immutable: false,
+    }));
+
+  return [
+    ...PERSISTENCE_UNDER_HOME.flatMap((p) => rules(p, `${prefix}/${p.glob}`)),
+    ...PERSISTENCE_ANYWHERE.flatMap((p) => rules(p, p.glob)),
+  ];
+};
+
+// ── 判不了的命令 ────────────────────────────────────────────────
+
+/**
+ * 几个**结构性地判不了**的 bin（ADR-0026 决策三）。
+ *
+ * 名单本身在 `command-claims.ts`（那里是唯一知道"哪些 bin 有画像"的地方），
+ * 这里只把它翻译成规则——两处各写一份名单必然分叉，而分叉的表现是
+ * 某个 bin 悄悄没人管了。
+ *
+ * 为什么是规则而不是在分析期直接抛错：抛错没有出口。用户完全可能就是想
+ * `sudo apt install` 一下，那时他应该能在自己的配置里放开这一条
+ * （ADR-0025 定下的形状：给不出出口的安全措施，最后都会被整体关掉）。
+ *
+ * 两条 glob 是必要的：本项目的极简 glob 里 `*` 不跨 `/`，而命令串里几乎一定有路径。
+ * `sudo` 匹配它自己，`sudo **` 匹配它带参数的样子。
+ */
+const COMMAND_DENY_REASON: Readonly<Record<string, string>> = {
+  sudo: '提权之后，本进程加的所有约束（env 白名单、工作目录、超时）都不再作数',
+  su: '切换用户之后，本进程加的所有约束都不再作数',
+  doas: '提权之后，本进程加的所有约束都不再作数',
+  xargs: '它的参数来自标准输入，执行之前谁也不知道它会拿到什么',
+  dd: '它的 if= / of= 是一套自成体系的参数语法，按普通操作数解出来的目标是错的',
+};
+
+export const commandDenyRules = (): readonly PolicyRule[] =>
+  DENIED_COMMAND_BINS.flatMap((bin) =>
+    [bin, `${bin} **`].map((target, i) => ({
+      id: `def.no-exec-${bin}${i === 0 ? '' : '-args'}`,
+      effect: 'deny' as const,
+      capability: 'shell.exec' as const,
+      match: { target },
+      reason:
+        `${COMMAND_DENY_REASON[bin] ?? '这条命令判不了'}，所以拆不出它到底会动什么。` +
+        `判不出就不放行——确属你的本意的话，在用户配置里写一条 allow 放开它。`,
+      immutable: false,
+    })),
+  );
+
 /**
  * 规则集的**构造期**闸门（ADR-0020 决策三、四）。
  *
@@ -442,11 +576,32 @@ function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
     if (r.match?.target === undefined || r.capability === '*') continue;
     const kind = targetKindOf(r.capability);
 
-    if (kind === 'command') {
+    /*
+     * ── 命令类 target：**红线仍然不许，普通规则放开**（ADR-0026 决策四，修正 ADR-0020 决策五）──
+     *
+     * 上一版是一刀切禁掉，理由是"同一条命令有无数种等价写法，glob 挡不住任何一种"。
+     * 那个理由今天依然成立，所以红线那一半**一个字没改**——红线不可覆盖、
+     * 用户没有兜底手段，它只能建立在有规范化契约、且契约足够强的 target 上。
+     * `rm -fr /` 与 `rm -rf /` 归一之后仍然是两个串，命令串不够格。
+     *
+     * 但一刀切禁掉的同时也禁掉了两样必须存在的东西：
+     *
+     *   · **会话授权。** 「本会话允许这条命令」合成的正是一条带 target 的会话规则
+     *     （`grantsToRules`）。禁掉它，用户唯一能点的就是"允许 `shell.exec` 这个能力"——
+     *     一次授权放开的是**所有**命令。收紧不了的安全开关，比没有更糟。
+     *   · **默认拒掉那几个判不了的 bin**（下方 `commandDenyRules`）。
+     *
+     * 这一半之所以现在可以放开，是因为命令 target 从"没有契约"变成了"有契约但不够强"
+     * （ADR-0026 决策一）。有契约意味着同一条命令的写法差异不会让规则静默失效；
+     * 不够强意味着它只能当便利过滤与授权的载体，真正的防线仍然是拆出来的那组主张。
+     */
+    if (kind === 'command' && r.immutable) {
       throw new Error(
-        `规则 "${r.id}" 用 target 匹配命令类能力 "${r.capability}"，这不允许：` +
-          `同一条命令有无数种等价写法，glob 挡不住任何一种（docs/09 C4 / ADR-0020 决策三）。` +
-          `真正的防线是执行器沙箱。`,
+        `红线 "${r.id}" 用 target 匹配命令类能力 "${r.capability}"，这不允许：` +
+          `同一条命令有无数种等价写法（"rm -fr /" 与 "rm -rf /" 归一后仍是两个串），` +
+          `glob 挡不住任何一种。红线不可覆盖、用户没有兜底手段，因此它只能建立在` +
+          `路径或主机这类契约足够强的 target 上。要拦一条命令，让它拆出的**主张**去撞` +
+          `按路径写的红线（ADR-0026 / docs/09 C4）。`,
       );
     }
 
@@ -462,7 +617,7 @@ function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
 }
 
 /**
- * 内置规则集 = 红线 + 平衡档默认 + 敏感路径不许读。
+ * 内置规则集 = 红线 + 平衡档默认 + 敏感路径不许读 + 持久化路径不许写 + 判不了的命令。
  *
  * 顺序按"从不可覆盖到可覆盖"读下来，但**判定与顺序无关**：层内永远是
  * deny > ask > allow，所以敏感路径的 deny 压得住 `def.fs-read` 的 allow，
@@ -471,7 +626,13 @@ function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
  * 用户级与项目级规则是**后面的层**，从而能覆盖默认但覆盖不了红线。
  */
 export const builtinRules = (env: PolicyEnv): PolicyRuleSet =>
-  assertRules([...redLineRules(env), ...BALANCED_DEFAULT_RULES, ...sensitiveReadRules(env)]);
+  assertRules([
+    ...redLineRules(env),
+    ...BALANCED_DEFAULT_RULES,
+    ...sensitiveReadRules(env),
+    ...persistencePathRules(env),
+    ...commandDenyRules(),
+  ]);
 
 /** 只有内置一层的规则集。测试与 headless 里最常用的形状 */
 export const builtinLayers = (env: PolicyEnv): readonly RuleLayer[] => [

@@ -121,11 +121,16 @@ export async function startServices(): Promise<Services> {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools()) tools.register(t);
+  for (const t of coreTools({ os: platform.os })) tools.register(t);
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
 
-  const gateway = nodeToolGateway();
+  /*
+   * `home` 是给命令参数里的 `~` 用的（ADR-0026）。内核不许展开（零 I/O），
+   * 而 `rm -rf ~` 的判定必须建立在展开之后的路径上——不传的话它判成
+   * "删一个叫 `~` 的文件"，M1-d DoD 的第一条当场落空。
+   */
+  const gateway = nodeToolGateway({ home: paths.home });
   const checkpointer = nodeCheckpointer({ blobs: stores.blobs });
 
   const runtimes = new Map<SessionId, SessionRuntime>();

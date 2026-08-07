@@ -1,5 +1,6 @@
 import type { Capability } from '@xm/contracts';
 import { targetKindOf } from '@xm/contracts';
+import { normalizeCommandTarget } from './command-target.js';
 import { normalizeHostTarget } from './host-target.js';
 import type { TargetNormalization } from './target.js';
 import { normalizePathTarget } from './target.js';
@@ -24,32 +25,24 @@ export function normalizeTarget(capability: Capability, raw: string): TargetNorm
 
     case 'command':
       /*
-       * ── 命令行的规范化契约**尚未落地**（docs/09 C4）──
+       * ── 命令行的规范化契约（ADR-0026 落地，ADR-0020 决策三欠下的那半张）──
        *
-       * 契约本身已经定死在 ADR-0020 决策三：target 是结构化的 `{ argv, cwd }`，
-       * 规则只匹配 `argv[0]` 的 basename 与解析后的参数，含管道 / `sh -c` / shell 元字符
-       * 一律无法静态判定 → 降级 ask；真正的防线是执行器沙箱（docs/09 C2），
-       * 不是命令行字符串匹配——`rm  -rf /`（两个空格）、`rm -fr /`、`/bin/rm -rf /`、
-       * `sh -c 'rm -rf /'` 对 glob 来说是四个互不相同的字符串。
+       * 这里以前是一道失败关闭的闸门：带非空 target 的命令类判定一律判不了。
+       * 那道闸门当时是对的，也确实起了作用——M1-d 做 `shell.exec` 时绕不过去，
+       * 只能来把契约补上，而不是顺手写个 glob 顶着。
        *
-       * 但 M1-a 还没有任何 shell 工具能喂它。现在把 argv 匹配实现出来，就是再造一个
-       * "测试全绿、真实输入下从未跑过"的东西——`trustLevel` 硬编码（ADR-0017）与
-       * 8.3 短名（ADR-0018）两次翻车，恰恰都是这个形状。
+       * 现在归一到规范形式：`argv[0]` 取 basename、参数间恒为单空格、需要引号的
+       * 参数只有一种写法。于是 `rm  -rf /`（双空格）与 `/bin/rm -rf /` 得到同一个串。
        *
-       * 所以这里放一道**失败关闭**的闸门：带 target 的命令类判定一律判不了。
-       * 它绕不过去，M1-b 做 `shell.exec` 时只能去实现契约，而不是顺手写个 glob。
+       * ⚠️ **但这个串仍然不是防线。** `rm -fr /` 与 `rm -rf /` 归一之后照样是两个串，
+       * 谁也没法穷举命令行的等价写法。真正拦住 `rm -rf /` 的是
+       * `command-claims.ts` 从这条命令里拆出来的那条 `fs.delete /` 主张——
+       * 它撞的是一条按**路径**写的红线。命令串只用来做便利过滤与会话授权，
+       * 所以红线仍然不许建立在它上面（`defaults.ts` 的构造期闸门只放开了非红线那一半）。
        *
-       * 空 target 放行，是因为它表示"这次请求没有 target"，只由能力级规则判定
-       * （`def.shell-exec` → ask）。闸门要拦的是**假的 target 防线**，不是能力本身。
+       * 空 target 照旧放行：它表示"这次请求没有 target"，只由能力级规则判定。
        */
-      if (raw === '') return { ok: true, value: '' };
-      return {
-        ok: false,
-        reason:
-          `命令行 target 的规范化契约尚未落地（docs/09 C4 / ADR-0020 决策三）。` +
-          `用 glob 匹配命令行是出了名的不可靠——同一条 "rm -rf /" 有无数种等价写法，` +
-          `在契约落地之前，这里宁可判不了也不给出一层假防线。`,
-      };
+      return normalizeCommandTarget(raw);
 
     case 'opaque':
       /*

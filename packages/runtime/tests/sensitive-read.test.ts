@@ -53,7 +53,7 @@ async function harness(userRules: PolicyRuleSet = []) {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools()) tools.register(t);
+  for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
   const asked: PermissionRequest[] = [];
 
@@ -145,7 +145,7 @@ describe('🔴 私钥读不出来', () => {
       payload: { cwd: dir, modelRef: 'scripted/scripted-1' },
     });
     const tools = new ToolRegistry();
-    for (const t of coreTools()) tools.register(t);
+    for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
     await runTurn(
       {
