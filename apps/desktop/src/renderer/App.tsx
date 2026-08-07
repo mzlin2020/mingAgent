@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { ContentBlock, Message } from '@xm/contracts';
 import { api } from './bridge.js';
@@ -16,6 +16,7 @@ import { useUi } from './store.js';
  */
 export function App(): ReactNode {
   const { currentId, session, busy, error } = useUi();
+  const live = useUi((s) => s.live);
   const refreshSessions = useUi((s) => s.refreshSessions);
   const refreshStatus = useUi((s) => s.refreshStatus);
   const applyEvent = useUi((s) => s.applyEvent);
@@ -26,6 +27,45 @@ export function App(): ReactNode {
     // 订阅主进程推来的事件。总线在主进程，这里只是消费端（ADR-0013 不变量五）
     return api.onEvent(applyEvent);
   }, [refreshSessions, refreshStatus, applyEvent]);
+
+  /*
+   * 自动跟随滚动。
+   *
+   * 消息流容器原来只有 `overflow-y-auto`，内容变长时滚动条位置不动——
+   * 模型流式吐字、工具跑进度的时候，新内容全部长在可视区域之外，用户得自己
+   * 一直往下拽。真正的停止条件不是"内容变了就无脑滚到底"（那样用户往上翻看
+   * 历史消息时会被每一条 delta 强行拽回底部，等于滚动条根本没法用来看历史），
+   * 而是"用户本来就跟着看，才继续帮他跟着看"——用 `stickToBottom` 记录用户
+   * 上一次滚动后离底部还有多远，只有在他本来就贴着底部时才自动跟。
+   */
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottom = useRef(true);
+
+  useEffect(() => {
+    // 切会话：不管上一个会话滚到哪里去了，新会话一律先贴底
+    stickToBottom.current = true;
+  }, [currentId]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null) return;
+    const onScroll = (): void => {
+      // 离底部 64px 以内算"还在跟着看"，用户主动往上翻了就不再帮他拽回去
+      stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+    };
+    el.addEventListener('scroll', onScroll);
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+    };
+  }, [currentId]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el === null || !stickToBottom.current) return;
+    el.scrollTop = el.scrollHeight;
+    // `live` 覆盖了正文/思考的流式增量与工具进度——那两类内容不落进
+    // `session.messages`（ADR-0021），只看 messages 会漏掉整个流式过程
+  }, [session?.messages, live]);
 
   return (
     <div className="flex h-screen bg-[var(--xm-bg)] text-[var(--xm-fg)]">
@@ -44,7 +84,7 @@ export function App(): ReactNode {
           </div>
         )}
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           {currentId === undefined ? (
             <p className="mt-16 text-center text-sm text-[var(--xm-fg-muted)]">左侧新建一个会话开始。</p>
           ) : (

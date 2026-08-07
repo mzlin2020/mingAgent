@@ -132,7 +132,16 @@ interface PendingCall {
 
 export async function runTurn(deps: TurnDeps, userText: string): Promise<StopReason> {
   const { runtime } = deps;
-  const maxIterations = deps.maxIterations ?? 8;
+  /*
+   * 8 太容易在正常任务里撞到——一个「做个 todolist」这种朴素任务，
+   * 读文件、列目录、写几步、回头检查一下，往返次数很容易过 8。
+   * 撞上限的后果不是"模型偷懒"，是回合被腰斩，用户看到的是任务莫名其妙半途而废。
+   * 这里的上限本来就只是"防跑飞"的兜底，不是引导模型精简步骤的手段——
+   * 收敛应该来自模型自己判断任务完成，不是靠一个悄悄的步数配额逼它提前结束。
+   * 调大到 9999，实质上等于交给"模型自己不再调工具"这一条真正的停止条件；
+   * 真正失控的死循环由用户手动停止 / 会话预算兜底，不该指望这个数字。
+   */
+  const maxIterations = deps.maxIterations ?? 9999;
   const turnId = newTurnId();
 
   // turn.start 自己就会把用户输入并进 messages（见 reduce.ts），别在这里再补一条 user 消息
