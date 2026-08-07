@@ -17,3 +17,5 @@ export type { AnthropicOptions } from './anthropic.js';
 export { OpenAICompatibleProvider } from './openai-compatible.js';
 export type { OpenAICompatibleOptions } from './openai-compatible.js';
 export { capabilitiesFor, CONSERVATIVE_CAPABILITIES } from './catalog.js';
+export { buildToolNameCodec } from './tool-name.js';
+export type { ToolNameCodec } from './tool-name.js';

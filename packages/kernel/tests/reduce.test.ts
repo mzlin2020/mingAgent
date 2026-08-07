@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { XmEvent } from '@xm/contracts';
-import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
+import {
+  XmEvent as XmEventSchema,
+  isCoreEvent,
+  newEventId,
+  newSessionId,
+  newTurnId,
+  parseStoredEvent,
+} from '@xm/contracts';
 import { emptySessionState, reduceAll } from '@xm/kernel';
 
 const FIXTURE = fileURLToPath(
@@ -92,5 +99,51 @@ describe('reduce：崩溃与中断的可见性', () => {
     );
     expect(buckets).toHaveLength(1);
     expect(buckets[0]!.blocks).toHaveLength(2);
+  });
+});
+
+describe('reduce：lastError 不能是一条永远挂着的横幅', () => {
+  const sessionId = newSessionId();
+  let seq = 0;
+  const ev = (type: XmEvent['type'], payload: unknown): XmEvent =>
+    XmEventSchema.parse({
+      id: newEventId(),
+      sessionId,
+      seq: ++seq,
+      ts: 1_754_300_000_000 + seq,
+      type,
+      payload,
+    });
+
+  it('error.raised 写入 lastError', () => {
+    const turnId = newTurnId();
+    const events = [
+      ev('session.created', { cwd: '/w', modelRef: 'anthropic/x' }),
+      ev('turn.start', { turnId, input: [{ type: 'text', text: 'hi' }] }),
+      ev('error.raised', {
+        error: { code: 'provider_error', message: '出错了', retryable: false },
+        fatal: false,
+      }),
+      ev('turn.end', { turnId, reason: 'error' }),
+    ];
+    const state = reduceAll(emptySessionState(sessionId), events);
+    expect(state.lastError?.message).toBe('出错了');
+  });
+
+  it('🔴 下一轮 turn.start 清掉它——否则一次失败之后往后一百轮都成功，横幅还挂着', () => {
+    const turnId1 = newTurnId();
+    const turnId2 = newTurnId();
+    const events = [
+      ev('session.created', { cwd: '/w', modelRef: 'anthropic/x' }),
+      ev('turn.start', { turnId: turnId1, input: [{ type: 'text', text: 'hi' }] }),
+      ev('error.raised', {
+        error: { code: 'provider_error', message: '出错了', retryable: false },
+        fatal: false,
+      }),
+      ev('turn.end', { turnId: turnId1, reason: 'error' }),
+      ev('turn.start', { turnId: turnId2, input: [{ type: 'text', text: '再试一次' }] }),
+    ];
+    const state = reduceAll(emptySessionState(sessionId), events);
+    expect(state.lastError).toBeUndefined();
   });
 });

@@ -50,6 +50,7 @@ export function App(): ReactNode {
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
               <SetupBanner />
+              <TurnErrorBanner />
               <NoticeBanner />
               <UntrustedBanner />
               <MessageStream messages={session?.messages ?? []} />
@@ -169,6 +170,35 @@ function SetupBanner(): ReactNode {
             保存到钥匙串
           </Button>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 上一轮真正失败时的错误——读的是 `session.lastError`（`error.raised` 事件落下的），
+ * 不是顶部那条 `error`（那个只捕获 IPC 调用本身的失败，`store.ts` 里的 try/catch）。
+ *
+ * 两者是完全不同的东西：Provider 返回 400 时，"发消息"这个 IPC 调用照常成功返回——
+ * 失败发生在 Turn 内部的流式读取里，顶部的 `error` 永远不会被置上。这曾经是一个
+ * 真实的用户体验缺口：`lastError` 从一开始就在 `reduce()` 里被正确地算出来，
+ * 却没有任何渲染代码读过它——用户看到的只是"发了消息但没反应"，
+ * 真正的原因（比如 DeepSeek 拒绝了带点号的工具名）只在 events.db 里躺着。
+ *
+ * `lastError` 在下一轮 `turn.start` 时会被清掉（reduce.ts），所以这里不需要
+ * 自己的关闭按钮——新一轮的用户输入本身就是"要重试"的信号。
+ */
+function TurnErrorBanner(): ReactNode {
+  const session = useUi((s) => s.session);
+  const error = session?.lastError;
+  if (error === undefined) return null;
+
+  return (
+    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
+      <p className="font-medium">上一轮出错了</p>
+      <p className="mt-1">{error.message}</p>
+      {error.retryable && (
+        <p className="mt-1 text-[var(--xm-fg-muted)]">这类错误通常可以直接重试。</p>
       )}
     </div>
   );

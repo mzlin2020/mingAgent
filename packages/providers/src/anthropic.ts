@@ -5,6 +5,8 @@ import { capabilitiesFor } from './catalog.js';
 import type { HttpDeps } from './http.js';
 import { ProviderHttpError, abortedBy, postSse } from './http.js';
 import { readSseFrames } from './sse.js';
+import type { ToolNameCodec } from './tool-name.js';
+import { buildToolNameCodec } from './tool-name.js';
 
 /**
  * Anthropic Messages API 适配器。
@@ -64,12 +66,15 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async *stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk> {
+    // 同一份表管全程：发出去按它编，收回来按它解——两处用不同的表就是分叉的开始
+    const codec = buildToolNameCodec((req.tools ?? []).map((t) => t.name));
+
     let body: ReadableStream<Uint8Array>;
     try {
       body = await postSse({
         url: `${this.#baseUrl}/v1/messages`,
         headers: this.#headers(),
-        body: toWire(req),
+        body: toWire(req, codec),
         signal,
         providerId: this.id,
         ...pickHttpDeps(this.#options),
@@ -81,7 +86,7 @@ export class AnthropicProvider implements ModelProvider {
       return;
     }
 
-    yield* decodeStream(body, signal);
+    yield* decodeStream(body, signal, codec);
   }
 
   #headers(): Record<string, string> {
@@ -107,12 +112,14 @@ interface WireBody {
   stop_sequences?: string[];
 }
 
-export function toWire(req: ModelRequest): WireBody {
+export function toWire(req: ModelRequest, codec: ToolNameCodec): WireBody {
   const body: WireBody = {
     model: req.model,
     max_tokens: req.maxOutputTokens,
     stream: true,
-    messages: req.messages.map((m, i) => toWireMessage(m, i === req.cacheBreakpointAfterMessage)),
+    messages: req.messages.map((m, i) =>
+      toWireMessage(m, i === req.cacheBreakpointAfterMessage, codec),
+    ),
   };
 
   if (req.system.length > 0) {
@@ -126,7 +133,7 @@ export function toWire(req: ModelRequest): WireBody {
 
   if (req.tools !== undefined && req.tools.length > 0) {
     body.tools = req.tools.map((t) => ({
-      name: t.name,
+      name: codec.encode(t.name),
       description: t.description,
       input_schema: t.inputSchema,
     }));
@@ -138,7 +145,7 @@ export function toWire(req: ModelRequest): WireBody {
         ? { auto: { type: 'auto' }, none: { type: 'none' }, required: { type: 'any' } }[
             req.toolChoice
           ]
-        : { type: 'tool', name: req.toolChoice.name };
+        : { type: 'tool', name: codec.encode(req.toolChoice.name) };
   }
 
   if (req.thinking?.enabled === true) {
@@ -162,8 +169,8 @@ export function toWire(req: ModelRequest): WireBody {
   return body;
 }
 
-function toWireMessage(m: Message, cacheHere: boolean): unknown {
-  const content = m.blocks.map(toWireBlock);
+function toWireMessage(m: Message, cacheHere: boolean, codec: ToolNameCodec): unknown {
+  const content = m.blocks.map((b) => toWireBlock(b, codec));
   if (cacheHere && content.length > 0) {
     const last = content[content.length - 1];
     if (last !== undefined && typeof last === 'object') {
@@ -173,7 +180,7 @@ function toWireMessage(m: Message, cacheHere: boolean): unknown {
   return { role: m.role, content };
 }
 
-function toWireBlock(b: ContentBlock): Record<string, unknown> {
+function toWireBlock(b: ContentBlock, codec: ToolNameCodec): Record<string, unknown> {
   switch (b.type) {
     case 'text':
       return { type: 'text', text: b.text };
@@ -187,7 +194,8 @@ function toWireBlock(b: ContentBlock): Record<string, unknown> {
     case 'redacted_thinking':
       return { type: 'redacted_thinking', data: b.data };
     case 'tool_use':
-      return { type: 'tool_use', id: b.id, name: b.name, input: b.input ?? {} };
+      // 历史消息里的 tool_use 也要按同一份表编码——服务端会拿它跟 tools[] 里的名字核对
+      return { type: 'tool_use', id: b.id, name: codec.encode(b.name), input: b.input ?? {} };
     case 'tool_result':
       return {
         type: 'tool_result',
@@ -235,7 +243,8 @@ function unsupportedBlob(kind: string): never {
  */
 export async function* decodeStream(
   body: ReadableStream<Uint8Array>,
-  signal?: AbortLike,
+  signal: AbortLike | undefined,
+  codec: ToolNameCodec,
 ): AsyncGenerator<ModelChunk, void, undefined> {
   const callIds = new Map<string, CallId>();
   const blockKinds = new Map<number, 'text' | 'thinking' | 'tool_use'>();
@@ -264,7 +273,9 @@ export async function* decodeStream(
 
           if (type === 'tool_use') {
             const rawId = str(block.id) ?? '';
-            const name = str(block.name) ?? '';
+            // 服务端回传的是我们编码过的 wire 名，解回内部名再往上层走——
+            // ToolRegistry 按内部名（能力字符串）查表，收不到原名就找不到工具
+            const name = codec.decode(str(block.name) ?? '');
             const callId = callIds.get(rawId) ?? newCallId();
             callIds.set(rawId, callId);
             blockKinds.set(index, 'tool_use');

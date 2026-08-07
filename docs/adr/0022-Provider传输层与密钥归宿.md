@@ -234,3 +234,70 @@ turn.ts:  catch → failure = provider_error("This operation was aborted")
 而端口那一侧的问题更根本：**约定不存在时，无法证伪的不是实现，是问题本身**。
 "取消时该怎么结束"从来没人回答过，所以也没人能说 `turn.ts` 写错了——
 直到真实的 `fetch` 替我们回答了它。
+
+## 补记（2026-08-07）：DeepSeek 400，以及"工具名带点号"这个从没被验证过的假设
+
+用户在 Windows 本地跑真实 DeepSeek（OpenAI 兼容端点）时，带工具的请求一律
+400：
+
+```
+Invalid 'tools[0].function.name': string does not match pattern.
+Expected a string that matches the pattern '^[a-zA-Z0-9_-]+$'.
+```
+
+`fs.read` / `fs.list` / `fs.write` / `shell.exec` 这些工具名**就是能力字符串本身**
+（判权用的是同一个字符串），而 `ToolDescriptor.name` 的契约反过来强制要求至少
+一个点号（`descriptor.ts`：`/^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*)+$/`）。两条约束
+互相矛盾，而 `openai-compatible.ts` 把 `t.name` 原样塞进 `tools[].function.name`，
+一次也没清洗过。
+
+**这不是 DeepSeek 独有的**：`anthropic.ts` 的 `toWire()` 同样把 `t.name` 原样塞进
+`tools[].name`，Anthropic 的文档写的是同一条正则。两个适配器共享同一个从没被
+验证过的假设——只是 DeepSeek 的错误信息把它说得比较明白。
+
+### 为什么这个坑活了一整个 M1-c + M1-d 都没被抓到
+
+CI 里两类测试都天然绕开了它：
+
+- `recorded.test.ts` 用预录的 SSE fixture 测"我们能不能正确解析一个假想的响应"，
+  从不会触发真实服务端对**出站请求**的校验；
+- 唯一会打真实网络的 `live.test.ts` 挂在 `XM_LIVE_PROVIDER=1` 后面（docs/08 的
+  明确决定：CI 一次不花钱调用），而它自己的 `WEATHER_TOOL.name = 'weather.get'`
+  ——**同样带点**——是 M1-b 写下的，那时手动跑过一轮（本文件上面那次补记）。
+  M1-c 才装上真正带点号的能力工具，而没有人在那之后重新手动跑过带工具调用的
+  `XM_LIVE_PROVIDER=1`。
+
+这是 ADR-0025/0026 反复出现的那句话的第三个变体：**约定存在 ≠ 约定被检验，
+而检验本身也可能在被检验的东西变了之后过期**——`live.test.ts` 曾经检验过
+"能不能带工具调用"，但检验用的工具名恰好没有触发这个坑，装上真实工具之后
+这份检验就悄悄失效了，而没有任何信号提示它失效了。
+
+### 修复：两个适配器共享一份 wire 名编解码，不是各自清洗一遍
+
+新增 `packages/providers/src/tool-name.ts` 的 `buildToolNameCodec()`：按**这次
+请求**的 `tools` 列表现算一份双向表（点号换下划线；清洗后撞车则追加数字后缀，
+因为插件工具名不受能力表这个闭集约束，不能假设清洗后互不相同）。`stream()`
+里只算一次，`toWire()` 编码、`decodeStream()` 解码用的是同一份表——写在两个
+适配器各自的文件里、却共享同一个从 `tool-name.ts` 导入的函数，不是"两边各写
+一遍清洗逻辑"。三处都要编码：`tools[]` 声明、`tool_choice`、历史消息里的
+`tool_use` 块（服务端会拿它跟 `tools[]` 里的名字核对，只编码声明那一处，
+历史消息里的名字对不上）。
+
+### 顺带补的第二个缺口：`lastError` 从来没有渲染代码读过它
+
+同一份 bug 报告里的次要问题：Provider 返回 400 时，"发消息"这个 IPC 调用本身
+成功返回（失败发生在 Turn 内部的流式读取里），渲染层顶部那条 `error`（`store.ts`
+里只捕获 IPC 调用失败）永远不会被置上。而 `reduce()` 从一开始就在 `error.raised`
+时正确写入了 `SessionState.lastError`——**只是没有任何渲染代码读过它**，用户
+看到的只是"发了消息但没反应"。
+
+补的时候顺带发现 `lastError` 只写不清：一次失败之后，哪怕后面一百轮都成功，
+这条错误理论上会一直挂在界面上。改成 `turn.start` 时清掉——新一轮的用户输入
+本身就是"要重试"的信号，不需要一个专门的关闭按钮。
+
+**账**：780 测试（+12：`tool-name.test.ts` 10 条 + `reduce.test.ts` 2 条）；
+`pnpm verify` 全绿。这一轮没有真实 API 可用，两个适配器的编解码用手写的
+wire 形状验证（照抄真实 fixture 的结构，换一个会撞正则的工具名），
+不是等价于 `XM_LIVE_PROVIDER=1` 的验证强度——**这笔账还欠着**，下一次有真实
+key 可用时应该跑一轮带工具调用的 live 用例，把上面提到的"检验本身过期了"
+这件事真正补上，而不是只在 mock 层面自洽。

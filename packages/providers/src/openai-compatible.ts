@@ -6,6 +6,8 @@ import { parseJson, pickHttpDeps } from './anthropic.js';
 import type { HttpDeps } from './http.js';
 import { ProviderHttpError, abortedBy, postSse } from './http.js';
 import { readSseFrames } from './sse.js';
+import type { ToolNameCodec } from './tool-name.js';
+import { buildToolNameCodec } from './tool-name.js';
 
 /**
  * OpenAI 兼容适配器（官方 OpenAI、以及一大批照抄它 wire format 的服务）。
@@ -66,12 +68,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async *stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk> {
+    // 同一份表管全程：发出去按它编，收回来按它解——两处用不同的表就是分叉的开始
+    const codec = buildToolNameCodec((req.tools ?? []).map((t) => t.name));
+
     let body: ReadableStream<Uint8Array>;
     try {
       body = await postSse({
         url: `${this.#baseUrl}/chat/completions`,
         headers: this.#headers(),
-        body: toWire(req),
+        body: toWire(req, codec),
         signal,
         providerId: this.id,
         ...pickHttpDeps(this.#options),
@@ -83,7 +88,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return;
     }
 
-    yield* decodeStream(body, signal);
+    yield* decodeStream(body, signal, codec);
   }
 
   #headers(): Record<string, string> {
@@ -93,7 +98,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
 // ── 请求 ────────────────────────────────────────────────────────
 
-export function toWire(req: ModelRequest): Record<string, unknown> {
+export function toWire(req: ModelRequest, codec: ToolNameCodec): Record<string, unknown> {
   const messages: Record<string, unknown>[] = [];
 
   /*
@@ -105,7 +110,7 @@ export function toWire(req: ModelRequest): Record<string, unknown> {
     messages.push({ role: 'system', content: req.system.map((s) => s.text).join('\n\n') });
   }
 
-  for (const m of req.messages) messages.push(...toWireMessages(m));
+  for (const m of req.messages) messages.push(...toWireMessages(m, codec));
 
   const body: Record<string, unknown> = {
     model: req.model,
@@ -119,14 +124,14 @@ export function toWire(req: ModelRequest): Record<string, unknown> {
   if (req.tools !== undefined && req.tools.length > 0) {
     body.tools = req.tools.map((t) => ({
       type: 'function',
-      function: { name: t.name, description: t.description, parameters: t.inputSchema },
+      function: { name: codec.encode(t.name), description: t.description, parameters: t.inputSchema },
     }));
   }
   if (req.toolChoice !== undefined) {
     body.tool_choice =
       typeof req.toolChoice === 'string'
         ? req.toolChoice
-        : { type: 'function', function: { name: req.toolChoice.name } };
+        : { type: 'function', function: { name: codec.encode(req.toolChoice.name) } };
   }
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (req.stopSequences !== undefined && req.stopSequences.length > 0) {
@@ -143,7 +148,7 @@ export function toWire(req: ModelRequest): Record<string, unknown> {
  * 而这一家要求每个结果是一条独立的 `role: 'tool'` 消息。这正是"块模型拆成扁平结构容易、
  * 反过来难"（block.ts 的注释）的具体一例——差异被这个函数吃掉了。
  */
-function toWireMessages(m: Message): Record<string, unknown>[] {
+function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   const text: string[] = [];
   const toolCalls: Record<string, unknown>[] = [];
@@ -154,10 +159,12 @@ function toWireMessages(m: Message): Record<string, unknown>[] {
         text.push(b.text);
         break;
       case 'tool_use':
+        // 历史消息里的 tool_use 也要按同一份表编码——不然同一个工具在 tools[]
+        // 里叫 fs_read，在历史 tool_calls 里却叫 fs.read，两边对不上
         toolCalls.push({
           id: b.id,
           type: 'function',
-          function: { name: b.name, arguments: JSON.stringify(b.input ?? {}) },
+          function: { name: codec.encode(b.name), arguments: JSON.stringify(b.input ?? {}) },
         });
         break;
       case 'tool_result':
@@ -210,7 +217,8 @@ function unsupportedBlob(kind: string): never {
 
 export async function* decodeStream(
   body: ReadableStream<Uint8Array>,
-  signal?: AbortLike,
+  signal: AbortLike | undefined,
+  codec: ToolNameCodec,
 ): AsyncGenerator<ModelChunk, void, undefined> {
   /** OpenAI 的 tool_calls 用 `index` 定位，`id` 只在第一个分片出现 */
   const callByIndex = new Map<number, CallId>();
@@ -273,10 +281,12 @@ export async function* decodeStream(
           callByIndex.set(index, callId);
         }
 
+        // 服务端回传的是我们编码过的 wire 名，解回内部名再往上层走——
+        // ToolRegistry 按内部名（能力字符串）查表，收不到原名就找不到工具
         const name = fn === undefined ? undefined : str(fn.name);
         if (name !== undefined && name !== '' && !started.has(index)) {
           started.add(index);
-          yield { kind: 'tool_call_start', id: callId, name };
+          yield { kind: 'tool_call_start', id: callId, name: codec.decode(name) };
         }
 
         const args = fn === undefined ? undefined : str(fn.arguments);

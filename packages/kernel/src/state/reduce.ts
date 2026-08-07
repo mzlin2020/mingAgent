@@ -65,6 +65,15 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
             ts: e.ts,
           },
         ],
+        /*
+         * 新一轮开始，清掉上一轮留下的错误。
+         *
+         * `lastError` 此前只写不读、也从没被清过——UI 里没有任何代码渲染它
+         * （bug 报告的次要问题），补上渲染的同时发现：不清的话，一次失败之后
+         * 哪怕后面一百轮都成功，错误条会一直挂在界面上，用户分不清是"这次也错了"
+         * 还是"三轮前错的，没人收起来"。新一轮的用户输入本身就是"要重试"的信号。
+         */
+        lastError: undefined,
         lastSeq: e.seq,
       };
 
