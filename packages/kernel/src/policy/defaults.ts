@@ -302,6 +302,123 @@ export const BALANCED_DEFAULT_RULES: readonly PolicyRule[] = [
   },
 ];
 
+// ── 敏感路径不许读 ──────────────────────────────────────────────
+
+/**
+ * `fs.read` 的敏感路径 deny（docs/06 §3，ADR-0025）。
+ *
+ * ── 为什么它必须存在 ──
+ *
+ * `def.fs-read` 是无条件 allow，理由写在那条规则上："读取文件不改变任何状态"。
+ * 那句话在 M1-c 之前是对的——因为当时**没有任何工具真的能读文件**。M1-c 装上
+ * `fs.read` / `fs.list` 之后它就变成了错的：读操作确实不改变磁盘，但它把内容
+ * **搬进了模型上下文**，而模型上下文是会流向模型服务商的。对一个私钥来说，
+ * 「被读到」和「被泄露」之间没有第二步。
+ *
+ * docs/06 §3 从第一版起就列着这批 deny，代码里一条也没有——本项目第 N 次
+ * 「规则存在 ≠ 规则生效」，而这次连规则都只存在于文档里。
+ *
+ * ── 挑选标准（只有一条，写在这里是为了让后来加条目的人照着判断）──
+ *
+ * **这个文件的内容一旦进了模型上下文，就等于凭据已经泄露**，且拦掉它极少妨碍
+ * 正经活儿。按这条标准：`*.pem` 进（EC2 密钥对就是这个后缀），`*.key` 不进
+ * （太多东西用这个后缀，误伤远大于收益），`~/.bash_history` 不进
+ * （里面**可能**有 token，但那是"可能"，不是"就是"）。
+ *
+ * ── 为什么是普通 deny 而不是红线 ──
+ *
+ * 红线不可覆盖，而"帮我看看这个项目的 .env 为什么没生效"是一个完全正当的请求。
+ * 放成普通 deny，用户在自己的 `config.json` 里写一条 allow 就能放开（分层覆盖，
+ * ADR-0023），而模型自己写不了那个文件——项目层只能收紧。红线留给
+ * "做了就回不来"，这里是"做了就泄露了"，两者的正确解法不同：
+ * 前者不给任何出口，后者给一个**用户显式打开**的出口。
+ *
+ * ── 三个平台的路径全都写上，且不做平台判断 ──
+ *
+ * 内核不知道自己跑在哪（ADR-0007）。`~/Library/Keychains/**` 在 Linux 上永远
+ * 匹配不到任何东西，这不是浪费——它是**零成本**的，而少写它的代价是
+ * 那个平台的凭据库整个敞着。docs/06 原来的清单是 macOS 视角的（只有 Keychains），
+ * Windows 的 DPAPI 与 Linux 的 keyring 一条都没有。
+ *
+ * ⚠️ **写入侧还没做。** 这里拦的只有 `fs.read`。往 `~/.ssh/authorized_keys` 追加
+ * 一行是一条标准的持久化后门，而它现在只是 `def.fs-write` 的一个 ask。
+ * 见 ADR-0025 的遗留。
+ */
+interface SensitiveRead {
+  readonly id: string;
+  readonly glob: string;
+  readonly why: string;
+}
+
+/** 家目录下的。`glob` 相对家目录，不带前导斜杠 */
+const SENSITIVE_READ_UNDER_HOME: readonly SensitiveRead[] = [
+  { id: 'ssh', glob: '.ssh/**', why: 'SSH 私钥与 known_hosts' },
+  { id: 'gnupg', glob: '.gnupg/**', why: 'GPG 私钥环' },
+  { id: 'aws', glob: '.aws/**', why: 'AWS 凭据' },
+  { id: 'gcloud', glob: '.config/gcloud/**', why: 'Google Cloud 凭据' },
+  { id: 'azure', glob: '.azure/**', why: 'Azure 凭据' },
+  { id: 'kube', glob: '.kube/**', why: 'kubeconfig —— 里面就是集群的凭据' },
+  { id: 'docker', glob: '.docker/config.json', why: '容器镜像仓库的登录凭据' },
+  { id: 'netrc', glob: '.netrc', why: 'netrc 里是明文的账号密码' },
+  { id: 'netrc-win', glob: '_netrc', why: 'netrc 的 Windows 写法' },
+  // 操作系统的凭据库。小明自己的 API key 就存在这里面（ADR-0022），
+  // 所以这几条同时也是"模型不能把小明自己的密钥读出来"。
+  { id: 'keychain-macos', glob: 'Library/Keychains/**', why: 'macOS 钥匙串' },
+  {
+    id: 'dpapi-protect',
+    glob: 'AppData/Roaming/Microsoft/Protect/**',
+    why: 'Windows DPAPI 主密钥 —— 解得开凭据管理器里的一切',
+  },
+  {
+    id: 'dpapi-crypto',
+    glob: 'AppData/Roaming/Microsoft/Crypto/**',
+    why: 'Windows 的私钥容器',
+  },
+  {
+    id: 'credman',
+    glob: 'AppData/Local/Microsoft/Credentials/**',
+    why: 'Windows 凭据管理器',
+  },
+  { id: 'keyring-linux', glob: '.local/share/keyrings/**', why: 'Linux（GNOME）钥匙串' },
+];
+
+/** 任意目录下的。这批不挂在家目录上——它们跟着项目走 */
+const SENSITIVE_READ_ANYWHERE: readonly SensitiveRead[] = [
+  {
+    id: 'dotenv',
+    // `*` 不跨 `/`，所以这条盖住 `.env`、`.env.local`、`.envrc`，不会漫到别的目录
+    glob: '**/.env*',
+    why: '.env 文件几乎总是装着 API key 与数据库口令',
+  },
+  { id: 'pem', glob: '**/*.pem', why: 'PEM 文件通常就是私钥（EC2 密钥对即是此形态）' },
+  { id: 'id-rsa', glob: '**/id_rsa*', why: 'SSH 私钥（被复制到工作区里的那一份）' },
+  { id: 'id-dsa', glob: '**/id_dsa*', why: 'SSH 私钥' },
+  { id: 'id-ecdsa', glob: '**/id_ecdsa*', why: 'SSH 私钥' },
+  { id: 'id-ed25519', glob: '**/id_ed25519*', why: 'SSH 私钥' },
+];
+
+export const sensitiveReadRules = (env: PolicyEnv): readonly PolicyRule[] => {
+  const home = normalizedOrThrow(env.home);
+  const prefix = home === '/' ? '' : home;
+
+  const rule = (s: SensitiveRead, target: string): PolicyRule => ({
+    id: `def.no-read-${s.id}`,
+    effect: 'deny',
+    capability: 'fs.read',
+    match: { target },
+    reason:
+      `${s.why}。读取不改变磁盘，但会把内容送进模型上下文——对凭据来说，` +
+      `「被读到」和「被泄露」之间没有第二步。` +
+      `确属你的本意的话，在用户配置里对这个路径写一条 allow 即可放开。`,
+    immutable: false,
+  });
+
+  return [
+    ...SENSITIVE_READ_UNDER_HOME.map((s) => rule(s, `${prefix}/${s.glob}`)),
+    ...SENSITIVE_READ_ANYWHERE.map((s) => rule(s, s.glob)),
+  ];
+};
+
 /**
  * 规则集的**构造期**闸门（ADR-0020 决策三、四）。
  *
@@ -345,11 +462,16 @@ function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
 }
 
 /**
- * 内置规则集 = 红线 + 平衡档默认。
+ * 内置规则集 = 红线 + 平衡档默认 + 敏感路径不许读。
+ *
+ * 顺序按"从不可覆盖到可覆盖"读下来，但**判定与顺序无关**：层内永远是
+ * deny > ask > allow，所以敏感路径的 deny 压得住 `def.fs-read` 的 allow，
+ * 而它自己又压不住用户层——那正是想要的形状（ADR-0025）。
+ *
  * 用户级与项目级规则是**后面的层**，从而能覆盖默认但覆盖不了红线。
  */
 export const builtinRules = (env: PolicyEnv): PolicyRuleSet =>
-  assertRules([...redLineRules(env), ...BALANCED_DEFAULT_RULES]);
+  assertRules([...redLineRules(env), ...BALANCED_DEFAULT_RULES, ...sensitiveReadRules(env)]);
 
 /** 只有内置一层的规则集。测试与 headless 里最常用的形状 */
 export const builtinLayers = (env: PolicyEnv): readonly RuleLayer[] => [

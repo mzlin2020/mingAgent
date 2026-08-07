@@ -1,5 +1,5 @@
 import { realpath as realpathCb } from 'node:fs';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -122,6 +122,41 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
     // 解析之后：命中 deny
     expect(evaluate({ request: ask(join(outside, 'id_rsa')), layers, tier: 'balanced' }).effect)
       .toBe('deny');
+  });
+});
+
+/**
+ * ── 大小写：一条 deny 能不能靠改大小写绕过去 ──
+ *
+ * macOS 与 Windows 的文件系统默认**大小写不敏感**：`~/.SSH/id_rsa` 打开的
+ * 就是 `~/.ssh/id_rsa` 那个文件。而规则匹配是字面的——Windows 上靠
+ * `pathCaseInsensitive` 打开忽略大小写（services.ts 按 `platform.os` 传），
+ * macOS 上**没有**打开它。那 macOS 靠什么？靠 `realpath.native`：
+ * 它返回的是磁盘上真实的大小写，于是 `.SSH` 在进判定之前就已经变回 `.ssh`。
+ *
+ * 这条链路只有一个环节是我不能在本地证明的（这台机器是 Linux，大小写敏感），
+ * 而 ADR-0025 的整批 deny 都压在它上面。所以这里不写平台判断，写**文件系统的
+ * 事实判断**：如果换个大小写真能打开同一个文件，那这个卷就是大小写不敏感的，
+ * 网关就必须把它归回真实大小写。Linux 上前提不成立，用例自己跳过；
+ * macOS / Windows 的 CI 上它是硬断言。
+ */
+describe('🔴 大小写不敏感的卷上，改大小写绕不过规则', () => {
+  it('网关把路径归回磁盘上真实的大小写', async () => {
+    const shouty = join(root, 'SRC', 'a.ts');
+    let caseInsensitive = true;
+    try {
+      await stat(shouty);
+    } catch {
+      caseInsensitive = false;
+    }
+    if (!caseInsensitive) {
+      // 这个卷大小写敏感（Linux）：`SRC/a.ts` 是另一个不存在的路径，不存在绕过问题
+      expect(await realOf(join(root, 'src', 'a.ts'))).not.toBe(normalizedOrThrow(shouty));
+      return;
+    }
+
+    const r = await nodeToolGateway().resolve(tool(), { path: 'SRC/a.ts' }, ctx(root));
+    expect(r.target).toBe(await realOf(join(root, 'src', 'a.ts')));
   });
 });
 
