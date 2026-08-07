@@ -301,3 +301,54 @@ wire 形状验证（照抄真实 fixture 的结构，换一个会撞正则的工
 不是等价于 `XM_LIVE_PROVIDER=1` 的验证强度——**这笔账还欠着**，下一次有真实
 key 可用时应该跑一轮带工具调用的 live 用例，把上面提到的"检验本身过期了"
 这件事真正补上，而不是只在 mock 层面自洽。
+
+## 补记（2026-08-07 · 续）：欠的那笔账被用户自己的真实调用还上了——顺带带出下一个 400
+
+上面那笔"没有真实 key，验证不到 `XM_LIVE_PROVIDER=1` 强度"的账，没等太久：
+用户拿同一版代码在 Windows 本地接真实 DeepSeek 跑了一轮。结果是好消息也是
+坏消息——**工具名带点号那个 400 确实不再出现了**（编解码那份修复站住了），
+但带工具调用的下一轮请求换了一个新的 400：
+
+```
+The `reasoning_content` in the thinking mode must be passed back to the API.
+```
+
+DeepSeek 思考模式的文档（Tool Calls 一节）写明：一旦某一轮 assistant 消息带过
+`tool_calls`，下一轮请求必须把那一轮的 `reasoning_content` 原样带回去，不带
+就拒绝。而 `openai-compatible.ts` 的 `toWireMessages` 里，`thinking` 块从
+第一天起就是**直接丢弃**——注释原文是"这一家的 wire format 收不回自己的推理
+内容（`reasoning_content` 是只出不进的），硬塞会被 400 拒"。这句话读起来像是
+查过文档，实际上是凭直觉写的（大多数 OpenAI 兼容端点确实把 `reasoning_content`
+当只出字段，但 DeepSeek 思考模式是个例外，而且是**文档写明的强制例外**），
+从来没有被真实请求验证过——直到这次。
+
+这与本文件最初那次补记是同一个形状：`recorded.test.ts` 的 fixture 只验证
+"收到一份带 `reasoning_content` 的响应能不能解析成 `thinking_delta`"，从不
+验证"历史消息里的 `thinking` 块会不会被正确编码回 `reasoning_content` 发出
+去"——**同一个字段，一进一出，测试只覆盖了出，没覆盖进**，而代码注释里
+"回不去"这句断言恰恰错在"进"这一半。
+
+修法：`toWireMessages` 里 `thinking` 块不再丢弃，累积文本挂到对应 assistant
+消息的 `reasoning_content` 字段（只在真出现过思考文本时才带这个字段，不
+无端多塞一个字段给不认它的兼容端）。`redacted_thinking`（Anthropic 私有的
+加密块）继续丢弃——这一家的 wire format 里没有对应位置可放，和"要不要回传"
+无关，是"有没有地方接"的问题。Anthropic 适配器不受影响：`signature` 字段
+本来就在正常回传，这个坑是 OpenAI 兼容这一侧独有的。
+
+### 顺带修的另一半：一次调用多条 ask 主张时「点了没反应」
+
+同一份报告里的第二个 bug，和本文件内容无关，是 [ADR-0026](./0026-命令的主张分解与argv契约.md)
+「一次调用可以产生多条 `PermissionClaim`」这件事在**问用户**这一步留下的
+后半个洞——`turn.ts` 会把多条 ask 主张的 `permission.request` 事件连着发完，
+才轮到第一条的 `permission.decision`，而 `pendingPermission` 是单槽位，
+会被最后一条覆盖，UI 卡片的 `requestId` 因此和运行时正在等待的那一条对不上，
+点确认按钮没有反应。详细机制与修法记在 ADR-0026 的补记里，这里只做交叉引用，
+避免同一件事在两份 ADR 里各写一半、日后改动只改了一边。
+
+**账**：新增/改动测试见 `adapters.test.ts`（reasoning_content 编码的正反两条
+用例）与 `shell-claims.test.ts`（多主张 ask 的事件交替用例，见 ADR-0026 补记）；
+`pnpm verify` 全绿，783 测试。这一轮同样没有真实 key 可用，`reasoning_content`
+的编码用手写的历史消息结构验证，**没有验证到"模型侧真的接受了回传的
+reasoning_content、后续多轮工具调用不再报错"这一层**——这笔账比上一笔更具体：
+下次有真实 key，应该专门跑一轮"assistant(thinking + tool_use) → tool_result →
+再来一轮工具调用"的多轮 live 用例，而不是单轮。

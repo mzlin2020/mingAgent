@@ -234,6 +234,70 @@ describe('OpenAI 兼容适配器', () => {
   it('逐字节分片解出的结果与一次性读完完全一致', async () => {
     expect(normalize(await run(1))).toEqual(normalize(await run()));
   });
+
+  it(
+    '🔴 历史 assistant 消息里的 thinking 块要挂回 reasoning_content —— ' +
+      'DeepSeek 思考模式下，带过 tool_calls 的这一轮不把它带回去会被 400 拒',
+    async () => {
+      let sent: { messages?: { role: string; reasoning_content?: string }[] } = {};
+      const fetchImpl = ((_url: string, init?: RequestInit) => {
+        sent = JSON.parse(init?.body as string) as typeof sent;
+        return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      const callId = newCallId();
+      await drain(
+        new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl }).stream(
+          {
+            ...REQUEST,
+            messages: [
+              {
+                id: newMessageId(),
+                role: 'assistant',
+                blocks: [
+                  { type: 'thinking', text: '用户想读一个目录，先调 fs.list。' },
+                  { type: 'tool_use', id: callId, name: 'fs.list', input: { path: '/repo' } },
+                ],
+                ts: 1,
+              },
+              {
+                id: newMessageId(),
+                role: 'user',
+                blocks: [
+                  {
+                    type: 'tool_result',
+                    toolUseId: callId,
+                    content: [{ type: 'text', text: 'a.ts\nb.ts' }],
+                    isError: false,
+                  },
+                ],
+                ts: 2,
+              },
+            ],
+          },
+          abortLike().signal,
+        ),
+      );
+
+      const assistantMsg = sent.messages?.find((m) => m.role === 'assistant');
+      expect(assistantMsg?.reasoning_content).toBe('用户想读一个目录，先调 fs.list。');
+    },
+  );
+
+  it('没有思考块的历史消息不会凭空长出 reasoning_content 字段', async () => {
+    let sent: { messages?: Record<string, unknown>[] } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      sent = JSON.parse(init?.body as string) as typeof sent;
+      return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    await drain(
+      new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl }).stream(REQUEST, abortLike().signal),
+    );
+
+    const userMsg = sent.messages?.find((m) => m.role === 'user');
+    expect(userMsg).not.toHaveProperty('reasoning_content');
+  });
 });
 
 describe('端口中立性：同一个 ModelRequest 喂两家', () => {

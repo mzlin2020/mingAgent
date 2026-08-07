@@ -508,6 +508,19 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
    * 边判边问是可达的一种糟糕体验：第 1 条主张弹框、用户点了允许、第 2 条主张 deny。
    * 用户为一次注定失败的调用做了一次决定——而**审批噪音会直接转化成"下次顺手点允许"**，
    * 这条理由本文件上面为 `parseInput` 的顺序已经写过一遍，这里是它的第二个实例。
+   *
+   * 但"判完"只到 policy 层的裁决为止——**不**包括发 `permission.request` 事件。
+   * 这条事件是 `SessionState.pendingPermission`（单槽位，见 reduce.ts）唯一的写入源，
+   * 一条调用若有两条 ask 主张，在这里连着发两条 request 会让 pendingPermission
+   * 直接跳到第二条；而下面第二个循环里 `decide()` 还在等第一条的应答，
+   * UI 卡片却已经换成了第二条的 requestId——用户点"允许"，
+   * respondPermission 用第二条的 id 去找 waiter，主进程的 pending Map 里
+   * 挂的是第一条，找不到人接，返回 accepted:false，卡片纹丝不动。
+   * 这就是"点了没反应"的完整机制。
+   *
+   * 修法：request 事件只在真正要去问（即将调用 decide()）的那一刻发出，
+   * 紧挨着它自己的 decision——事件流里永远是 request→decision→request→decision，
+   * 不允许出现两条连续的 request。
    */
   const pending: PermissionRequest[] = [];
   for (const claim of claims) {
@@ -515,21 +528,21 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     const verdict = judge(request);
     if (verdict.effect === 'allow') continue;
 
-    await runtime.record({
-      type: 'permission.request',
-      turnId,
-      payload: {
-        requestId: request.requestId,
-        callId: call.callId,
-        capability: request.capability,
-        target: request.target,
-        risk: request.risk,
-        reason: verdict.reason,
-        trustLevel,
-      },
-    });
-
     if (verdict.effect === 'deny') {
+      // deny 不需要问人，request/decision 一次性配对发出、立刻结束——中间没有缺口
+      await runtime.record({
+        type: 'permission.request',
+        turnId,
+        payload: {
+          requestId: request.requestId,
+          callId: call.callId,
+          capability: request.capability,
+          target: request.target,
+          risk: request.risk,
+          reason: verdict.reason,
+          trustLevel,
+        },
+      });
       await runtime.record({
         type: 'permission.decision',
         turnId,
@@ -554,6 +567,22 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
      */
     const verdict = judge(request);
     if (verdict.effect === 'allow') continue;
+
+    // 真的要问人了——这时才发 request 事件，紧挨着下面的 decide()，
+    // 中间不会再插进另一条 request
+    await runtime.record({
+      type: 'permission.request',
+      turnId,
+      payload: {
+        requestId: request.requestId,
+        callId: call.callId,
+        capability: request.capability,
+        target: request.target,
+        risk: request.risk,
+        reason: verdict.reason,
+        trustLevel,
+      },
+    });
 
     // ask：交给注入的应答者。没有应答者就等同于拒绝——headless 下没人能点"允许"，
     // 默认放行会把整条闸门变成摆设

@@ -128,7 +128,21 @@ export const useUi = create<UiState>((set, get) => ({
     const id = get().currentId;
     if (id === undefined) return;
     try {
-      await api.respondPermission(id, requestId, effect, scope);
+      const { accepted } = await api.respondPermission(id, requestId, effect, scope);
+      /*
+       * `accepted: false` 意味着主进程里没有一个在等这个 requestId 的 waiter——
+       * 请求已经过期（重复点击、上一条已经被处理、或者窗口重载丢了状态）。
+       *
+       * 这曾经是"点了没反应"的表现形式之一：卡片是乐观渲染之外的真实状态
+       * （`pendingPermission` 来自事件流），不会自己收起，用户点了却什么都
+       * 没发生，也不知道是网络慢还是点错了。这里必须给一个能看见的反馈，
+       * 而不是像从前那样把返回值直接扔掉。
+       */
+      if (!accepted) {
+        set({
+          error: '这条确认请求已经失效（可能已被处理，或已出现新的待确认请求），请重新查看当前状态。',
+        });
+      }
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

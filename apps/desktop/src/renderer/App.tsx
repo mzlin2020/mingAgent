@@ -64,10 +64,15 @@ export function App(): ReactNode {
         {/*
           `busy` 是"这次 IPC 还没返回"，`session.status === 'running'` 是"事件流说它在跑"。
           停止按钮认后者：前者在网络往返期间也为真，而那时还没有任何东西可停。
+
+          `waiting_permission` 也算——那仍然是同一个未完成的 turn，只是卡在等审批，
+          `services.ts` 的 `interrupt()` 本来就认这个状态（denyAllPending 先兑现挂起的
+          审批，再 abort）。之前只认 `running` 会让用户在权限卡片弹出的那段时间
+          彻底没有退出的入口，只能等（或者去点一张早就对不上 requestId 的卡片）。
         */}
         <Composer
           disabled={currentId === undefined || busy}
-          running={session?.status === 'running'}
+          running={session?.status === 'running' || session?.status === 'waiting_permission'}
         />
       </main>
     </div>

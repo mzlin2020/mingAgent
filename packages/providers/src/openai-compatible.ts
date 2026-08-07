@@ -152,6 +152,7 @@ function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknow
   const out: Record<string, unknown>[] = [];
   const text: string[] = [];
   const toolCalls: Record<string, unknown>[] = [];
+  const reasoning: string[] = [];
 
   for (const b of m.blocks) {
     switch (b.type) {
@@ -177,14 +178,22 @@ function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknow
         });
         break;
       case 'thinking':
+        /*
+         * 思考文本要挂回这条 assistant 消息的 `reasoning_content`——上一版注释里
+         * 说"这一家收不回自己的推理内容，硬塞会被 400 拒"，那是凭直觉写的，
+         * 从没拿真实请求验证过。真实结果正相反：DeepSeek 思考模式下，一旦
+         * 这一轮带过 tool_calls，下一轮请求**不带**上一轮的 reasoning_content
+         * 才会被 400 拒（"the reasoning_content ... must be passed back to
+         * the API"）。这是文档 Tool Calls 一节写明的强制项，不是可选优化。
+         * https://api-docs.deepseek.com/guides/thinking_mode
+         */
+        reasoning.push(b.text);
+        break;
       case 'redacted_thinking':
         /*
-         * 思考块**丢弃，不报错**。这一家的 wire format 收不回自己的推理内容
-         * （`reasoning_content` 是只出不进的），硬塞会被 400 拒。
-         *
-         * 与多模态那条失败关闭的区别在于可观测性：丢思考块不会让模型给出
-         * "看过但其实没看过"的回答，最多是它想不起上一轮怎么推的；
-         * 而丢图片会让它自信地描述一张没见过的图。
+         * 加密思考块是 Anthropic 私有格式（`signature`/`data` 对它自己的模型
+         * 才有意义），这一家的 wire format 里没有对应位置可放，继续丢弃。
+         * 与上面 thinking 的区别只在"有没有地方接住"，不是"要不要接住"。
          */
         break;
       case 'image':
@@ -195,11 +204,14 @@ function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknow
   }
 
   const content = text.join('\n');
-  if (content !== '' || toolCalls.length > 0) {
+  const reasoningText = reasoning.join('\n');
+  if (content !== '' || toolCalls.length > 0 || reasoningText !== '') {
     out.unshift({
       role: m.role,
       content: content === '' ? null : content,
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      // 只有真出现过思考文本才带这个字段——不认它的兼容端不该无端多收一个陌生字段
+      ...(reasoningText !== '' ? { reasoning_content: reasoningText } : {}),
     });
   }
   return out;

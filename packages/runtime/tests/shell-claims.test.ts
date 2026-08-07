@@ -209,3 +209,50 @@ describe('放行的路径也要真的通', () => {
     expect(asked).toHaveLength(0);
   });
 });
+
+/**
+ * 🔴 用户体验报告：一条调用有多条 ask 主张时，「点了没反应」。
+ *
+ * `mv a b` 拆出 `shell.exec`（ask）+ `fs.read(a)`（无条件 allow，不问）+
+ * `fs.delete(a)`（ask）+ `fs.write(b)`（ask）——三条要问的主张。
+ *
+ * 修复前的两段式循环会把三条 `permission.request` 连着发完，才轮到第一条的
+ * `permission.decision`：`SessionState.pendingPermission` 是单槽位，会被
+ * 后一条的 requestId 覆盖，而主进程的 `decide()` 此刻其实还在等第一条——
+ * UI 卡片和"谁在被等待"完全对不上，点确认按钮触发的 `respondPermission`
+ * 找不到匹配的 waiter，返回 `accepted:false`，卡片纹丝不动。
+ *
+ * 断言不看"问了几次"（那是 M1-d 已经在验的），而是看**事件流的形状**：
+ * 一条 request 后面必须紧跟它自己的 decision，不能有第二条 request 插进来。
+ */
+describe('🔴 一次调用的多条 ask 主张：request 与 decision 必须严格配对，不能连续两条 request', () => {
+  it('mv 产出三条 ask 主张，事件流里 request/decision 逐对交替', async () => {
+    const { exec, asked } = await harness();
+    await writeFile(join(dir, 'src.txt'), 'hi');
+    const all = await exec(['mv', join(dir, 'src.txt'), join(dir, 'dst.txt')]);
+
+    const sequence = all
+      .map((e) => e.type)
+      .filter((t) => t === 'permission.request' || t === 'permission.decision');
+
+    // 至少要有能触发"两条连续 request"这个 bug 的主张数量，用例本身才有意义
+    expect(asked.length).toBeGreaterThanOrEqual(2);
+    expect(sequence.length).toBeGreaterThanOrEqual(4);
+
+    for (let i = 0; i < sequence.length; i += 2) {
+      expect(sequence[i]).toBe('permission.request');
+      expect(sequence[i + 1]).toBe('permission.decision');
+    }
+
+    // 而且每一条 decision 确实答的是它前面那条 request——不是恰好数量对上
+    const requests = requestsOf(all);
+    const answered = decisions(all);
+    expect(answered.map((d) => d.requestId)).toEqual(requests.map((r) => r.requestId));
+
+    expect(ended(all)[0]?.ok).toBe(true);
+  });
+});
+
+function requestsOf(all: PersistedEvent[]) {
+  return all.flatMap((e) => (e.type === 'permission.request' ? [e.payload] : []));
+}
