@@ -128,7 +128,13 @@ describe('🔴 M1-d DoD：rm -rf ~ 被拦，而且四种写法判定一致', () 
   it('🔴 `rm -rf /` 同样被拦 —— 命中的是文件系统根那条', async () => {
     const { exec } = await harness();
     const all = await exec(['rm', '-rf', '/']);
-    expect(decisions(all)[0]?.ruleId).toBe('red.fs-delete-filesystem-root');
+    /*
+     * 命中哪一条红线**随平台而变，这是应该的**：POSIX 写法的 `/` 经网关按会话
+     * cwd 解析后，在 POSIX 上落在 `/`，在 Windows 上落在当前盘符根（`C:/`）——
+     * 两个坐标系下的"文件系统根"本来就不是同一个字符串，各自的红线各管各的
+     * （ADR-0026 补记）。这条用例要证明的是"总有一条红线接住"，不是"是哪一条"。
+     */
+    expect(decisions(all)[0]?.ruleId).toMatch(/^red\.fs-delete-(filesystem|drive)-root$/);
   });
 
   it('🔴 家目录下的普通文件不受影响 —— 拦得太宽等于整条规则会被关掉', async () => {

@@ -120,9 +120,17 @@ describe.skipIf(!posixShell)('🔴 进程级的硬约束', () => {
       env: { ...process.env, XM_SECRET: 'sk-must-not-leak' },
     });
     expect(out).not.toContain('sk-must-not-leak');
-    // 白名单里的确实传下去了，否则这条用例可能只是因为命令没跑起来
+    /*
+     * 白名单里的确实传下去了，否则这条用例可能只是因为命令没跑起来。
+     *
+     * **不能断言与 `process.env.PATH` 字面相等**：Windows 上这个 `sh` 是
+     * MSYS/Git-for-Windows 的，它进入 shell 时会把 `PATH` 自己重写成 POSIX
+     * 形态（`C:\a\b` → `/c/a/b`，`;` → `:`，还会在前面插入 `/usr/bin` 等
+     * MSYS 自己的目录）——这是那个 shell 的行为，不是我们传参传错了。
+     * 这里只证明"白名单确实放行了一个非空的 PATH"，不比较具体内容。
+     */
     const printedPath = /\[.*\]\[(.*)\]/.exec(out)?.[1];
-    expect(printedPath).toBe(process.env.PATH);
+    expect(printedPath).toBeTruthy();
   });
 
   it('🔴 超时会结束进程，并且说出来', async () => {
