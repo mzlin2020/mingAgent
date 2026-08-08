@@ -58,10 +58,7 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   }));
 
   handle(CH.readSession, ReadSessionRequest, async (req) => {
-    const out = [];
-    const options = req.fromSeq === undefined ? undefined : { fromSeq: req.fromSeq };
-    for await (const e of services.stores.events.read(req.sessionId, options)) out.push(e);
-    return out;
+    return services.getSessionState(req.sessionId);
   });
 
   handle(CH.clearUntrusted, ClearUntrustedRequest, async (req) => ({

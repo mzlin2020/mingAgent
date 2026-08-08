@@ -1,8 +1,8 @@
 import { create } from 'zustand';
 import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
-import type { LiveBuffer, SessionState } from '@xm/kernel';
-import { EMPTY_LIVE, applyLive, emptySessionState, reduce } from '@xm/kernel';
+import type { LiveBuffer, SerializedSessionState, SessionState } from '@xm/kernel';
+import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kernel';
 import type {
   ApprovalMode,
   ImageAttachment,
@@ -25,8 +25,13 @@ type Status = z.infer<typeof StatusResult>;
  * 原则在 UI 上唯一成立的方式：只要 UI 自己维护一份 messages 数组，
  * 它就会和回放出来的那份慢慢分叉，而分叉的表现是刷新一下内容就变了。
  *
- * 这同时是「内核能在浏览器里跑」的运行时证据——`reduce` 在这里跑在没有 Node 的
- * 渲染进程里，一个 `node:*` 的 import 都活不下来。
+ * **每一条新事件仍然在这里过 `reduce()`**（见下面的 `applyEvent`）——这仍然是
+ * 「内核能在浏览器里跑」的运行时证据。唯一变化的是**打开会话那一刻**：以前是
+ * 拉全部历史事件自己重放一遍，现在 `readSession` 直接给一份主进程已经
+ * `reduce()` 过的状态（`deserializeSessionState()` 只做数据形状转换，不重新
+ * 判断任何东西）——docs/09 G5 实测过，几万条事件的会话在旧路径上会让两个进程
+ * 各卡几百毫秒（ADR-0032）。状态的计算位置没有变成"两处"，只是"重放全部历史"
+ * 这个动作从"每次打开会话都在渲染层做一遍"变成了"主进程本来就维护着，直接给"。
  *
  * `sessions` 列表走的是主进程的 `listSessions()` 投影，**不是回放**：
  * 为了拿几百个会话的标题去回放几百条事件流是荒唐的（ADR-0013 决策六）。
@@ -163,16 +168,16 @@ export const useUi = create<UiState>((set, get) => ({
     }
   },
 
+  /*
+   * `readSession` 现在直接返回主进程里已经 `reduce()` 过的状态（ADR-0032，修 G4/G5）
+   * ——不再是原始事件数组，这里也就不用自己重放一遍历史。`deserializeSessionState`
+   * 只做"镜像 → SessionState"这一步纯转换（Map 从 entry 数组建回来），不是第二次判断。
+   */
   openSession: async (id) => {
     // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
     set({ currentId: id, session: undefined, live: EMPTY_LIVE, error: undefined, approvalMode: 'ask' });
-    const events = await api.readSession(id);
-    let state = emptySessionState(id);
-    for (const raw of events) {
-      const e = toCoreEvent(raw);
-      if (e !== undefined && isCoreEvent(e)) state = reduce(state, e);
-    }
-    set({ session: state });
+    const serialized: SerializedSessionState = await api.readSession(id);
+    set({ session: deserializeSessionState(serialized) });
     try {
       const { mode } = await api.getApprovalMode(id);
       // 会话可能在这次 await 期间又被切走——不要用一个旧会话的模式覆盖当前会话

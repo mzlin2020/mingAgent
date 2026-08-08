@@ -8,7 +8,7 @@ import { StoreVersionError } from '@xm/kernel';
  * 而那时库里已经有真实数据了。现在只有一条，结构却已经定死。
  */
 
-export const SUPPORTED_STORE_VERSION = 1;
+export const SUPPORTED_STORE_VERSION = 2;
 
 interface Migration {
   readonly to: number;
@@ -59,6 +59,22 @@ const MIGRATIONS: readonly Migration[] = [
         pid         INTEGER NOT NULL,
         instance_id TEXT    NOT NULL,
         acquired_at INTEGER NOT NULL
+      );
+    `,
+  },
+  {
+    to: 2,
+    sql: `
+      -- 会话状态快照（ADR-0032，修 G4 会话回放超线性 / G5 IPC 全量物化）。
+      -- **纯派生数据**：坏了、删了、这张表整个清空，都可以从 events 表重新
+      -- reduceAll 出来——它不是事件溯源的"唯一事实来源"的例外，只是一个
+      -- 缓存。每个会话只留最新一份（PRIMARY KEY 是 session_id 本身，
+      -- 不是 (session_id, seq)），旧快照没有独立价值。
+      CREATE TABLE snapshots (
+        session_id TEXT PRIMARY KEY,
+        seq        INTEGER NOT NULL,
+        state_json TEXT    NOT NULL,
+        created_at INTEGER NOT NULL
       );
     `,
   },

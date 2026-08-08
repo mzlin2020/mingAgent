@@ -1,5 +1,12 @@
 import type { PersistedEvent, SessionId } from '@xm/contracts';
-import type { EventStore, ReadOptions, SealedEvent, SessionSummary, SessionWriter } from './event-store.js';
+import type {
+  EventStore,
+  ReadOptions,
+  SealedEvent,
+  SessionSummary,
+  SessionWriter,
+  StateSnapshot,
+} from './event-store.js';
 import { SeqConflictError, WriteLeaseError } from './event-store.js';
 import { applyToSummary, buildSummary, initialSummary } from './summary-projection.js';
 
@@ -21,6 +28,7 @@ interface Cell {
 export class MemoryEventStore implements EventStore {
   readonly #cells = new Map<SessionId, Cell>();
   readonly #leases = new Set<SessionId>();
+  readonly #snapshots = new Map<SessionId, StateSnapshot>();
 
   // eslint-disable-next-line @typescript-eslint/require-await
   async listSessions(): Promise<readonly SessionSummary[]> {
@@ -111,6 +119,16 @@ export class MemoryEventStore implements EventStore {
     for (const [sessionId, cell] of this.#cells) {
       cell.summary = buildSummary(sessionId, cell.events);
     }
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async readSnapshot(sessionId: SessionId): Promise<StateSnapshot | undefined> {
+    return this.#snapshots.get(sessionId);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async writeSnapshot(sessionId: SessionId, snapshot: StateSnapshot): Promise<void> {
+    this.#snapshots.set(sessionId, snapshot);
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await

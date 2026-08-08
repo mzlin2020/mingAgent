@@ -2,8 +2,21 @@ import { app, safeStorage } from 'electron';
 import { join } from 'node:path';
 import type { BlobRef, Config, ContentBlock, RequestId, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
-import type { ModelProvider, PlatformPort, RuleLayer, SecretBackend, SecretStore } from '@xm/kernel';
-import { ToolRegistry, composeRules, policyEnvFromPaths, readBlob as readBlobBytes } from '@xm/kernel';
+import type {
+  ModelProvider,
+  PlatformPort,
+  RuleLayer,
+  SecretBackend,
+  SecretStore,
+  SerializedSessionState,
+} from '@xm/kernel';
+import {
+  ToolRegistry,
+  composeRules,
+  policyEnvFromPaths,
+  readBlob as readBlobBytes,
+  serializeSessionState,
+} from '@xm/kernel';
 import type { ConfigProblem } from '@xm/platform';
 import {
   appendUserRule,
@@ -61,6 +74,14 @@ export interface Services {
   ): Promise<string>;
   /** 按 `BlobRef` 反查图片字节，编成 data URL。渲染层此前从未反查过 blob 内容 */
   readBlob(ref: BlobRef): Promise<string>;
+  /**
+   * 会话当前状态的可过 IPC 镜像（ADR-0032，修 G4/G5）。
+   *
+   * 直接把 `runtimeFor()` 缓存的 `SessionRuntime.state` 序列化过去——**不**重新
+   * 读一遍事件流。主进程本来就要维护这份已经 `reduce()` 过的状态，让渲染层
+   * 拿现成的，比让它自己重放一遍全部历史（旧行为）省掉一整趟 IPC 全量物化。
+   */
+  getSessionState(sessionId: SessionId): Promise<SerializedSessionState>;
   /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
@@ -386,6 +407,11 @@ export async function startServices(): Promise<Services> {
     async readBlob(ref: BlobRef): Promise<string> {
       const bytes = await readBlobBytes(stores.blobs, ref);
       return `data:${ref.mime};base64,${Buffer.from(bytes).toString('base64')}`;
+    },
+
+    async getSessionState(sessionId: SessionId): Promise<SerializedSessionState> {
+      const runtime = await runtimeFor(sessionId);
+      return serializeSessionState(runtime.state);
     },
 
     /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { newSessionId } from '@xm/contracts';
+import { newCallId, newPtySessionId, newSessionId } from '@xm/contracts';
+import { emptySessionState, serializeSessionState } from '@xm/kernel';
 import { CH } from '../src/shared/channels.js';
 import {
   CreateSessionRequest,
@@ -12,6 +13,7 @@ import {
   ReadBlobRequest,
   ReadBlobResult,
   ReadSessionRequest,
+  ReadSessionResult,
   SendUserMessageRequest,
   SetApprovalModeRequest,
   SetApprovalModeResult,
@@ -54,11 +56,47 @@ describe('主进程不信任渲染层送上来的东西', () => {
       .toBe(true);
   });
 
-  it('fromSeq 必须是正整数（seq 从 1 起，无空洞）', () => {
+  /*
+   * `fromSeq` 在 ADR-0032 之前是这个请求的字段——`readSession` 那时还是"给我
+   * 从某条 seq 起的原始事件"。现在它直接返回主进程已经 reduce 过的状态（修
+   * G4/G5：不再要求渲染层自己重放全部历史），这个字段就没有消费者了，干脆删掉
+   * 而不是留一个没人读的参数——那正是这个项目反复栽过的"写了但没有执行点"
+   * 的形状。这条测试改成确认它现在会被 `strictObject` 当幻觉字段拒绝。
+   */
+  it('🔴 readSession 不再接受 fromSeq —— 它已经不返回原始事件，这个字段没有消费者', () => {
     const sessionId = newSessionId();
-    expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 0 }).success).toBe(false);
-    expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 1.5 }).success).toBe(false);
-    expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 1 }).success).toBe(true);
+    expect(ReadSessionRequest.safeParse({ sessionId }).success).toBe(true);
+    expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 1 }).success).toBe(false);
+  });
+});
+
+describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/G5）', () => {
+  it('空会话的序列化状态能通过渲染层这一侧的校验', () => {
+    const sessionId = newSessionId();
+    const serialized = serializeSessionState(emptySessionState(sessionId));
+    expect(ReadSessionResult.safeParse(serialized).success).toBe(true);
+  });
+
+  it('带着未清空 Map（runningCalls/ptySessions）的状态也能通过——这正是快照要处理的形状', () => {
+    const sessionId = newSessionId();
+    const state = {
+      ...emptySessionState(sessionId),
+      runningCalls: new Map([[newCallId(), { callId: newCallId(), name: 'fs.read', startedAt: 1 }]]),
+      ptySessions: new Map([
+        [newPtySessionId(), { ptySessionId: newPtySessionId(), cwd: '/w', startedAt: 1 }],
+      ]),
+    };
+    const result = ReadSessionResult.safeParse(serializeSessionState(state));
+    expect(result.success).toBe(true);
+  });
+
+  it('🔴 过一趟 IPC 会用到的 structuredClone 之后仍能通过校验（不是只测 JSON 序列化）', () => {
+    const sessionId = newSessionId();
+    const serialized = serializeSessionState(emptySessionState(sessionId));
+    // Electron 的 IPC 走结构化克隆，不是 JSON；Node 的 structuredClone 是同一族算法，
+    // 用它模拟"数据真的跨了一次进程边界"比只 JSON.stringify/parse 更接近真实路径。
+    const cloned: unknown = structuredClone(serialized);
+    expect(ReadSessionResult.safeParse(cloned).success).toBe(true);
   });
 });
 

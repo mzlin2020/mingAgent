@@ -1,5 +1,6 @@
 import type { PersistedEvent, SessionId } from '@xm/contracts';
 import { XmEvent, isPersistedEvent, redact } from '@xm/contracts';
+import type { SerializedSessionState } from '../state/snapshot.js';
 
 /**
  * 事件存储端口（ADR-0013）。
@@ -37,6 +38,13 @@ import { XmEvent, isPersistedEvent, redact } from '@xm/contracts';
  * **七、blob 先于引用它的事件落盘。** 事件里只放 `BlobRef`，若引用先于内容持久化，
  * 崩溃后就会留下指向不存在内容的事件——而事件是不可变的，这种坏引用永远修不掉。
  * `BlobStore` 端口另行定义（M0-b），但这条顺序约束现在就成立。
+ *
+ * **八、快照是可选的加速手段，绝不是第二个事实来源（ADR-0032，修 G4/G5）。**
+ * `readSnapshot` 找不到、读不出、或者实现方干脆不存这张表，一律返回 `undefined`——
+ * 调用方据此回退到从 seq 1 全量回放，这条回退路径必须永远正确，因为它就是
+ * "没有快照机制"那个世界本来的样子。`writeSnapshot` 只需要保留"最新一份"就满足
+ * 契约：旧快照没有任何独立价值，它能表达的一切都已经在事件流里，删了随时能从
+ * 事件流重建。
  */
 
 // ── 已脱敏的事件 ────────────────────────────────────────────────
@@ -99,6 +107,15 @@ export interface ReadOptions {
 }
 
 /**
+ * 一份会话状态快照（ADR-0032）——`seq` 是这份状态对应的 `SessionState.lastSeq`，
+ * 调用方从 `seq + 1` 起补读尾部事件即可拿到当前状态，不用从 1 全量回放。
+ */
+export interface StateSnapshot {
+  readonly seq: number;
+  readonly state: SerializedSessionState;
+}
+
+/**
  * 单写者句柄。持有它 = 持有该会话的排他标记。
  *
  * 刻意不把 `append` 直接挂在 `EventStore` 上：那样每次追加都得重新证明自己是唯一写者，
@@ -151,6 +168,15 @@ export interface EventStore {
 
   /** 从事件流重建会话摘要投影。投影损坏或加了新字段时用。 */
   rebuildSummaries(): Promise<void>;
+
+  /**
+   * 读取会话的最新快照（不变量八）。没有就返回 `undefined`——**不抛**，
+   * 语义与 `read()` 对不存在会话的处理一致："没有快照"不是错误。
+   */
+  readSnapshot(sessionId: SessionId): Promise<StateSnapshot | undefined>;
+
+  /** 写一份快照，覆盖同一会话此前的快照（不变量八）。 */
+  writeSnapshot(sessionId: SessionId, snapshot: StateSnapshot): Promise<void>;
 
   close(): Promise<void>;
 }

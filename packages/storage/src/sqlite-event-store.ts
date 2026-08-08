@@ -8,8 +8,10 @@ import type {
   EventStore,
   ReadOptions,
   SealedEvent,
+  SerializedSessionState,
   SessionSummary,
   SessionWriter,
+  StateSnapshot,
 } from '@xm/kernel';
 import { SeqConflictError, WriteLeaseError, applyToSummary, initialSummary } from '@xm/kernel';
 import { migrate } from './schema.js';
@@ -79,6 +81,13 @@ interface LeaseRow {
   acquired_at: number;
 }
 
+interface SnapshotRow {
+  session_id: string;
+  seq: number;
+  state_json: string;
+  created_at: number;
+}
+
 interface Statements {
   readonly selectSession: Statement;
   readonly upsertSession: Statement;
@@ -88,6 +97,8 @@ interface Statements {
   readonly selectLease: Statement;
   readonly putLease: Statement;
   readonly dropLease: Statement;
+  readonly selectSnapshot: Statement;
+  readonly upsertSnapshot: Statement;
 }
 
 export class SqliteEventStore implements EventStore {
@@ -167,6 +178,15 @@ export class SqliteEventStore implements EventStore {
         VALUES (?, ?, ?, ?)
       `),
       dropLease: this.#db.prepare(`DELETE FROM write_leases WHERE session_id = ?`),
+      selectSnapshot: this.#db.prepare(`SELECT * FROM snapshots WHERE session_id = ?`),
+      upsertSnapshot: this.#db.prepare(`
+        INSERT INTO snapshots (session_id, seq, state_json, created_at)
+        VALUES (@session_id, @seq, @state_json, @created_at)
+        ON CONFLICT(session_id) DO UPDATE SET
+          seq = excluded.seq,
+          state_json = excluded.state_json,
+          created_at = excluded.created_at
+      `),
     };
   }
 
@@ -247,6 +267,34 @@ export class SqliteEventStore implements EventStore {
     this.#db.transaction(() => {
       for (const s of rebuilt) this.#st.upsertSession.run(toRow(s));
     })();
+  }
+
+  /**
+   * 读快照（不变量八）。**不做任何 schema 校验**——`state_json` 的形状由
+   * `SerializedSessionState` 的写入方保证，读出来直接当它可信；真正的校验
+   * 发生在调用方拿它 `deserializeSessionState()` 之后再喂给 `reduce()` 的
+   * 尾部事件上（那些事件仍然走 `parseStoredEvent`）。这与 `toEvent()` 对
+   * `payload_json` 的处理刻意不同：快照坏了的后果是"回退到全量回放"，
+   * 不是"用错误的状态误导用户"，代价小得多，不值得为它单独定义一份
+   * `SerializedSessionState` 的 zod schema。
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async readSnapshot(sessionId: SessionId): Promise<StateSnapshot | undefined> {
+    this.#assertOpen();
+    const row = this.#st.selectSnapshot.get(sessionId) as SnapshotRow | undefined;
+    if (row === undefined) return undefined;
+    return { seq: row.seq, state: JSON.parse(row.state_json) as SerializedSessionState };
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async writeSnapshot(sessionId: SessionId, snapshot: StateSnapshot): Promise<void> {
+    this.#assertOpen();
+    this.#st.upsertSnapshot.run({
+      session_id: sessionId,
+      seq: snapshot.seq,
+      state_json: JSON.stringify(snapshot.state),
+      created_at: Date.now(),
+    });
   }
 
   close(): Promise<void> {

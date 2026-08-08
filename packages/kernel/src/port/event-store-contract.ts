@@ -1,5 +1,7 @@
 import type { PersistedEvent, SessionId, XmEventType } from '@xm/contracts';
 import { createEvent, newSessionId } from '@xm/contracts';
+import { emptySessionState } from '../state/session-state.js';
+import { serializeSessionState } from '../state/snapshot.js';
 import type { EventStore, SealedEvent } from './event-store.js';
 import { SeqConflictError, WriteLeaseError, sealEvent } from './event-store.js';
 
@@ -271,6 +273,60 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
         JSON.stringify(before) === JSON.stringify(after),
         '重建出的摘要必须与增量维护的完全一致，否则两条路径已经分叉',
       );
+    },
+  },
+
+  {
+    name: '快照（ADR-0032）：没有时 readSnapshot 返回 undefined，不抛',
+    async run(makeStore) {
+      const store = makeStore();
+      const s = newSessionId();
+      const w = await store.openForWrite(s);
+      await w.append([created(s)]);
+      assert((await store.readSnapshot(s)) === undefined, '从未写过快照应返回 undefined');
+    },
+  },
+
+  {
+    name: '快照（ADR-0032）：写入后能原样读回',
+    async run(makeStore) {
+      const store = makeStore();
+      const s = newSessionId();
+      const w = await store.openForWrite(s);
+      await w.append([created(s)]);
+
+      const state = serializeSessionState({ ...emptySessionState(s), title: '写快照那一刻', lastSeq: 1 });
+      await store.writeSnapshot(s, { seq: 1, state });
+
+      const back = await store.readSnapshot(s);
+      assert(back !== undefined, '写入后应该能读到');
+      assert(back.seq === 1, `快照 seq 应为 1，实际 ${String(back.seq)}`);
+      assert(
+        JSON.stringify(back.state) === JSON.stringify(state),
+        '读回的快照内容应与写入完全一致',
+      );
+    },
+  },
+
+  {
+    name: '快照（ADR-0032）：再次写入覆盖旧快照，只保留最新一份',
+    async run(makeStore) {
+      const store = makeStore();
+      const s = newSessionId();
+      const w = await store.openForWrite(s);
+      await w.append([created(s), notice(s, 2)]);
+
+      await store.writeSnapshot(s, {
+        seq: 1,
+        state: serializeSessionState({ ...emptySessionState(s), lastSeq: 1 }),
+      });
+      await store.writeSnapshot(s, {
+        seq: 2,
+        state: serializeSessionState({ ...emptySessionState(s), lastSeq: 2 }),
+      });
+
+      const back = await store.readSnapshot(s);
+      assert(back?.seq === 2, `应该只保留最新一份（seq=2），实际 ${String(back?.seq)}`);
     },
   },
 

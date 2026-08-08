@@ -8,8 +8,24 @@ import type {
 } from '@xm/contracts';
 import { createEvent, isPersistedType } from '@xm/contracts';
 import type { EventStore, SessionState, SessionWriter } from '@xm/kernel';
-import { emptySessionState, nextSeq, reduce, sealEvent } from '@xm/kernel';
+import {
+  deserializeSessionState,
+  emptySessionState,
+  nextSeq,
+  reduce,
+  sealEvent,
+  serializeSessionState,
+} from '@xm/kernel';
 import type { EventBus } from './event-bus.js';
+
+/**
+ * 每写入这么多条持久事件就存一份状态快照（ADR-0032，修 G4）。
+ *
+ * 与 `SqliteEventStore` 分页读取的 `READ_PAGE`（500）取同一个数量级不是巧合：
+ * 快照命中之后最多补读一页，回放成本从"随全部历史线性增长、且因为每条
+ * `message.end` 都整段拷贝 `messages` 数组而实际超线性"降到"一个有界常数"。
+ */
+const SNAPSHOT_INTERVAL = 500;
 
 /**
  * 一个会话的运行时：**全系统唯一分配 `seq` 的地方**。
@@ -33,6 +49,10 @@ export class SessionRuntime {
 
   #state: SessionState;
   #closed = false;
+  /** 上一份快照对应的 `lastSeq`；开会话时没有快照就是 0（等同于"从没存过"）。 */
+  #lastSnapshotSeq: number;
+  /** 防重入闸门，见 `#maybeSnapshot()` 顶部注释 */
+  #snapshotting = false;
 
   private constructor(
     sessionId: SessionId,
@@ -41,6 +61,7 @@ export class SessionRuntime {
     writer: SessionWriter,
     state: SessionState,
     now: () => number,
+    lastSnapshotSeq: number,
   ) {
     this.sessionId = sessionId;
     this.#store = store;
@@ -48,13 +69,15 @@ export class SessionRuntime {
     this.#writer = writer;
     this.#state = state;
     this.#now = now;
+    this.#lastSnapshotSeq = lastSnapshotSeq;
   }
 
   /**
-   * 打开会话：取写句柄 → 回放事件流重建状态。
+   * 打开会话：取写句柄 → 读快照（若有）→ 只回放快照之后的尾部事件（ADR-0032，修 G4）。
    *
-   * 回放用 `for await`，一条一条过 `reduce`，全程不物化整个数组——这正是端口把
-   * `read()` 定成 `AsyncIterable` 的用途，别在这里 `toArray()` 图省事。
+   * 没有快照（新会话、老库还没升级过、快照写失败过）时**回退到原来的全量回放**——
+   * 这条回退路径必须永远正确，因为它就是"没有快照机制"那个世界本来的样子
+   * （端口不变量八）。回放依然用 `for await`，一条一条过 `reduce`，不物化整个数组。
    */
   static async open(options: {
     readonly sessionId: SessionId;
@@ -65,10 +88,20 @@ export class SessionRuntime {
     const { sessionId, store, bus } = options;
     const writer = await store.openForWrite(sessionId);
 
-    let state = emptySessionState(sessionId);
-    for await (const e of store.read(sessionId)) state = reduce(state, e);
+    const snapshot = await store.readSnapshot(sessionId);
+    let state = snapshot === undefined ? emptySessionState(sessionId) : deserializeSessionState(snapshot.state);
+    const readOptions = snapshot === undefined ? undefined : { fromSeq: snapshot.seq + 1 };
+    for await (const e of store.read(sessionId, readOptions)) state = reduce(state, e);
 
-    return new SessionRuntime(sessionId, store, bus, writer, state, options.now ?? Date.now);
+    return new SessionRuntime(
+      sessionId,
+      store,
+      bus,
+      writer,
+      state,
+      options.now ?? Date.now,
+      snapshot?.seq ?? 0,
+    );
   }
 
   get state(): SessionState {
@@ -111,7 +144,51 @@ export class SessionRuntime {
 
     this.#state = reduce(this.#state, event);
     this.#bus.publish(event);
+
+    if (persisted) await this.#maybeSnapshot();
+
     return event;
+  }
+
+  /**
+   * 每隔 `SNAPSHOT_INTERVAL` 条持久事件存一份快照。
+   *
+   * **快照写失败不向上抛。** 事件已经落库成功——这一步只是加速下一次 `open()`
+   * 的手段（端口不变量八），失败的后果顶多是"下次多回放一段"，不该让它反过来
+   * 拖垮已经成功的写入路径。失败会记一条 `notice.posted`——内核与运行时不做
+   * 控制台输出（`eslint.config.js` 的 `no-console`，日志走事件流），用户能在
+   * UI 里看到这条提示，不是只有开发者盯着终端才知道。
+   *
+   * `#snapshotting` 是防重入闸门：上面那条 `notice.posted` 本身也是持久事件，
+   * 会经同一个 `record()` 再触发一次 `#maybeSnapshot()`——若不挡住，一次真实
+   * 失败会变成"发通知→再次触发→再失败→再发通知"的无限递归。挡住之后，
+   * 下一次真正的新事件到来时会正常重试，不会永远卡死在失败状态。
+   */
+  async #maybeSnapshot(): Promise<void> {
+    if (this.#snapshotting) return;
+    if (this.#state.lastSeq - this.#lastSnapshotSeq < SNAPSHOT_INTERVAL) return;
+
+    this.#snapshotting = true;
+    try {
+      const seq = this.#state.lastSeq;
+      try {
+        await this.#store.writeSnapshot(this.sessionId, { seq, state: serializeSessionState(this.#state) });
+        this.#lastSnapshotSeq = seq;
+      } catch (err) {
+        await this.record({
+          type: 'notice.posted',
+          payload: {
+            level: 'warn',
+            code: 'snapshot_write_failed',
+            message: `会话状态快照写入失败（不影响已保存的事件，下次打开会话会多回放一段）：${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          },
+        });
+      }
+    } finally {
+      this.#snapshotting = false;
+    }
   }
 
   /**
