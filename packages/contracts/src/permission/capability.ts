@@ -12,6 +12,7 @@ export const Capability = z.enum([
   'fs.write',
   'fs.delete',
   'shell.exec',
+  'shell.session',
   'process.spawn',
   'net.fetch',
   'net.listen',
@@ -47,6 +48,15 @@ export const IRREVERSIBLE_CAPABILITIES: readonly Capability[] = [
   'package.install',
   'system.settings',
   'plugin.install',
+  /*
+   * `shell.exec` 不在这张表里，因为它的内容会被 `analyzeArgv`（ADR-0026）拆成更细的
+   * claim（`fs.delete`/`net.fetch`/…），真正不可逆的部分由那些 claim 自己标记。
+   * `shell.session`（ADR-0031）刻意**不**做这种拆解——打开会话时的粗粒度 ask 是唯一
+   * 判断点，write/resize/close 声明空能力集，此后完全不再判权。如果不把它算进这张表，
+   * 提示词注入降级（ADR-0003/0017）在 PTY 这条路径上就形同虚设：会话被读入过不可信
+   * 内容后，"打开一个能做任何事的终端"这个操作反而不会被降级。
+   */
+  'shell.session',
 ];
 
 export const isIrreversible = (c: Capability): boolean => IRREVERSIBLE_CAPABILITIES.includes(c);
@@ -78,6 +88,11 @@ export const UNTRUSTED_CONTENT_CAPABILITIES: readonly Capability[] = [
   'net.fetch',
   'browser.control',
   'gui.capture',
+  /*
+   * 终端里 `curl`/`cat` 之类回显的内容，一旦被模型读回上下文，与 `net.fetch` 拿回来的
+   * 是同一段潜在攻击载荷，只是换了条路进来（ADR-0031）。
+   */
+  'shell.session',
 ];
 
 export const isUntrustedContentSource = (c: Capability): boolean =>
@@ -118,6 +133,12 @@ const TARGET_KINDS: Readonly<Record<Capability, TargetKind>> = {
 
   'shell.exec': 'command',
   'process.spawn': 'command',
+
+  /*
+   * `shell.session` 的 target 是打开会话时的 cwd，不是命令行——它复用路径类的既有
+   * 规范化/红线管道来判"在哪打开"，但不覆盖"打开后敲了什么"（ADR-0031，判权设计②）。
+   */
+  'shell.session': 'path',
 
   /*
    * `net.listen` 刻意**不是** host。它的 target 是本机的绑定地址（`0.0.0.0:8080`），

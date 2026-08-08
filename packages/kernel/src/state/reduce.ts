@@ -23,6 +23,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     // ── 瞬态：空操作。改这里之前先读上面第 2 条 ──────────────────
     case 'message.delta':
     case 'tool.progress':
+    case 'shell.session.output':
       return state;
 
     // ── 会话 ────────────────────────────────────────────────
@@ -143,6 +144,23 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         messages: appendToolResult(state.messages, block, e.id as unknown as MessageId, e.ts),
         lastSeq: e.seq,
       };
+    }
+
+    // ── PTY 会话（ADR-0031）─────────────────────────────────
+    case 'shell.session.opened': {
+      const sessions = new Map(state.ptySessions);
+      sessions.set(e.payload.ptySessionId, {
+        ptySessionId: e.payload.ptySessionId,
+        cwd: e.payload.cwd,
+        startedAt: e.ts,
+      });
+      return { ...state, ptySessions: sessions, lastSeq: e.seq };
+    }
+
+    case 'shell.session.closed': {
+      const sessions = new Map(state.ptySessions);
+      sessions.delete(e.payload.ptySessionId);
+      return { ...state, ptySessions: sessions, lastSeq: e.seq };
     }
 
     // ── 权限 ────────────────────────────────────────────────

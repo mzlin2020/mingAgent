@@ -398,6 +398,7 @@ const CAPABILITY_LABELS: Readonly<Record<Capability, string>> = {
   'fs.write': '写入文件',
   'fs.delete': '删除文件',
   'shell.exec': '执行命令',
+  'shell.session': '打开交互式终端',
   'process.spawn': '启动进程',
   'net.fetch': '访问网络',
   'net.listen': '监听端口',

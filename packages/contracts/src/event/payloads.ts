@@ -6,6 +6,7 @@ import {
   CallId,
   CheckpointId,
   MessageId,
+  PtySessionId,
   RequestId,
   SessionId,
   TurnId,
@@ -126,6 +127,46 @@ export const ToolEndPayload = z.looseObject({
   fullRef: BlobRef.optional(),
   display: DisplayHint.optional(),
   error: XmError.optional(),
+});
+
+// ── PTY 会话（ADR-0031）───────────────────────────────────────────
+//
+// 三元组仿照 message.start/delta/end、tool.start/progress/end 的既有形状，但键是
+// `ptySessionId`，不是 `callId`——PTY 的生命周期跨越 `shell.session.open` 这一次
+// 调用之后（那次调用本身很快返回 `{ptySessionId}`，会话本体持续存在到 close 为止），
+// 不能挂在任何单次调用的 tool.start/tool.end 之间。
+
+export const ShellSessionOpenedPayload = z.looseObject({
+  ptySessionId: PtySessionId,
+  /** 已规范化的绝对路径（判权用的同一个值，见 ToolGateway 的"判定与执行共用一份"原则）*/
+  cwd: z.string(),
+  cols: z.number().int().positive(),
+  rows: z.number().int().positive(),
+});
+
+/**
+ * [T] 瞬态：终端输出的字节块，跟 `message.delta` 一样不落库、不做语义截断。
+ * 高频输出（如 `top`、日志洪水）可能丢帧——本项目暂不为它做背压（docs/09 C7 问题 5）。
+ */
+export const ShellSessionOutputPayload = z.looseObject({
+  ptySessionId: PtySessionId,
+  /** 一段终端字节，utf8 文本（PTY 已经做过行终止符规整） */
+  chunk: z.string(),
+});
+
+export const ShellSessionClosedPayload = z.looseObject({
+  ptySessionId: PtySessionId,
+  exitCode: z.number().int().optional(),
+  reason: z.enum(['exited', 'killed', 'idle_timeout']),
+  /**
+   * 截断后的回放尾巴（定长环形缓冲，超限直接丢弃更早的内容）。
+   *
+   * `shell-exec.ts` 的 `MAX_OUTPUT_BYTES` 截断 + blob 落盘超限部分那一套本轮**没有**
+   * 照搬——那需要接入 blob 存储，而 v1 的目标是先把会话跑起来。这里先只保证"审计能看到
+   * 最后一段"，完整无损回放留给以后要做的时候再加（加一个可选的 `tailRef` 字段，
+   * 按 ADR-0008 的演进规则不需要动 version）。
+   */
+  tail: z.string(),
 });
 
 // ── 权限 ──────────────────────────────────────────────────────────

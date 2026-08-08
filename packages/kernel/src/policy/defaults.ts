@@ -287,6 +287,19 @@ export const BALANCED_DEFAULT_RULES: readonly PolicyRule[] = [
     immutable: false,
   },
   {
+    /*
+     * `shell.session`（ADR-0031）只在打开会话这一刻判权一次——`write`/`resize`/
+     * `close` 声明空能力集，不会再次撞到这条或任何其它规则。这条 ask 因此承担的
+     * 分量比 `def.shell-exec` 重得多：同意一次，就等于对这个会话生命周期内的
+     * 一切输入放弃逐条判断（红线与 deny 都不再有 claim 可判）。
+     */
+    id: 'def.shell-session',
+    effect: 'ask',
+    capability: 'shell.session',
+    reason: '打开一个交互式终端；此后在里面输入的内容不再逐条判权',
+    immutable: false,
+  },
+  {
     id: 'def.git-write',
     effect: 'ask',
     capability: 'git.write',

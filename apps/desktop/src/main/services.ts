@@ -25,7 +25,7 @@ import {
   fakeDeleteTool,
   runTurn,
 } from '@xm/runtime';
-import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
+import { PtySessionManager, coreTools, nodeCheckpointer, nodeToolGateway, shellSessionTools } from '@xm/tools-core';
 import type { ApprovalMode, ImageAttachment } from '../shared/ipc.js';
 import { ApprovalModeStore, TIER_OF } from './approval-mode.js';
 import { decodeImageAttachment } from './multimodal-input.js';
@@ -189,6 +189,26 @@ export async function startServices(): Promise<Services> {
     runtimes.set(sessionId, created);
     return created;
   };
+
+  /**
+   * PTY 会话（`shell.session`，ADR-0031）。全应用共享一个实例，按 `xmSessionId`
+   * 分区——与 `ApprovalModeStore` 同一个形状，理由见 `pty-session.ts` 顶部注释。
+   *
+   * `emit` 只管把事实转成一次 `SessionRuntime.record()`，不关心持久化/广播怎么做——
+   * 那是 `record()` 自己的事，manager 不重复一份判断。record 失败（会话已关闭之类）
+   * 只记日志，不让一次输出块的写入失败拖垮整个 PTY 会话。
+   */
+  const ptySessions = new PtySessionManager({
+    os: platform.os,
+    emit: (sessionId, event) => {
+      runtimeFor(sessionId)
+        .then((runtime) => runtime.record(event))
+        .catch((err: unknown) => {
+          console.error('写入 shell.session 事件失败：', err);
+        });
+    },
+  });
+  for (const t of shellSessionTools(ptySessions)) tools.register(t);
 
   const modelRef = (): { provider: string; model: string } => parseModelRef(config.model.main);
 
@@ -457,6 +477,8 @@ export async function startServices(): Promise<Services> {
       denyAllPending();
       for (const controller of running.values()) controller.abort();
       running.clear();
+      // 应用关闭前先收尾所有还开着的 PTY——不等它们的空闲超时，进程不该在小明退出后还挂着
+      ptySessions.disposeAll();
       for (const runtime of runtimes.values()) await runtime.close();
       runtimes.clear();
       await stores.close();

@@ -202,6 +202,49 @@ describe('🔴 在途缓冲：工具进度', () => {
   });
 });
 
+/**
+ * ── PTY 会话：满足同一条判据，但归零时机又不一样 ──
+ *
+ * `message`/`calls` 都是"随本轮结束事件归零"，PTY 会话不是——它本来就是"打开一次、
+ * 跨越多个 turn 持续存在"的东西（ADR-0031），`turn.end` 不该把它冲掉。
+ */
+describe('🔴 在途缓冲：PTY 会话（ADR-0031）', () => {
+  const ptySessionId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' as never;
+
+  const opened = (cwd = '/w'): XmEvent => ev('shell.session.opened', { ptySessionId, cwd, cols: 80, rows: 24 });
+  const output = (chunk: string): XmEvent => ev('shell.session.output', { ptySessionId, chunk }, false);
+  const closed = (): XmEvent =>
+    ev('shell.session.closed', { ptySessionId, exitCode: 0, reason: 'exited', tail: '' });
+
+  it('opened 建一条记录，output 逐块累积', () => {
+    const { live } = feed([opened(), output('$ '), output('echo hi\n'), output('hi\n')]);
+    const t = live.terminals.get(ptySessionId);
+    expect(t?.text).toBe('$ echo hi\nhi\n');
+    expect(t?.closed).toBe(false);
+  });
+
+  it('没看见 opened 就来的 output 不凭空造一条 —— 与 message.delta 同一个宽容度', () => {
+    expect(applyLive(EMPTY_LIVE, output('x')).terminals.size).toBe(0);
+  });
+
+  it('closed 只标记，不删除 —— 用户关面板前，最后的输出还应该看得见', () => {
+    const { live } = feed([opened(), output('done\n'), closed()]);
+    const t = live.terminals.get(ptySessionId);
+    expect(t?.closed).toBe(true);
+    expect(t?.text).toBe('done\n');
+  });
+
+  it('turn.end 不清 PTY 会话 —— 它跨 turn 存活，这是与 message/calls 唯一的形状差异', () => {
+    const { live } = feed([opened(), output('还在跑'), ev('turn.end', { turnId: TURN, reason: 'end_turn' })]);
+    expect(live.terminals.get(ptySessionId)?.text).toBe('还在跑');
+  });
+
+  it('shell.session.output 在 reduce 里仍然是空操作（ADR-0008）', () => {
+    const before = emptySessionState(SESSION);
+    expect(reduce(before, output('x'))).toEqual(before);
+  });
+});
+
 describe('两条线互不干扰', () => {
   it('applyLive 不碰 SessionState，reduce 不碰 buffer —— message.delta 仍然是空操作', () => {
     const id = newMessageId();

@@ -8,6 +8,7 @@ import type {
   Message,
   MessageId,
   PermissionRequest,
+  PtySessionId,
   RequestId,
   SessionId,
   Todo,
@@ -68,6 +69,7 @@ export interface SessionState {
   /** turn.end 时仍在 runningCalls 里的调用 —— 崩溃恢复时它们要被标记为中断 */
   readonly interruptedCalls: readonly RunningCall[];
   readonly runningSubagents: ReadonlyMap<AgentId, RunningSubagent>;
+  readonly ptySessions: ReadonlyMap<PtySessionId, OpenPtySession>;
 
   /** 会话级配置覆盖的累积结果 */
   readonly config: ConfigPatch;
@@ -130,6 +132,20 @@ export interface RunningSubagent {
   readonly startedAt: number;
 }
 
+/**
+ * 一个仍处于打开状态的 PTY 会话（`shell.session`，ADR-0031）。
+ *
+ * 只记回放/审计需要的信息——**不是**活的进程句柄，那个只存在于运行时的
+ * `PtySessionManager` 里（内核零 I/O）。它存在的理由和 `runningCalls` 一样：
+ * 回放事件流得到的状态必须能看出"这个会话当时是开着的"，而不是要等到看完
+ * `shell.session.closed` 才知道。
+ */
+export interface OpenPtySession {
+  readonly ptySessionId: PtySessionId;
+  readonly cwd: string;
+  readonly startedAt: number;
+}
+
 export interface UsageTotals {
   readonly usage: Usage;
   readonly costUsd: number;
@@ -186,6 +202,7 @@ export const emptySessionState = (id: SessionId): SessionState => ({
   runningCalls: new Map(),
   interruptedCalls: [],
   runningSubagents: new Map(),
+  ptySessions: new Map(),
   config: {},
   usage: { usage: EMPTY_USAGE, costUsd: 0, turns: 0, unpricedTurns: 0 },
   compactions: [],

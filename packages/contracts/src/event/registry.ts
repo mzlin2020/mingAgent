@@ -48,6 +48,23 @@ export const EVENT_SPECS = {
   'tool.progress': { schema: P.ToolProgressPayload, durability: 'transient', version: 1 },
   'tool.end': { schema: P.ToolEndPayload, durability: 'persisted', version: 1 },
 
+  // ── PTY 会话（ADR-0031）── 键是 ptySessionId，跨越单次调用生命周期，见 payloads.ts
+  'shell.session.opened': {
+    schema: P.ShellSessionOpenedPayload,
+    durability: 'persisted',
+    version: 1,
+  },
+  'shell.session.output': {
+    schema: P.ShellSessionOutputPayload,
+    durability: 'transient',
+    version: 1,
+  },
+  'shell.session.closed': {
+    schema: P.ShellSessionClosedPayload,
+    durability: 'persisted',
+    version: 1,
+  },
+
   // ── 权限 ──
   'permission.request': { schema: P.PermissionRequestPayload, durability: 'persisted', version: 1 },
   'permission.decision': {

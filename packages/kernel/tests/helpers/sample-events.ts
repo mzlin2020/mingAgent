@@ -8,6 +8,7 @@ import {
   newCheckpointId,
   newEventId,
   newMessageId,
+  newPtySessionId,
   newRequestId,
   newSessionId,
   newTurnId,
@@ -29,6 +30,7 @@ export function sampleEvents(): XmEvent[] {
   const requestId = newRequestId();
   const agentId = newAgentId();
   const checkpointId = newCheckpointId();
+  const ptySessionId = newPtySessionId();
   const blob = {
     hash: 'a'.repeat(64),
     mime: 'text/plain',
@@ -73,6 +75,15 @@ export function sampleEvents(): XmEvent[] {
         durationMs: 5,
         forModel: [{ type: 'text', text: '结果' }],
       },
+    },
+    {
+      type: 'shell.session.opened',
+      payload: { ptySessionId, cwd: '/w', cols: 80, rows: 24 },
+    },
+    { type: 'shell.session.output', payload: { ptySessionId, chunk: '$ ' } },
+    {
+      type: 'shell.session.closed',
+      payload: { ptySessionId, exitCode: 0, reason: 'exited', tail: '$ ' },
     },
     {
       type: 'permission.request',
@@ -150,7 +161,10 @@ export function sampleEvents(): XmEvent[] {
       id: newEventId(),
       sessionId,
       // 瞬态事件不占 seq 空间（见 kernel/state/reduce.ts）
-      seq: r.type === 'message.delta' || r.type === 'tool.progress' ? Math.max(seq, 1) : ++seq,
+      seq:
+        r.type === 'message.delta' || r.type === 'tool.progress' || r.type === 'shell.session.output'
+          ? Math.max(seq, 1)
+          : ++seq,
       ts: 1_754_300_000_000 + seq,
       turnId,
       type: r.type,

@@ -1,4 +1,4 @@
-import type { CallId, MessageId, XmEvent } from '@xm/contracts';
+import type { CallId, MessageId, PtySessionId, XmEvent } from '@xm/contracts';
 
 /**
  * 在途缓冲 —— **不是** `SessionState` 的一部分（ADR-0021）。
@@ -47,6 +47,24 @@ export interface LiveBuffer {
   readonly message: LiveMessage | undefined;
   /** 正在跑的工具调用 → 它最新一条进度。`tool.end` 到达即删除 */
   readonly calls: ReadonlyMap<CallId, LiveCall>;
+  /**
+   * 打开过的 PTY 会话（ADR-0031）→ 累积输出文本。**跨 turn 存活**——这是它与
+   * `message`/`calls` 唯一的形状差异：后两者的判据是"随本轮的结束事件归零"，
+   * 而 PTY 会话本来就是"打开一次、跨越多个 turn 持续存在"的东西，`turn.end`
+   * 不该把它冲掉，只有 `shell.session.closed` 才该把它标记为已结束。
+   *
+   * 全量文本、不截断——这是纯前端展示缓冲，不落库、不进 `SessionState`，
+   * 关掉面板或应用重启就没了，与 ADR-0031"只有回放尾巴 `tail` 落库"是同一件事
+   * 在两处的体现：完整实时内容只值一次性展示，不值得持久化。
+   */
+  readonly terminals: ReadonlyMap<PtySessionId, LiveTerminal>;
+}
+
+export interface LiveTerminal {
+  readonly ptySessionId: PtySessionId;
+  readonly cwd: string;
+  readonly text: string;
+  readonly closed: boolean;
 }
 
 export interface LiveMessage {
@@ -68,7 +86,7 @@ export interface LiveCall {
   readonly data: unknown;
 }
 
-export const EMPTY_LIVE: LiveBuffer = { message: undefined, calls: new Map() };
+export const EMPTY_LIVE: LiveBuffer = { message: undefined, calls: new Map(), terminals: new Map() };
 
 /**
  * 把一条事件叠进在途缓冲。**归零的时机是这个函数的全部要害。**
@@ -133,7 +151,36 @@ export function applyLive(buffer: LiveBuffer, e: XmEvent): LiveBuffer {
     }
 
     case 'turn.end':
-      return EMPTY_LIVE;
+      // terminals 特意不清——PTY 会话跨 turn 存活，见字段注释
+      return { ...EMPTY_LIVE, terminals: buffer.terminals };
+
+    case 'shell.session.opened': {
+      const terminals = new Map(buffer.terminals);
+      terminals.set(e.payload.ptySessionId, {
+        ptySessionId: e.payload.ptySessionId,
+        cwd: e.payload.cwd,
+        text: '',
+        closed: false,
+      });
+      return { ...buffer, terminals };
+    }
+
+    case 'shell.session.output': {
+      const t = buffer.terminals.get(e.payload.ptySessionId);
+      // 没看见 opened 就来的 output：与 message.delta 同一个宽容度，订阅可能中途接上
+      if (t === undefined) return buffer;
+      const terminals = new Map(buffer.terminals);
+      terminals.set(e.payload.ptySessionId, { ...t, text: t.text + e.payload.chunk });
+      return { ...buffer, terminals };
+    }
+
+    case 'shell.session.closed': {
+      const t = buffer.terminals.get(e.payload.ptySessionId);
+      if (t === undefined) return buffer;
+      const terminals = new Map(buffer.terminals);
+      terminals.set(e.payload.ptySessionId, { ...t, closed: true });
+      return { ...buffer, terminals };
+    }
 
     default:
       return buffer;

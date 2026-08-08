@@ -39,6 +39,19 @@ export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({ type: z.literal('tool.end'), payload: P.ToolEndPayload }),
 
   EventEnvelope.extend({
+    type: z.literal('shell.session.opened'),
+    payload: P.ShellSessionOpenedPayload,
+  }),
+  EventEnvelope.extend({
+    type: z.literal('shell.session.output'),
+    payload: P.ShellSessionOutputPayload,
+  }),
+  EventEnvelope.extend({
+    type: z.literal('shell.session.closed'),
+    payload: P.ShellSessionClosedPayload,
+  }),
+
+  EventEnvelope.extend({
     type: z.literal('permission.request'),
     payload: P.PermissionRequestPayload,
   }),

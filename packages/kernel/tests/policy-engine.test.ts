@@ -412,3 +412,43 @@ describe('YOLO 档的边界', () => {
     expect(ask('fs.delete', '/home/ming/work/scratch/tmp', 'yolo').effect).toBe('allow');
   });
 });
+
+/**
+ * `shell.session`（ADR-0031）只在打开会话这一刻接入这套已验证过的机制一次——
+ * balanced 问一次、yolo 跳过那次问、任何 deny（内置或用户自己写的）都不受影响。
+ * 会话打开之后 write/resize/close 完全不再判权，是判权设计本身的选择，不是这里
+ * 要测的东西（那部分靠 tools-core 里"声明空能力集"这件事本身来保证）。
+ */
+describe('shell.session 的默认规则（ADR-0031）', () => {
+  const RULES = builtinRules(ENV);
+
+  it('balanced 档：打开会话要问一次', () => {
+    expect(judge({ request: req('shell.session'), rules: RULES, tier: 'balanced' }).effect).toBe(
+      'ask',
+    );
+  });
+
+  it('yolo 档：跳过这次问', () => {
+    expect(judge({ request: req('shell.session'), rules: RULES, tier: 'yolo' }).effect).toBe(
+      'allow',
+    );
+  });
+
+  it('用户自己写的 deny 在 yolo 档依然拦得住 open', () => {
+    const userDeny: PolicyRuleSet = [
+      rule({
+        id: 'user.no-terminal-in-prod',
+        effect: 'deny',
+        capability: 'shell.session',
+        match: { target: '/repo/prod/**' },
+      }),
+    ];
+    const v = judge({
+      request: req('shell.session', { target: '/repo/prod/app' }),
+      rules: [...RULES, ...userDeny],
+      tier: 'yolo',
+    });
+    expect(v.effect).toBe('deny');
+    expect(v.ruleId).toBe('user.no-terminal-in-prod');
+  });
+});
