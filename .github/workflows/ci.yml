@@ -29,6 +29,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: 断言双编译器工具链装配正确
         run: node scripts/assert-toolchain.mjs
+      - name: 单文件规模纪律（docs/01 原则七，ADR-0032）
+        run: node scripts/check-file-size.mjs
       - run: pnpm exec tsc -b
       - run: pnpm exec tsc -p tsconfig.tests.json
 
