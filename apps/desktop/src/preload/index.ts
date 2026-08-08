@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('xm', {
   createSession: (req: unknown) => ipcRenderer.invoke(CH.createSession, req),
   sendUserMessage: (req: unknown) => ipcRenderer.invoke(CH.sendUserMessage, req),
   readSession: (req: unknown) => ipcRenderer.invoke(CH.readSession, req),
+  readBlob: (req: unknown) => ipcRenderer.invoke(CH.readBlob, req),
   clearUntrusted: (req: unknown) => ipcRenderer.invoke(CH.clearUntrusted, req),
   interrupt: (req: unknown) => ipcRenderer.invoke(CH.interrupt, req),
   respondPermission: (req: unknown) => ipcRenderer.invoke(CH.respondPermission, req),

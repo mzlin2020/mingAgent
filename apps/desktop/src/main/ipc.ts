@@ -6,6 +6,7 @@ import {
   ClearUntrustedRequest,
   CreateSessionRequest,
   InterruptRequest,
+  ReadBlobRequest,
   ReadSessionRequest,
   RespondPermissionRequest,
   SendUserMessageRequest,
@@ -47,7 +48,11 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   }));
 
   handle(CH.sendUserMessage, SendUserMessageRequest, async (req) => ({
-    reason: await services.sendUserMessage(req.sessionId, req.text),
+    reason: await services.sendUserMessage(req.sessionId, req.text, req.images),
+  }));
+
+  handle(CH.readBlob, ReadBlobRequest, async (req) => ({
+    dataUrl: await services.readBlob(req.ref),
   }));
 
   handle(CH.readSession, ReadSessionRequest, async (req) => {

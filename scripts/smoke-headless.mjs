@@ -43,6 +43,7 @@ import {
   echoTool,
   fakeDeleteTool,
   runTurn,
+  textInput,
 } from '../packages/runtime/dist/index.js';
 
 const APP_ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -120,7 +121,7 @@ try {
       gateway: pureGateway(demoTargetOf),
       pathCaseInsensitive: platform.os === 'windows',
     },
-    '试一下这两个工具',
+    textInput('试一下这两个工具'),
   );
 
   // ── 第二段：主 DoD 任务的形状（读目录 → 读文件 → 写 README）──
@@ -169,7 +170,7 @@ try {
         return Promise.resolve({ effect: 'allow', scope: 'session' });
       },
     },
-    '读一下这个目录，总结结构，写一个 README',
+    textInput('读一下这个目录，总结结构，写一个 README'),
   );
 
   // ── 第三段：M1-d 的 DoD —— rm -rf ~ 的四种写法判定一致 ──────
@@ -210,7 +211,7 @@ try {
           return Promise.resolve({ effect: 'allow', scope: 'once' });
         },
       },
-      '删掉我的家目录',
+      textInput('删掉我的家目录'),
     );
     const decision = seen
       .slice(before)
@@ -237,11 +238,41 @@ try {
       pathCaseInsensitive: platform.os === 'windows',
       decide: () => Promise.resolve({ effect: 'allow', scope: 'once' }),
     },
-    '打个招呼',
+    textInput('打个招呼'),
   );
   shellRan = seen.some(
     (e) => e.type === 'tool.end' && e.payload.ok && JSON.stringify(e.payload.forModel).includes('hello-xm'),
   );
+
+  // ── 第四段：多模态最小反向演练 ──────────────────────────────
+  //
+  // 贯穿"组装 ContentBlock[] → runTurn → 事件落库 → blob 落盘"整条链路——
+  // 其余多模态测试都是分层单测（runtime 的能力闸门、Provider 的 wire 编码、
+  // 桌面端的 IPC schema 各自独立验），这是唯一一处把四层串起来跑一遍的地方。
+  const imageBytes = Buffer.from('这不是真的图片字节，只是用来验证 blob 落盘与事件回放', 'utf8');
+  const imageRef = await stores.blobs.put(imageBytes, 'image/png', 'demo.png');
+
+  await runTurn(
+    {
+      runtime,
+      provider: new ScriptedProvider({
+        capabilities: { vision: true },
+        turns: [
+          { chunks: [{ kind: 'text_delta', text: '看到了。' }, { kind: 'stop', reason: 'end_turn' }] },
+        ],
+      }),
+      tools,
+      layers,
+      tier: 'balanced',
+      model: 'scripted-1',
+      gateway: pureGateway(demoTargetOf),
+      pathCaseInsensitive: platform.os === 'windows',
+    },
+    [{ type: 'image', source: imageRef }, ...textInput('这张图是什么')],
+  );
+
+  // 落盘之后、关库之前查一次——`stores.close()` 之后 `stores.blobs` 就不能再用了
+  const imageStat = await stores.blobs.stat(imageRef);
 
   const memoryState = runtime.state;
   await runtime.close();
@@ -320,12 +351,30 @@ try {
     fail('普通命令没跑起来 —— 全拦下不叫防住了，叫不能用了');
   }
 
+  // ── 多模态最小反向演练的断言 ──────────────────────────────
+  if (imageStat === undefined) {
+    fail('图片没有真的落进 BlobStore');
+  }
+  const turnStartWithImage = seen.some(
+    (e) => e.type === 'turn.start' && JSON.stringify(e.payload.input ?? []).includes(imageRef.hash),
+  );
+  if (!turnStartWithImage) {
+    fail('turn.start 事件里没有看到图片块 —— ContentBlock[] 没有被如实记录');
+  }
+  const replayedHasImage = replayed.messages.some((m) =>
+    m.blocks.some((b) => b.type === 'image' && b.source.hash === imageRef.hash),
+  );
+  if (!replayedHasImage) {
+    fail('重开库回放出的消息里没有图片块 —— 多模态输入没有活过事件流的往返');
+  }
+
   if (process.exitCode !== 1) {
     console.log(
       `✓ headless 冒烟通过：${String(types.length)} 条持久事件、` +
         `${String(seen.length)} 条总线事件，回放状态一致；` +
         `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，审批只问一次）；` +
-        `rm -rf ~ 的四种写法全部由同一条红线拦下，普通命令照常跑`,
+        `rm -rf ~ 的四种写法全部由同一条红线拦下，普通命令照常跑；` +
+        `多模态图片贯穿 组装→runTurn→事件落库→blob 落盘 跑通`,
     );
   }
 } finally {

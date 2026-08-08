@@ -1,6 +1,7 @@
 import type { CallId, ContentBlock, Message, ModelChunk, ModelRequest, StopReason, Usage } from '@xm/contracts';
 import { newCallId, xmError } from '@xm/contracts';
-import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
+import type { AbortLike, BlobStore, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
+import { blobToBase64, requireBlobs } from './blob.js';
 import { capabilitiesFor } from './catalog.js';
 import type { HttpDeps } from './http.js';
 import { ProviderHttpError, abortedBy, postSse } from './http.js';
@@ -25,6 +26,8 @@ export interface AnthropicOptions extends HttpDeps {
   readonly capabilityOverrides?: Readonly<Record<string, Partial<ModelCapabilities>>>;
   /** 已知模型列表。留空则 listModels() 去打 /v1/models */
   readonly models?: readonly string[];
+  /** 图片内容块要靠它把 BlobRef 读成字节再编 base64。不配就发不了图（见 blob.ts） */
+  readonly blobs?: BlobStore;
 }
 
 export class AnthropicProvider implements ModelProvider {
@@ -71,10 +74,11 @@ export class AnthropicProvider implements ModelProvider {
 
     let body: ReadableStream<Uint8Array>;
     try {
+      const wireBody = await toWire(req, codec, this.#options.blobs);
       body = await postSse({
         url: `${this.#baseUrl}/v1/messages`,
         headers: this.#headers(),
-        body: toWire(req, codec),
+        body: wireBody,
         signal,
         providerId: this.id,
         ...pickHttpDeps(this.#options),
@@ -112,13 +116,19 @@ interface WireBody {
   stop_sequences?: string[];
 }
 
-export function toWire(req: ModelRequest, codec: ToolNameCodec): WireBody {
+export async function toWire(
+  req: ModelRequest,
+  codec: ToolNameCodec,
+  blobs?: BlobStore,
+): Promise<WireBody> {
   const body: WireBody = {
     model: req.model,
     max_tokens: req.maxOutputTokens,
     stream: true,
-    messages: req.messages.map((m, i) =>
-      toWireMessage(m, i === req.cacheBreakpointAfterMessage, codec),
+    messages: await Promise.all(
+      req.messages.map((m, i) =>
+        toWireMessage(m, i === req.cacheBreakpointAfterMessage, codec, blobs),
+      ),
     ),
   };
 
@@ -169,8 +179,13 @@ export function toWire(req: ModelRequest, codec: ToolNameCodec): WireBody {
   return body;
 }
 
-function toWireMessage(m: Message, cacheHere: boolean, codec: ToolNameCodec): unknown {
-  const content = m.blocks.map((b) => toWireBlock(b, codec));
+async function toWireMessage(
+  m: Message,
+  cacheHere: boolean,
+  codec: ToolNameCodec,
+  blobs: BlobStore | undefined,
+): Promise<unknown> {
+  const content = await Promise.all(m.blocks.map((b) => toWireBlock(b, codec, blobs)));
   if (cacheHere && content.length > 0) {
     const last = content[content.length - 1];
     if (last !== undefined && typeof last === 'object') {
@@ -180,7 +195,11 @@ function toWireMessage(m: Message, cacheHere: boolean, codec: ToolNameCodec): un
   return { role: m.role, content };
 }
 
-function toWireBlock(b: ContentBlock, codec: ToolNameCodec): Record<string, unknown> {
+async function toWireBlock(
+  b: ContentBlock,
+  codec: ToolNameCodec,
+  blobs: BlobStore | undefined,
+): Promise<Record<string, unknown>> {
   switch (b.type) {
     case 'text':
       return { type: 'text', text: b.text };
@@ -206,20 +225,31 @@ function toWireBlock(b: ContentBlock, codec: ToolNameCodec): Record<string, unkn
         ),
       };
     case 'image':
+      return {
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: b.source.mime,
+          data: await blobToBase64(requireBlobs(blobs), b.source),
+        },
+      };
     case 'document':
       return unsupportedBlob(b.type);
   }
 }
 
 /**
- * 多模态是 M1-d。**在这里失败关闭，不降级成一句文字描述。**
+ * `image` 顶层块已经在 M1-d 接上（见 `toWireBlock` 的 `case 'image'` 与 ADR-0029）。
+ * 这个函数现在只覆盖两处仍然没接的：`document` 顶层块，以及 `tool_result.content`
+ * 里的 `image`/`document`（工具产出的图片，目前没有任何工具会产出，安全地搁置）。
  *
- * 把图片悄悄换成 `[图片]` 会让模型给出一个自信但完全没看过图的回答，
- * 而用户看到的是"它读了我的截图"。看不见的降级比报错危险得多。
+ * **在这里失败关闭，不降级成一句文字描述。** 把图片悄悄换成 `[图片]` 会让模型
+ * 给出一个自信但完全没看过图的回答，而用户看到的是"它读了我的截图"。
+ * 看不见的降级比报错危险得多。
  */
 function unsupportedBlob(kind: string): never {
   throw new ProviderHttpError(
-    xmError('unsupported', `多模态内容（${kind}）要到 M1-d 才接上，当前不能发给模型。`, {
+    xmError('unsupported', `多模态内容（${kind}）当前还不能发给模型（ADR-0029 遗留）。`, {
       retryable: false,
     }),
   );

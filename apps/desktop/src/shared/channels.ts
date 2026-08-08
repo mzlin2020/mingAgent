@@ -20,6 +20,11 @@ export const CH = {
   createSession: 'xm:create-session',
   sendUserMessage: 'xm:send-user-message',
   readSession: 'xm:read-session',
+  /**
+   * 按 `BlobRef` 反查一张图片的字节，编成 data URL 供 `<img src>` 直接用。
+   * 渲染层此前从未反查过 blob 内容，这是第一条——见 `services.readBlob` 的注释。
+   */
+  readBlob: 'xm:read-blob',
   /** 解除本会话的不可信标记。**只有人能按**，见 ADR-0019 */
   clearUntrusted: 'xm:clear-untrusted',
   /** 停止本会话正在跑的这一轮。ADR-0021 遗留的那个"没人发 message.interrupted"由它闭合 */

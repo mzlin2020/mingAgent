@@ -5,7 +5,7 @@ import { newCallId, newSessionId } from '@xm/contracts';
 import type { ToolContext } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, builtinLayers,
   pureGateway, defineTool } from '@xm/kernel';
-import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
+import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 
 /**
  * ── 不可信标记的解除入口（G1 / ADR-0019）──
@@ -122,7 +122,7 @@ async function harness(extra?: ReturnType<typeof spyTool>) {
   const turn = (text: string, ...calls: { chunks: unknown }[]): Promise<unknown> =>
     runTurn(
       { ...deps, provider: new ScriptedProvider({ turns: [...calls, END] as never }) },
-      text,
+      textInput(text),
     );
 
   return { store, sessionId, runtime, tools, turn };

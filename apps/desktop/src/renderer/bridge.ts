@@ -1,12 +1,15 @@
 import { z } from 'zod';
+import type { BlobRef } from '@xm/contracts';
 import {
   ChooseWorkspaceResult,
   ClearUntrustedResult,
   CreateSessionResult,
+  ImageAttachment,
   InterruptResult,
   IpcEnvelope,
   ListSessionsResult,
   PushedEvent,
+  ReadBlobResult,
   ReadSessionResult,
   RespondPermissionResult,
   SendUserMessageResult,
@@ -30,6 +33,7 @@ interface XmBridge {
   createSession(req: unknown): Promise<unknown>;
   sendUserMessage(req: unknown): Promise<unknown>;
   readSession(req: unknown): Promise<unknown>;
+  readBlob(req: unknown): Promise<unknown>;
   clearUntrusted(req: unknown): Promise<unknown>;
   interrupt(req: unknown): Promise<unknown>;
   respondPermission(req: unknown): Promise<unknown>;
@@ -82,10 +86,18 @@ export const api = {
       }),
       CreateSessionResult,
     ),
-  sendUserMessage: (sessionId: string, text: string) =>
-    call(bridge().sendUserMessage({ sessionId, text }), SendUserMessageResult),
+  sendUserMessage: (sessionId: string, text: string, images?: readonly ImageAttachment[]) =>
+    call(
+      bridge().sendUserMessage({
+        sessionId,
+        text,
+        ...(images !== undefined && images.length > 0 ? { images } : {}),
+      }),
+      SendUserMessageResult,
+    ),
   readSession: (sessionId: string) =>
     call(bridge().readSession({ sessionId }), ReadSessionResult),
+  readBlob: (ref: BlobRef) => call(bridge().readBlob({ ref }), ReadBlobResult),
 
   clearUntrusted: (sessionId: string, reason?: string) =>
     call(

@@ -1,6 +1,7 @@
 import type { CallId, Message, ModelChunk, ModelRequest, StopReason, Usage } from '@xm/contracts';
 import { newCallId, xmError } from '@xm/contracts';
-import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
+import type { AbortLike, BlobStore, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
+import { blobToBase64, requireBlobs } from './blob.js';
 import { capabilitiesFor } from './catalog.js';
 import { parseJson, pickHttpDeps } from './anthropic.js';
 import type { HttpDeps } from './http.js';
@@ -30,6 +31,8 @@ export interface OpenAICompatibleOptions extends HttpDeps {
   readonly id?: string;
   readonly capabilityOverrides?: Readonly<Record<string, Partial<ModelCapabilities>>>;
   readonly models?: readonly string[];
+  /** 图片内容块要靠它把 BlobRef 读成字节再编 base64。不配就发不了图（见 blob.ts） */
+  readonly blobs?: BlobStore;
 }
 
 export class OpenAICompatibleProvider implements ModelProvider {
@@ -73,10 +76,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     let body: ReadableStream<Uint8Array>;
     try {
+      const wireBody = await toWire(req, codec, this.#options.blobs);
       body = await postSse({
         url: `${this.#baseUrl}/chat/completions`,
         headers: this.#headers(),
-        body: toWire(req, codec),
+        body: wireBody,
         signal,
         providerId: this.id,
         ...pickHttpDeps(this.#options),
@@ -98,7 +102,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
 // ── 请求 ────────────────────────────────────────────────────────
 
-export function toWire(req: ModelRequest, codec: ToolNameCodec): Record<string, unknown> {
+export async function toWire(
+  req: ModelRequest,
+  codec: ToolNameCodec,
+  blobs?: BlobStore,
+): Promise<Record<string, unknown>> {
   const messages: Record<string, unknown>[] = [];
 
   /*
@@ -110,7 +118,7 @@ export function toWire(req: ModelRequest, codec: ToolNameCodec): Record<string, 
     messages.push({ role: 'system', content: req.system.map((s) => s.text).join('\n\n') });
   }
 
-  for (const m of req.messages) messages.push(...toWireMessages(m, codec));
+  for (const m of req.messages) messages.push(...(await toWireMessages(m, codec, blobs)));
 
   const body: Record<string, unknown> = {
     model: req.model,
@@ -148,17 +156,32 @@ export function toWire(req: ModelRequest, codec: ToolNameCodec): Record<string, 
  * 而这一家要求每个结果是一条独立的 `role: 'tool'` 消息。这正是"块模型拆成扁平结构容易、
  * 反过来难"（block.ts 的注释）的具体一例——差异被这个函数吃掉了。
  */
-function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknown>[] {
+async function toWireMessages(
+  m: Message,
+  codec: ToolNameCodec,
+  blobs: BlobStore | undefined,
+): Promise<Record<string, unknown>[]> {
   const out: Record<string, unknown>[] = [];
-  const text: string[] = [];
+  const textParts: string[] = [];
+  // 只有出现图片才会用到——这一家平时把 content 拼成一整条字符串，
+  // 一旦带图片就必须换成数组形态，两种形状不能混用（见下方 content 的组装）
+  const contentParts: Record<string, unknown>[] = [];
+  let hasImage = false;
   const toolCalls: Record<string, unknown>[] = [];
   const reasoning: string[] = [];
 
   for (const b of m.blocks) {
     switch (b.type) {
       case 'text':
-        text.push(b.text);
+        textParts.push(b.text);
+        contentParts.push({ type: 'text', text: b.text });
         break;
+      case 'image': {
+        hasImage = true;
+        const data = await blobToBase64(requireBlobs(blobs), b.source);
+        contentParts.push({ type: 'image_url', image_url: { url: `data:${b.source.mime};base64,${data}` } });
+        break;
+      }
       case 'tool_use':
         // 历史消息里的 tool_use 也要按同一份表编码——不然同一个工具在 tools[]
         // 里叫 fs_read，在历史 tool_calls 里却叫 fs.read，两边对不上
@@ -196,19 +219,20 @@ function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknow
          * 与上面 thinking 的区别只在"有没有地方接住"，不是"要不要接住"。
          */
         break;
-      case 'image':
       case 'document':
         unsupportedBlob(b.type);
         break;
     }
   }
 
-  const content = text.join('\n');
   const reasoningText = reasoning.join('\n');
-  if (content !== '' || toolCalls.length > 0 || reasoningText !== '') {
+  const content: string | Record<string, unknown>[] = hasImage ? contentParts : textParts.join('\n');
+  const contentIsEmpty = typeof content === 'string' ? content === '' : content.length === 0;
+
+  if (!contentIsEmpty || toolCalls.length > 0 || reasoningText !== '') {
     out.unshift({
       role: m.role,
-      content: content === '' ? null : content,
+      content: typeof content === 'string' ? (content === '' ? null : content) : content,
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       // 只有真出现过思考文本才带这个字段——不认它的兼容端不该无端多收一个陌生字段
       ...(reasoningText !== '' ? { reasoning_content: reasoningText } : {}),
@@ -217,9 +241,14 @@ function toWireMessages(m: Message, codec: ToolNameCodec): Record<string, unknow
   return out;
 }
 
+/**
+ * `image` 顶层块已经在 M1-d 接上（`toWireMessages` 的 `case 'image'` 与 ADR-0029）。
+ * 这里现在只覆盖两处仍然没接的：`document` 顶层块，以及 `tool_result.content`
+ * 里的 `image`/`document`（工具产出的图片，目前没有任何工具会产出，安全地搁置）。
+ */
 function unsupportedBlob(kind: string): never {
   throw new ProviderHttpError(
-    xmError('unsupported', `多模态内容（${kind}）要到 M1-d 才接上，当前不能发给模型。`, {
+    xmError('unsupported', `多模态内容（${kind}）当前还不能发给模型（ADR-0029 遗留）。`, {
       retryable: false,
     }),
   );

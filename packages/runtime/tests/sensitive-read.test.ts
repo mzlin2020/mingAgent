@@ -8,7 +8,7 @@ import type { PermissionRequest, PersistedEvent, PolicyRuleSet } from '@xm/contr
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
-import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
+import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 import { coreTools, nodeToolGateway } from '@xm/tools-core';
 
 /**
@@ -74,7 +74,7 @@ async function harness(userRules: PolicyRuleSet = []) {
           return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
         },
       },
-      '读一下',
+      textInput('读一下'),
     );
     const out: PersistedEvent[] = [];
     for await (const e of store.read(sessionId)) out.push(e);
@@ -160,7 +160,7 @@ describe('🔴 私钥读不出来', () => {
         }),
         decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
-      '看看这个目录',
+      textInput('看看这个目录'),
     );
 
     const all: PersistedEvent[] = [];

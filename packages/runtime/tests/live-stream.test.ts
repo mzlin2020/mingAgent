@@ -12,7 +12,7 @@ import {
   emptySessionState,
   reduce,
 } from '@xm/kernel';
-import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
+import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 
 /**
  * ── 流式渲染的**端到端**验证（G6 / ADR-0021）──
@@ -99,7 +99,7 @@ async function run(): Promise<Screen> {
       tier: 'balanced',
       model: 'scripted-1',
     },
-    '说点什么',
+    textInput('说点什么'),
   );
 
   await runtime.close();

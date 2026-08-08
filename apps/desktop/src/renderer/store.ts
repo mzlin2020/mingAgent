@@ -3,7 +3,7 @@ import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
 import type { LiveBuffer, SessionState } from '@xm/kernel';
 import { EMPTY_LIVE, applyLive, emptySessionState, reduce } from '@xm/kernel';
-import type { ListSessionsResult, PushedEvent, StatusResult } from '../shared/ipc.js';
+import type { ImageAttachment, ListSessionsResult, PushedEvent, StatusResult } from '../shared/ipc.js';
 import type { z } from 'zod';
 import { api } from './bridge.js';
 
@@ -64,7 +64,7 @@ interface UiState {
     scope: 'once' | 'session' | 'always',
   ) => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
-  readonly send: (text: string) => Promise<void>;
+  readonly send: (text: string, images?: readonly ImageAttachment[]) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly clearUntrusted: () => Promise<void>;
   readonly refreshStatus: () => Promise<void>;
@@ -160,12 +160,12 @@ export const useUi = create<UiState>((set, get) => ({
     set({ session: state });
   },
 
-  send: async (text) => {
+  send: async (text, images) => {
     const id = get().currentId;
     if (id === undefined) return;
     set({ busy: true, error: undefined });
     try {
-      await api.sendUserMessage(id, text);
+      await api.sendUserMessage(id, text, images);
       await get().refreshSessions();
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });

@@ -1,10 +1,16 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { ModelChunk, ModelRequest } from '@xm/contracts';
 import { CallId, newCallId, newMessageId } from '@xm/contracts';
+import { MemoryBlobStore } from '@xm/kernel';
 import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
 import { abortLike, streamOf } from './helpers/stream.js';
+
+/** 测试专用 sha256——这个包本身不依赖 node:crypto，但测试文件不受那条 depcruise 规则约束 */
+const sha256Hex = (data: Uint8Array): Promise<string> =>
+  Promise.resolve(createHash('sha256').update(data).digest('hex'));
 
 /**
  * 两家适配器。
@@ -142,7 +148,53 @@ describe('Anthropic 适配器', () => {
     expect('temperature' in sent).toBe(false);
   });
 
-  it('🔴 多模态失败关闭，不悄悄换成一句文字', async () => {
+  it('🔴 document 仍然失败关闭，不悄悄换成一句文字 —— image 已支持，document 还没', async () => {
+    const withDocument: ModelRequest = {
+      ...REQUEST,
+      messages: [
+        {
+          id: newMessageId(),
+          role: 'user',
+          blocks: [
+            { type: 'document', source: { hash: 'a'.repeat(64), mime: 'application/pdf', size: 10 } },
+          ],
+          ts: 1,
+        },
+      ],
+    };
+    const provider = new AnthropicProvider({ apiKey: 'k', fetchImpl: providerWith('') });
+    await expect(drain(provider.stream(withDocument, abortLike().signal))).rejects.toThrow(/多模态/);
+  });
+
+  it('图片块编成 base64 塞进 source —— 判权用的 BlobRef 与发给模型的字节是同一份', async () => {
+    const blobs = new MemoryBlobStore(sha256Hex);
+    const bytes = new TextEncoder().encode('假装是一张图片');
+    const ref = await blobs.put(bytes, 'image/png', 'demo.png');
+
+    let sent: { messages?: { content?: unknown }[] } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      sent = JSON.parse(init?.body as string) as typeof sent;
+      return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const withImage: ModelRequest = {
+      ...REQUEST,
+      messages: [
+        { id: newMessageId(), role: 'user', blocks: [{ type: 'image', source: ref }], ts: 1 },
+      ],
+    };
+
+    await drain(
+      new AnthropicProvider({ apiKey: 'k', fetchImpl, blobs }).stream(withImage, abortLike().signal),
+    );
+
+    const expectedData = Buffer.from(bytes).toString('base64');
+    expect(sent.messages?.[0]?.content).toEqual([
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: expectedData } },
+    ]);
+  });
+
+  it('🔴 图片块存在但没配 blobs —— 装配错误，报内部错误，不是悄悄发个空图', async () => {
     const withImage: ModelRequest = {
       ...REQUEST,
       messages: [
@@ -157,7 +209,7 @@ describe('Anthropic 适配器', () => {
       ],
     };
     const provider = new AnthropicProvider({ apiKey: 'k', fetchImpl: providerWith('') });
-    await expect(drain(provider.stream(withImage, abortLike().signal))).rejects.toThrow(/多模态/);
+    await expect(drain(provider.stream(withImage, abortLike().signal))).rejects.toThrow(/内部错误/);
   });
 });
 
@@ -297,6 +349,80 @@ describe('OpenAI 兼容适配器', () => {
 
     const userMsg = sent.messages?.find((m) => m.role === 'user');
     expect(userMsg).not.toHaveProperty('reasoning_content');
+  });
+
+  it('图片块存在时 content 从字符串换成数组 —— 两种形状不能混用', async () => {
+    const blobs = new MemoryBlobStore(sha256Hex);
+    const bytes = new TextEncoder().encode('假装是一张图片');
+    const ref = await blobs.put(bytes, 'image/png', 'demo.png');
+
+    let sent: { messages?: { role: string; content?: unknown }[] } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      sent = JSON.parse(init?.body as string) as typeof sent;
+      return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const withImage: ModelRequest = {
+      ...REQUEST,
+      messages: [
+        {
+          id: newMessageId(),
+          role: 'user',
+          blocks: [
+            { type: 'text', text: '这张图是什么' },
+            { type: 'image', source: ref },
+          ],
+          ts: 1,
+        },
+      ],
+    };
+
+    await drain(
+      new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl, blobs }).stream(
+        withImage,
+        abortLike().signal,
+      ),
+    );
+
+    const expectedData = Buffer.from(bytes).toString('base64');
+    const userMsg = sent.messages?.find((m) => m.role === 'user');
+    expect(userMsg?.content).toEqual([
+      { type: 'text', text: '这张图是什么' },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${expectedData}` } },
+    ]);
+  });
+
+  it('没有图片的普通消息 content 仍然是字符串 —— 不因为支持了图片就改变现有 wire 形状', async () => {
+    let sent: { messages?: { role: string; content?: unknown }[] } = {};
+    const fetchImpl = ((_url: string, init?: RequestInit) => {
+      sent = JSON.parse(init?.body as string) as typeof sent;
+      return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    await drain(
+      new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl }).stream(REQUEST, abortLike().signal),
+    );
+
+    const userMsg = sent.messages?.find((m) => m.role === 'user');
+    expect(typeof userMsg?.content).toBe('string');
+  });
+
+  it('🔴 图片块存在但没配 blobs —— 装配错误，报内部错误', async () => {
+    const withImage: ModelRequest = {
+      ...REQUEST,
+      messages: [
+        {
+          id: newMessageId(),
+          role: 'user',
+          blocks: [
+            { type: 'image', source: { hash: 'a'.repeat(64), mime: 'image/png', size: 10 } },
+          ],
+          ts: 1,
+        },
+      ],
+    };
+    const provider = new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl: providerWith('') });
+    await expect(drain(provider.stream(withImage, abortLike().signal))).rejects.toThrow(/内部错误/);
   });
 });
 

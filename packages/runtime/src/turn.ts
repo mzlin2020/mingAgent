@@ -130,8 +130,34 @@ interface PendingCall {
   argsJson: string;
 }
 
-export async function runTurn(deps: TurnDeps, userText: string): Promise<StopReason> {
+/** 最常见的输入形状：纯文字。多模态输入直接构造 ContentBlock[] 传给 runTurn */
+export const textInput = (text: string): ContentBlock[] => [{ type: 'text', text }];
+
+export async function runTurn(deps: TurnDeps, input: readonly ContentBlock[]): Promise<StopReason> {
   const { runtime } = deps;
+
+  /*
+   * 能力闸门必须在这里、在记第一条事件之前判。`turn.start` 一旦落库就必须有一条
+   * `turn.end` 收尾配对（ADR-0008 的包含性不变量）；如果放任图片块流到 Provider
+   * 深处才失败关闭，就会留下一条只有开始没有收尾的事件流。直接 throw，不新增
+   * `StopReason` 枚举值——调用方（`services.sendUserMessage`）的 try/finally
+   * 接得住，异常经 IPC 信封转成 `{ok:false}` 落进渲染层已有的错误态，不需要
+   * 再造一条"被拒绝"的收尾语义。
+   *
+   * 只查*这一轮新输入*，不审计历史消息——中途换成不支持 vision 的模型、
+   * 历史里却带着图片，仍然会在 Provider 深处报错。那是 M2 ContextBuilder
+   * （预算/压缩）该管的事，见 ADR-0029 遗留。
+   */
+  const caps = deps.provider.capabilities(deps.model);
+  if (input.some((b) => b.type === 'image') && !caps.vision) {
+    throw new Error(
+      `模型 ${deps.model} 不支持图片输入（vision），请换一个支持的模型或去掉图片后再试。`,
+    );
+  }
+  if (input.some((b) => b.type === 'document') && !caps.documents) {
+    throw new Error(`模型 ${deps.model} 不支持文档输入，请换一个支持的模型或去掉附件后再试。`);
+  }
+
   /*
    * 8 太容易在正常任务里撞到——一个「做个 todolist」这种朴素任务，
    * 读文件、列目录、写几步、回头检查一下，往返次数很容易过 8。
@@ -148,7 +174,7 @@ export async function runTurn(deps: TurnDeps, userText: string): Promise<StopRea
   await runtime.record({
     type: 'turn.start',
     turnId,
-    payload: { turnId, input: [{ type: 'text', text: userText }] },
+    payload: { turnId, input: [...input] },
   });
 
   let reason: StopReason = 'end_turn';

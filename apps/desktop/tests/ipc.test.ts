@@ -5,7 +5,10 @@ import {
   CreateSessionRequest,
   IpcEnvelope,
   ListSessionsResult,
+  MAX_IMAGES_PER_MESSAGE,
   PushedEvent,
+  ReadBlobRequest,
+  ReadBlobResult,
   ReadSessionRequest,
   SendUserMessageRequest,
 } from '../src/shared/ipc.js';
@@ -52,6 +55,61 @@ describe('主进程不信任渲染层送上来的东西', () => {
     expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 0 }).success).toBe(false);
     expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 1.5 }).success).toBe(false);
     expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 1 }).success).toBe(true);
+  });
+});
+
+describe('多模态：图片附件', () => {
+  const img = (data = 'aGVsbG8=') => ({ data, mime: 'image/png' });
+
+  it('文字和图片是或的关系 —— 只发图片、不带文字应该通过', () => {
+    const sessionId = newSessionId();
+    expect(
+      SendUserMessageRequest.safeParse({ sessionId, text: '', images: [img()] }).success,
+    ).toBe(true);
+  });
+
+  it('🔴 文字和图片都是空 —— 两道闸门都不满足，拒绝', () => {
+    const sessionId = newSessionId();
+    expect(SendUserMessageRequest.safeParse({ sessionId, text: '' }).success).toBe(false);
+    expect(SendUserMessageRequest.safeParse({ sessionId, text: '', images: [] }).success).toBe(
+      false,
+    );
+  });
+
+  it(`🔴 超过 ${String(MAX_IMAGES_PER_MESSAGE)} 张图被拒绝`, () => {
+    const sessionId = newSessionId();
+    const images = Array.from({ length: MAX_IMAGES_PER_MESSAGE + 1 }, () => img());
+    expect(SendUserMessageRequest.safeParse({ sessionId, text: 'hi', images }).success).toBe(
+      false,
+    );
+    expect(
+      SendUserMessageRequest.safeParse({
+        sessionId,
+        text: 'hi',
+        images: images.slice(0, MAX_IMAGES_PER_MESSAGE),
+      }).success,
+    ).toBe(true);
+  });
+
+  it('🔴 单图 base64 超过上限被拒绝 —— 精确字节数在 main 侧解码后再查一次', () => {
+    const sessionId = newSessionId();
+    const huge = img('a'.repeat(14 * 1024 * 1024 + 1));
+    expect(SendUserMessageRequest.safeParse({ sessionId, text: 'hi', images: [huge] }).success)
+      .toBe(false);
+  });
+
+  it('ReadBlobRequest 需要一个完整的 BlobRef，不是裸 hash', () => {
+    expect(ReadBlobRequest.safeParse({ ref: { hash: 'a'.repeat(64) } }).success).toBe(false);
+    expect(
+      ReadBlobRequest.safeParse({ ref: { hash: 'a'.repeat(64), mime: 'image/png', size: 3 } })
+        .success,
+    ).toBe(true);
+  });
+
+  it('ReadBlobResult 就是一个 data URL 字符串', () => {
+    expect(ReadBlobResult.safeParse({ dataUrl: 'data:image/png;base64,aGVsbG8=' }).success).toBe(
+      true,
+    );
   });
 });
 

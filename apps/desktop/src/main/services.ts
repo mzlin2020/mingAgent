@@ -1,9 +1,9 @@
 import { app, safeStorage } from 'electron';
 import { join } from 'node:path';
-import type { Config, RequestId, SessionId } from '@xm/contracts';
+import type { BlobRef, Config, ContentBlock, RequestId, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
 import type { ModelProvider, PlatformPort, RuleLayer, SecretBackend, SecretStore } from '@xm/kernel';
-import { ToolRegistry, composeRules, policyEnvFromPaths } from '@xm/kernel';
+import { ToolRegistry, composeRules, policyEnvFromPaths, readBlob as readBlobBytes } from '@xm/kernel';
 import type { ConfigProblem } from '@xm/platform';
 import {
   appendUserRule,
@@ -26,6 +26,8 @@ import {
   runTurn,
 } from '@xm/runtime';
 import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
+import type { ImageAttachment } from '../shared/ipc.js';
+import { decodeImageAttachment } from './multimodal-input.js';
 import { keychainSecretStore } from './secrets.js';
 
 /**
@@ -51,7 +53,13 @@ export interface Services {
   readonly layers: readonly RuleLayer[];
   readonly tools: ToolRegistry;
   createSession(options?: { title?: string; cwd?: string }): Promise<SessionId>;
-  sendUserMessage(sessionId: SessionId, text: string): Promise<string>;
+  sendUserMessage(
+    sessionId: SessionId,
+    text: string,
+    images?: readonly ImageAttachment[],
+  ): Promise<string>;
+  /** 按 `BlobRef` 反查图片字节，编成 data URL。渲染层此前从未反查过 blob 内容 */
+  readBlob(ref: BlobRef): Promise<string>;
   /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
@@ -192,6 +200,8 @@ export async function startServices(): Promise<Services> {
       apiKey,
       ...(cfg.baseUrl === undefined ? {} : { baseUrl: cfg.baseUrl }),
       ...(cfg.models.length > 0 ? { models: cfg.models } : {}),
+      // 图片内容块要靠它把 BlobRef 读成字节再编 base64（见 packages/providers/src/blob.ts）
+      blobs: stores.blobs,
     };
 
     switch (cfg.kind) {
@@ -258,7 +268,11 @@ export async function startServices(): Promise<Services> {
       return sessionId;
     },
 
-    async sendUserMessage(sessionId: SessionId, text: string): Promise<string> {
+    async sendUserMessage(
+      sessionId: SessionId,
+      text: string,
+      images?: readonly ImageAttachment[],
+    ): Promise<string> {
       const runtime = await runtimeFor(sessionId);
       const { provider: providerId, model } = modelRef();
       const provider = (await providerFor()) ?? demoProvider(text);
@@ -268,6 +282,14 @@ export async function startServices(): Promise<Services> {
        * 排队会让用户连点两次发送后看到两条回复依次出现，而他以为第二次覆盖了第一次。
        */
       if (running.has(sessionId)) return 'busy';
+
+      // 图片在前、文字在后——已知的简化，等 UI 支持交替插入再放开（docs/08 M1-d）
+      const blocks: ContentBlock[] = [];
+      for (const img of images ?? []) {
+        const { bytes, mime, name } = decodeImageAttachment(img);
+        blocks.push({ type: 'image', source: await stores.blobs.put(bytes, mime, name) });
+      }
+      if (text.trim() !== '') blocks.push({ type: 'text', text });
 
       const controller = new AbortController();
       running.set(sessionId, controller);
@@ -319,7 +341,7 @@ export async function startServices(): Promise<Services> {
               });
             },
           },
-          text,
+          blocks,
         );
       } finally {
         running.delete(sessionId);
@@ -327,6 +349,11 @@ export async function startServices(): Promise<Services> {
         denyAllPending();
         void providerId;
       }
+    },
+
+    async readBlob(ref: BlobRef): Promise<string> {
+      const bytes = await readBlobBytes(stores.blobs, ref);
+      return `data:${ref.mime};base64,${Buffer.from(bytes).toString('base64')}`;
     },
 
     /**

@@ -16,7 +16,7 @@ import {
   normalizedOrThrow,
 } from '@xm/kernel';
 import type { PermissionAnswer } from '@xm/runtime';
-import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
+import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
 
 /**
@@ -90,7 +90,10 @@ async function harness(options: HarnessOptions = {}) {
   };
 
   const turn = (text: string, ...calls: { chunks: unknown }[]): Promise<unknown> =>
-    runTurn({ ...deps, provider: new ScriptedProvider({ turns: [...calls, END] as never }) }, text);
+    runTurn(
+      { ...deps, provider: new ScriptedProvider({ turns: [...calls, END] as never }) },
+      textInput(text),
+    );
 
   return { store, sessionId, runtime, turn, asked, persisted, blobs };
 }
@@ -375,7 +378,7 @@ describe('🔴 挂起的审批不许把回合卡死', () => {
         // 一个永远不回答的应答者。没有那道保险的话，这个 promise 会挂到天荒地老
         decide: () => new Promise<PermissionAnswer>(() => undefined),
       },
-      '写一个',
+      textInput('写一个'),
     );
 
     // 等审批请求落库之后再中断
@@ -409,7 +412,7 @@ describe('🔴 挂起的审批不许把回合卡死', () => {
         gateway: nodeToolGateway(),
         decide: () => Promise.reject(new Error('UI 崩了')),
       },
-      '写一个',
+      textInput('写一个'),
     );
 
     expect(decisions(await events(h)).at(-1)?.effect).toBe('deny');

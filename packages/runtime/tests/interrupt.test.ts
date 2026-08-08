@@ -3,7 +3,7 @@ import type { AnyEvent, ModelChunk, ModelRequest, XmEventType } from '@xm/contra
 import { isCoreEvent, newSessionId } from '@xm/contracts';
 import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, builtinLayers, emptySessionState, reduce } from '@xm/kernel';
-import { EventBus, SessionRuntime, runTurn } from '@xm/runtime';
+import { EventBus, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 
 /**
  * 停止按钮的端到端验证 —— 闭合 ADR-0021 留下的「没人发 message.interrupted」。
@@ -107,7 +107,7 @@ async function runAndInterrupt(afterMs = 0): Promise<Recorded> {
       model: 'x',
       signal: controller.signal,
     },
-    '说点什么',
+    textInput('说点什么'),
   );
 
   if (afterMs > 0) await new Promise((r) => setTimeout(r, afterMs));

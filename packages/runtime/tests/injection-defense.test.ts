@@ -4,7 +4,7 @@ import type { Capability, PersistedEvent } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import { MemoryEventStore, ToolRegistry, builtinLayers,
   pureGateway, defineTool } from '@xm/kernel';
-import { EventBus, ScriptedProvider, SessionRuntime, runTurn } from '@xm/runtime';
+import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 
 /**
  * ── 注入防御的**端到端**闸门 ──
@@ -146,7 +146,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         // ask 一律放行：这样如果防御失效，push 就会真的执行 —— 用例才拦得住回归
         decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
-      '看看这个网页',
+      textInput('看看这个网页'),
     );
 
     const events = await collect(h.store, h.sessionId);
@@ -185,7 +185,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
           ],
         }),
       },
-      '看看这个网页',
+      textInput('看看这个网页'),
     );
 
     // 用户回来了，下一回合才说要 push —— 注入最自然的形状
@@ -199,7 +199,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
           ],
         }),
       },
-      '好的，推上去吧',
+      textInput('好的，推上去吧'),
     );
 
     const events = await collect(h.store, h.sessionId);
@@ -227,7 +227,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         gateway: pureGateway(targetOf),
         decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
-      '推上去',
+      textInput('推上去'),
     );
 
     const events = await collect(h.store, h.sessionId);

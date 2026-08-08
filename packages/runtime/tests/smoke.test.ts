@@ -24,6 +24,7 @@ import {
   echoTool,
   fakeDeleteTool,
   runTurn,
+  textInput,
 } from '@xm/runtime';
 
 const ROOT = mkdtempSync(join(tmpdir(), 'xm-smoke-'));
@@ -125,7 +126,7 @@ describe('headless 冒烟：一轮完整对话', () => {
           return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
         },
       },
-      '试一下这几个工具',
+      textInput('试一下这几个工具'),
     );
 
     expect(reason).toBe('end_turn');
@@ -226,7 +227,7 @@ describe('headless 冒烟：一轮完整对话', () => {
     // 刻意不传 decide
     await runTurn(
       { runtime, provider, tools, layers, tier: 'balanced', model: 'scripted-1', gateway: pureGateway(demoTargetOf) },
-      '删掉它',
+      textInput('删掉它'),
     );
 
     const end = seen.find((e) => e.type === 'tool.end');

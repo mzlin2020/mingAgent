@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { EventEnvelope, RequestId, SessionId } from '@xm/contracts';
+import { BlobRef, EventEnvelope, RequestId, SessionId } from '@xm/contracts';
 
 /**
  * IPC 载荷契约（ADR-0015）。
@@ -44,12 +44,46 @@ export const CreateSessionRequest = z.strictObject({
 });
 export const CreateSessionResult = z.object({ sessionId: SessionId });
 
-export const SendUserMessageRequest = z.strictObject({
-  sessionId: SessionId,
-  /** 上限刻意存在：一条无界的字符串从渲染层进来会直接变成一次无界的落库 */
-  text: z.string().min(1).max(100_000),
+/** 单条消息最多带几张图——8 是"够用又不至于一条消息喂爆一次请求"的经验值 */
+export const MAX_IMAGES_PER_MESSAGE = 8;
+/** 单图原始字节上限。精确校验在 main 侧解码 base64 之后再做一次，这里只挡明显超标的 */
+export const MAX_IMAGE_RAW_BYTES = 10 * 1024 * 1024;
+/** base64 会把字节数膨胀到 4/3 左右，这里的上限留了余量，只是 zod 的粗筛 */
+export const MAX_IMAGE_BASE64_CHARS = 14 * 1024 * 1024;
+
+export const ImageAttachment = z.strictObject({
+  /** 原始字节的 base64。渲染层用 FileReader.readAsDataURL() 拿到后剥掉 data: 前缀传上来 */
+  data: z.string().min(1).max(MAX_IMAGE_BASE64_CHARS),
+  mime: z.string().min(1).max(100),
+  name: z.string().max(200).optional(),
 });
+export type ImageAttachment = z.infer<typeof ImageAttachment>;
+
+/**
+ * `text` 与 `images` 是**或**的关系，不是各自必填——允许"只发图片、不带文字"。
+ * `.refine()` 兜住"两者都是空"这种输入：渲染层的 Composer 会在本地先挡一遍，
+ * 但主进程不信任渲染层，这道闸门必须重开一次。
+ */
+export const SendUserMessageRequest = z
+  .strictObject({
+    sessionId: SessionId,
+    /** 上限刻意存在：一条无界的字符串从渲染层进来会直接变成一次无界的落库 */
+    text: z.string().max(100_000),
+    images: z.array(ImageAttachment).max(MAX_IMAGES_PER_MESSAGE).optional(),
+  })
+  .refine((v) => v.text.trim() !== '' || (v.images?.length ?? 0) > 0, {
+    message: '消息不能同时不带文字和图片',
+  });
 export const SendUserMessageResult = z.object({ reason: z.string() });
+
+/**
+ * 渲染层反查一个 blob 的字节——**第一条**这样的通道。此前 `stores.blobs` 只在
+ * 主进程内部用（checkpoint 快照、超限工具结果的归档），渲染层从没读过 blob 内容。
+ * `BlobRef` 本身（hash/mime/size/name）渲染层早就从事件流里见过了，
+ * 这里不需要额外传 sessionId 做二次授权：能读到这条事件本身就代表这个会话看得见它。
+ */
+export const ReadBlobRequest = z.strictObject({ ref: BlobRef });
+export const ReadBlobResult = z.object({ dataUrl: z.string() });
 
 export const ReadSessionRequest = z.strictObject({
   sessionId: SessionId,
