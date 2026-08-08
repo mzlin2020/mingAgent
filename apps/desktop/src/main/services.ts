@@ -26,7 +26,8 @@ import {
   runTurn,
 } from '@xm/runtime';
 import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
-import type { ImageAttachment } from '../shared/ipc.js';
+import type { ApprovalMode, ImageAttachment } from '../shared/ipc.js';
+import { ApprovalModeStore, TIER_OF } from './approval-mode.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { keychainSecretStore } from './secrets.js';
 
@@ -66,6 +67,13 @@ export interface Services {
   interrupt(sessionId: SessionId): boolean;
   /** 应答一次审批。返回是否对上了一个正在等的请求 */
   respondPermission(requestId: RequestId, answer: PermissionAnswer): boolean;
+  /**
+   * 本会话当前的审批模式（docs/09 C6）。会话级、不持久化——`createSession` 里
+   * 一律初始化成 `'ask'`，不读 `config.json`，也不在这里写它。
+   */
+  getApprovalMode(sessionId: SessionId): ApprovalMode;
+  /** 切换本会话的审批模式，立即对下一次 `sendUserMessage` 生效 */
+  setApprovalMode(sessionId: SessionId, mode: ApprovalMode): void;
   status(): Promise<RuntimeStatus>;
   setApiKey(providerId: string, key: string): Promise<void>;
   close(): Promise<void>;
@@ -170,6 +178,9 @@ export async function startServices(): Promise<Services> {
     }
   };
 
+  /** 每会话的审批模式（docs/09 C6，ADR-0030）。会话级、不持久化——见 approval-mode.ts */
+  const approvalModes = new ApprovalModeStore();
+
   const runtimeFor = async (sessionId: SessionId): Promise<SessionRuntime> => {
     const existing = runtimes.get(sessionId);
     if (existing !== undefined) return existing;
@@ -226,6 +237,7 @@ export async function startServices(): Promise<Services> {
 
     async createSession(options: { title?: string; cwd?: string } = {}): Promise<SessionId> {
       const sessionId = newSessionId();
+      approvalModes.init(sessionId);
       const runtime = await runtimeFor(sessionId);
       await runtime.record({
         type: 'session.created',
@@ -301,7 +313,7 @@ export async function startServices(): Promise<Services> {
             provider,
             tools,
             layers,
-            tier: config.permission.tier,
+            tier: TIER_OF[approvalModes.get(sessionId)],
             model: provider.id === 'scripted' ? 'scripted-1' : model,
             prices: config.prices,
             gateway,
@@ -388,6 +400,14 @@ export async function startServices(): Promise<Services> {
 
     respondPermission(requestId: RequestId, answer: PermissionAnswer): boolean {
       return settle(requestId, answer);
+    },
+
+    getApprovalMode(sessionId: SessionId): ApprovalMode {
+      return approvalModes.get(sessionId);
+    },
+
+    setApprovalMode(sessionId: SessionId, mode: ApprovalMode): void {
+      approvalModes.set(sessionId, mode);
     },
 
     async status(): Promise<RuntimeStatus> {

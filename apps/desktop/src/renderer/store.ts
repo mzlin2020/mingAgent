@@ -3,7 +3,13 @@ import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
 import type { LiveBuffer, SessionState } from '@xm/kernel';
 import { EMPTY_LIVE, applyLive, emptySessionState, reduce } from '@xm/kernel';
-import type { ImageAttachment, ListSessionsResult, PushedEvent, StatusResult } from '../shared/ipc.js';
+import type {
+  ApprovalMode,
+  ImageAttachment,
+  ListSessionsResult,
+  PushedEvent,
+  StatusResult,
+} from '../shared/ipc.js';
 import type { z } from 'zod';
 import { api } from './bridge.js';
 
@@ -51,6 +57,13 @@ interface UiState {
    * 此刻的装配情况，不是任何一条事件流的投影，回放也回放不出来。
    */
   status: Status | undefined;
+  /**
+   * 本会话当前的审批模式（docs/09 C6）——请求批准 / 帮我批准 / 完全访问权限。
+   *
+   * 跟 `status` 一样不是会话状态的一部分：它是主进程内存里的一个开关，
+   * 不进事件流，也不持久化，回放回放不出来。切会话时重新拉一次。
+   */
+  approvalMode: ApprovalMode;
 
   // 写成箭头属性而不是方法：zustand 的选择器会把它们从对象上摘下来单独传，
   // 方法类型在那时会触发 unbound-method——而这里确实不需要 this
@@ -64,6 +77,7 @@ interface UiState {
     scope: 'once' | 'session' | 'always',
   ) => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
+  readonly setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   readonly send: (text: string, images?: readonly ImageAttachment[]) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly clearUntrusted: () => Promise<void>;
@@ -90,6 +104,7 @@ export const useUi = create<UiState>((set, get) => ({
   busy: false,
   error: undefined,
   status: undefined,
+  approvalMode: 'ask',
 
   refreshSessions: async () => {
     try {
@@ -150,7 +165,7 @@ export const useUi = create<UiState>((set, get) => ({
 
   openSession: async (id) => {
     // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
-    set({ currentId: id, session: undefined, live: EMPTY_LIVE, error: undefined });
+    set({ currentId: id, session: undefined, live: EMPTY_LIVE, error: undefined, approvalMode: 'ask' });
     const events = await api.readSession(id);
     let state = emptySessionState(id);
     for (const raw of events) {
@@ -158,6 +173,29 @@ export const useUi = create<UiState>((set, get) => ({
       if (e !== undefined && isCoreEvent(e)) state = reduce(state, e);
     }
     set({ session: state });
+    try {
+      const { mode } = await api.getApprovalMode(id);
+      // 会话可能在这次 await 期间又被切走——不要用一个旧会话的模式覆盖当前会话
+      if (get().currentId === id) set({ approvalMode: mode });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /**
+   * 切审批模式。**乐观更新是安全的**——不像 `respondPermission`，这里没有"看起来
+   * 生效了、实际没生效"的窗口：切换本身没有副作用，真正受影响的是*下一次*
+   * `sendUserMessage` 用哪个 `tier`，而那次调用会重新读一遍主进程里的当前值。
+   */
+  setApprovalMode: async (mode) => {
+    const id = get().currentId;
+    if (id === undefined) return;
+    try {
+      const result = await api.setApprovalMode(id, mode);
+      if (get().currentId === id) set({ approvalMode: result.mode });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
   },
 
   send: async (text, images) => {

@@ -3,6 +3,8 @@ import { newSessionId } from '@xm/contracts';
 import { CH } from '../src/shared/channels.js';
 import {
   CreateSessionRequest,
+  GetApprovalModeRequest,
+  GetApprovalModeResult,
   IpcEnvelope,
   ListSessionsResult,
   MAX_IMAGES_PER_MESSAGE,
@@ -11,6 +13,8 @@ import {
   ReadBlobResult,
   ReadSessionRequest,
   SendUserMessageRequest,
+  SetApprovalModeRequest,
+  SetApprovalModeResult,
 } from '../src/shared/ipc.js';
 
 /**
@@ -110,6 +114,33 @@ describe('多模态：图片附件', () => {
     expect(ReadBlobResult.safeParse({ dataUrl: 'data:image/png;base64,aGVsbG8=' }).success).toBe(
       true,
     );
+  });
+});
+
+describe('审批模式（docs/09 C6）', () => {
+  it('三档模式都能通过，别的字符串一律拒绝', () => {
+    const sessionId = newSessionId();
+    for (const mode of ['ask', 'auto', 'full']) {
+      expect(SetApprovalModeRequest.safeParse({ sessionId, mode }).success).toBe(true);
+    }
+    expect(SetApprovalModeRequest.safeParse({ sessionId, mode: 'yolo' }).success).toBe(false);
+  });
+
+  it('🔴 幻觉字段被拒绝', () => {
+    const sessionId = newSessionId();
+    expect(
+      SetApprovalModeRequest.safeParse({ sessionId, mode: 'ask', tier: 'strict' }).success,
+    ).toBe(false);
+  });
+
+  it('GetApprovalModeRequest 只要 sessionId', () => {
+    expect(GetApprovalModeRequest.safeParse({ sessionId: newSessionId() }).success).toBe(true);
+    expect(GetApprovalModeRequest.safeParse({}).success).toBe(false);
+  });
+
+  it('Result 都是 { mode }', () => {
+    expect(GetApprovalModeResult.safeParse({ mode: 'auto' }).success).toBe(true);
+    expect(SetApprovalModeResult.safeParse({ mode: 'full' }).success).toBe(true);
   });
 });
 

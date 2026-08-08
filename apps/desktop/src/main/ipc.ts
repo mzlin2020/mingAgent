@@ -5,12 +5,14 @@ import { CH } from '../shared/channels.js';
 import {
   ClearUntrustedRequest,
   CreateSessionRequest,
+  GetApprovalModeRequest,
   InterruptRequest,
   ReadBlobRequest,
   ReadSessionRequest,
   RespondPermissionRequest,
   SendUserMessageRequest,
   SetApiKeyRequest,
+  SetApprovalModeRequest,
 } from '../shared/ipc.js';
 import type { Services } from './services.js';
 
@@ -83,6 +85,19 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
       }),
     }),
   );
+
+  /*
+   * 审批模式的读/写（docs/09 C6）。会话级、不持久化——两个 handler 都只转发到
+   * `services.ts` 内存里的那个 Map，跟别的会话态（`pending`、`running`）同一存放方式。
+   */
+  handle(CH.getApprovalMode, GetApprovalModeRequest, (req) =>
+    Promise.resolve({ mode: services.getApprovalMode(req.sessionId) }),
+  );
+
+  handle(CH.setApprovalMode, SetApprovalModeRequest, (req) => {
+    services.setApprovalMode(req.sessionId, req.mode);
+    return Promise.resolve({ mode: req.mode });
+  });
 
   /*
    * 选工作目录。**路径由主进程的原生对话框产生。**

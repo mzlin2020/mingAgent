@@ -139,6 +139,34 @@ export const RespondPermissionResult = z.object({
   accepted: z.boolean(),
 });
 
+/**
+ * 审批模式（docs/09 C6）——桌面层的纯 UI 概念，不进 `@xm/contracts`。
+ *
+ * 三档都落在已经实现、已经验证过的 `PermissionTier`（`balanced`/`yolo`）语义上，
+ * 不新增、不修改 tier，也不碰 `evaluate()`：
+ *
+ *   - `ask`  —— 请求批准。今天的默认行为，映射到 `balanced`。
+ *   - `auto` —— 帮我批准。跳过所有 `ask`（含 `shell.exec`），红线与任何 `deny`
+ *                （含内置的敏感路径/持久化/SSRF/危险命令 deny，也含用户自己写的）
+ *                原样生效——映射到已经过 ADR-0017/C5 验证过的 `yolo`。
+ *   - `full` —— 完全访问权限。与 `auto` 是**同一套判定机制**（同样映射到 `yolo`），
+ *                唯一区别在桌面 UI 的开启门槛（需要二次确认）与文案，而不是新开一个
+ *                凌驾于红线之上的层级——"是否该越过红线"是 C6 明确要求单独拍板的
+ *                问题，本轮刻意不做，见 ADR-0030。
+ *
+ * 会话级、不持久化，跟 docs/06 对 YOLO 开关的既有约束一致：新会话一律从 `ask` 起步，
+ * 存在主进程内存里，不读写 `config.json`。
+ */
+export const ApprovalMode = z.enum(['ask', 'auto', 'full']);
+export type ApprovalMode = z.infer<typeof ApprovalMode>;
+
+export const GetApprovalModeRequest = z.strictObject({ sessionId: SessionId });
+export const GetApprovalModeResult = z.object({ mode: ApprovalMode });
+
+export const SetApprovalModeRequest = z.strictObject({ sessionId: SessionId, mode: ApprovalMode });
+/** 回显真正生效的值，而不是假定请求里的值一定被采纳 */
+export const SetApprovalModeResult = z.object({ mode: ApprovalMode });
+
 /** 选工作目录。用户取消时 `path` 缺省——取消不是错误 */
 export const ChooseWorkspaceResult = z.object({ path: z.string().optional() });
 

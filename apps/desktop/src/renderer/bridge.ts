@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import type { BlobRef } from '@xm/contracts';
 import {
+  ApprovalMode,
   ChooseWorkspaceResult,
   ClearUntrustedResult,
   CreateSessionResult,
+  GetApprovalModeResult,
   ImageAttachment,
   InterruptResult,
   IpcEnvelope,
@@ -14,6 +16,7 @@ import {
   RespondPermissionResult,
   SendUserMessageResult,
   SetApiKeyResult,
+  SetApprovalModeResult,
   StatusResult,
 } from '../shared/ipc.js';
 
@@ -37,6 +40,8 @@ interface XmBridge {
   clearUntrusted(req: unknown): Promise<unknown>;
   interrupt(req: unknown): Promise<unknown>;
   respondPermission(req: unknown): Promise<unknown>;
+  getApprovalMode(req: unknown): Promise<unknown>;
+  setApprovalMode(req: unknown): Promise<unknown>;
   chooseWorkspace(): Promise<unknown>;
   status(): Promise<unknown>;
   setApiKey(req: unknown): Promise<unknown>;
@@ -117,6 +122,12 @@ export const api = {
       bridge().respondPermission({ sessionId, requestId, effect, scope }),
       RespondPermissionResult,
     ),
+
+  getApprovalMode: (sessionId: string) =>
+    call(bridge().getApprovalMode({ sessionId }), GetApprovalModeResult),
+
+  setApprovalMode: (sessionId: string, mode: ApprovalMode) =>
+    call(bridge().setApprovalMode({ sessionId, mode }), SetApprovalModeResult),
 
   /** 打开原生目录选择框。用户取消时返回 `{}` */
   chooseWorkspace: () => call(bridge().chooseWorkspace(), ChooseWorkspaceResult),

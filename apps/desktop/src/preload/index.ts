@@ -4,7 +4,7 @@ import { CH } from '../shared/channels.js';
 /**
  * preload —— **一根管子，不是一道闸门**（ADR-0015）。
  *
- * 它只做两件事：把十个具名调用转发给主进程，把主进程推来的事件转发给页面。
+ * 它只做两件事：把这些具名调用转发给主进程，把主进程推来的事件转发给页面。
  * 不校验、不解析、不缓存、不聚合。
  *
  * 为什么刻意这么薄：preload 跑在页面与主进程之间，是 `contextIsolation` 唯一的缺口。
@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('xm', {
   clearUntrusted: (req: unknown) => ipcRenderer.invoke(CH.clearUntrusted, req),
   interrupt: (req: unknown) => ipcRenderer.invoke(CH.interrupt, req),
   respondPermission: (req: unknown) => ipcRenderer.invoke(CH.respondPermission, req),
+  getApprovalMode: (req: unknown) => ipcRenderer.invoke(CH.getApprovalMode, req),
+  setApprovalMode: (req: unknown) => ipcRenderer.invoke(CH.setApprovalMode, req),
   chooseWorkspace: () => ipcRenderer.invoke(CH.chooseWorkspace),
   status: () => ipcRenderer.invoke(CH.status),
   setApiKey: (req: unknown) => ipcRenderer.invoke(CH.setApiKey, req),
