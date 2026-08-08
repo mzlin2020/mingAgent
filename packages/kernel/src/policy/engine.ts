@@ -9,6 +9,7 @@ import type {
   TargetKind,
 } from '@xm/contracts';
 import { isIrreversible, targetKindOf } from '@xm/contracts';
+import { isPrivateOrReservedIp } from './ip-range.js';
 import { normalizeTarget } from './normalize.js';
 import { normalizePathPattern } from './target.js';
 
@@ -262,6 +263,16 @@ function matches(
     !globMatch(rule.match.target, target, input.pathCaseInsensitive ?? false, kind)
   ) {
     return false;
+  }
+  if (rule.match.ipRange !== undefined) {
+    /*
+     * 防御性检查：非 `host` kind 直接判不匹配。构造期 `assertRules()` 已经不让这种规则
+     * 建出来，走到这里说明假设被破坏了——不匹配比崩溃更安全，但不该真的发生。
+     */
+    if (kind !== 'host') return false;
+    // target 可能带 `:port`（IPv6 是 `[::1]:8080`），判定只看主机部分
+    const host = target.startsWith('[') ? target.slice(0, target.indexOf(']') + 1) : target.split(':')[0] ?? target;
+    if (!isPrivateOrReservedIp(host)) return false;
   }
   if (rule.match.executor !== undefined && rule.match.executor !== (executor ?? 'local')) {
     return false;

@@ -407,7 +407,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
     return;
   }
 
-  const ctx: ToolContext = {
+  let ctx: ToolContext = {
     sessionId: runtime.sessionId,
     signal: deps.signal ?? NEVER_ABORTS,
     cwd: runtime.state.cwd,
@@ -420,6 +420,12 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       const resolved = await deps.gateway.resolve(tool, input, ctx);
       input = resolved.input;
       claims = resolved.claims;
+      /*
+       * 网络侧"判定与执行必须共用同一个值"的载体（M1-d）：网关那次 DNS 解析出的地址
+       * 原样交给执行阶段。工具建连时只能用这张表里的地址，不能自己再解析一次——
+       * 那会重新打开 DNS rebinding 的窗口（见 `ToolContext.pinnedHosts` 的注释）。
+       */
+      if (resolved.pinnedHosts !== undefined) ctx = { ...ctx, pinnedHosts: resolved.pinnedHosts };
     } catch (e) {
       // 失败关闭：解析不了就不执行，也**不发权限事件**——没有解析出来的目标，
       // 弹给用户看的那个确认框上写什么都是猜的

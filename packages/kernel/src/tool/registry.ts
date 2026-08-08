@@ -60,6 +60,7 @@ export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
     inputSchema: spec.inputSchema,
     pathInputs: spec.pathInputs ?? [],
     ...(spec.commandInputs === undefined ? {} : { commandInputs: spec.commandInputs }),
+    hostInputs: spec.hostInputs ?? [],
     parseInput: parse,
     // 这里仍然再 parse 一次，即便 turn.ts 已经先校验过：`execute` 是公开入口，
     // 不能假设每个调用方都记得先校验。允许的 schema 子集里 `.transform()` 被禁掉了，

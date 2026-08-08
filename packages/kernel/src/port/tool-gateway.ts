@@ -56,6 +56,14 @@ export interface ResolvedCall {
    * "契约写好了、没有任何调用点"。
    */
   readonly claims: readonly PermissionClaim[];
+  /**
+   * 网络侧"判定与执行必须共用同一个值"的载体（M1-d）。路径侧靠回写 `input` 做到这件事，
+   * 网络侧做不了——URL 字符串本身不能被网关改写成解析出的 IP（会破坏 Host header/SNI
+   * 语义），所以只能走这条带外通道：键是归一后的裸主机名，值是网关那次 DNS 查询解析出的
+   * 地址。`turn.ts` 把它合并进 `ToolContext.pinnedHosts`，工具执行时只能用这张表建连，
+   * 不能自己再解析一次——见 `ToolContext.pinnedHosts` 的注释。
+   */
+  readonly pinnedHosts?: ReadonlyMap<string, { readonly address: string; readonly family: 4 | 6 }>;
 }
 
 /**

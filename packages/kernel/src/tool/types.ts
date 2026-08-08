@@ -29,6 +29,18 @@ export interface ToolContext {
   /** 工作区根目录。工具自己解析相对路径，内核不碰文件系统 */
   readonly cwd: string;
   readonly executor: 'local' | 'container' | 'remote';
+  /**
+   * 网关在判权阶段解析出、且已经通过策略判定的主机地址（M1-d，web.fetch 的
+   * IP 级 SSRF 判定）。键是 `hostInputs` 字段里那个 URL 归一后的裸主机名
+   * （不含端口），值是网关那一次 DNS 查询解析出的地址。
+   *
+   * ⚠️ **工具只能用这张表里的地址建连，绝不能自己再调一次 DNS。** 判定与执行必须
+   * 共用同一个已解析的地址——工具自己重新解析一次，等于在"判权那一刻"与"真正建立
+   * 连接那一刻"之间重新打开一个 DNS rebinding 窗口，而这张表存在的唯一理由就是
+   * 关掉那个窗口。找不到对应主机名，说明网关没有产出这个能力的解析结果，工具应当
+   * 拒绝执行并报内部错误，而不是退化成自己发起一次解析。
+   */
+  readonly pinnedHosts?: ReadonlyMap<string, { readonly address: string; readonly family: 4 | 6 }>;
 }
 
 /**
@@ -99,6 +111,17 @@ export interface ToolSpec<I> {
   };
 
   /**
+   * 哪些入参字段是**网络目的地**（M1-d，web.fetch 的 SSRF 判定）。与 `pathInputs` /
+   * `commandInputs` 并列，同样不进 `ToolDescriptor`——模型不需要知道我们内部怎么解析它给的 URL。
+   *
+   * 声明了 `host` kind 的能力（`net.fetch` / `browser.control`）却不声明这个字段，
+   * 网关会当场拒绝——与 `pathInputs`/`commandInputs` 缺失时同一个理由：不知道 URL 在哪个
+   * 字段，就没法在判权前解析 DNS、按 IP 判内网段，这次调用会以一个空 target 通过所有
+   * 基于目标的规则。
+   */
+  readonly hostInputs?: readonly string[];
+
+  /**
    * 动态可用性：不满足条件时该工具**不进模型视野**（docs/04 §4.3）。
    *
    * 典型用途：无 git 仓库就不暴露 git 工具集；Linux 上 `computer.*` 探测为不可用，
@@ -137,6 +160,8 @@ export interface RegisteredTool {
   readonly pathInputs: readonly string[];
   /** 见 `ToolSpec.commandInputs`。缺席表示"这个工具不跑命令" */
   readonly commandInputs?: ToolSpec<unknown>['commandInputs'];
+  /** 见 `ToolSpec.hostInputs`。空数组表示"这个工具没有网络目的地入参" */
+  readonly hostInputs: readonly string[];
   /**
    * 只校验、不执行。不通过抛 `ToolInputError`。
    *

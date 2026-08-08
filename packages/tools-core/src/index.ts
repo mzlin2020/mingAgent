@@ -14,6 +14,7 @@ export * from './fs-read.js';
 export * from './fs-list.js';
 export * from './fs-write.js';
 export * from './shell-exec.js';
+export * from './web-fetch.js';
 
 import type { RegisteredTool } from '@xm/kernel';
 import { fsListTool } from './fs-list.js';
@@ -21,6 +22,7 @@ import { fsReadTool } from './fs-read.js';
 import { fsWriteTool } from './fs-write.js';
 import type { ShellExecOptions } from './shell-exec.js';
 import { shellExecTool } from './shell-exec.js';
+import { webFetchTool } from './web-fetch.js';
 
 /**
  * 这一批的全部工具。
@@ -45,4 +47,5 @@ export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
   fsListTool(),
   fsWriteTool(),
   shellExecTool(options),
+  webFetchTool(),
 ];

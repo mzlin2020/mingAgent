@@ -357,6 +357,112 @@ describe('命令分支', () => {
   });
 });
 
+/**
+ * ── 网络分支（M1-d，IP 级 SSRF 判定）──
+ *
+ * 与命令分支同一个测试哲学：不发真实网络请求，用注入的 `dnsLookup` 桩模拟解析结果。
+ * 这里最要紧的断言是"DNS 只解析一次"——防 rebinding 的全部论证都建立在这一点上，
+ * 光测"私网地址被拦"测不出"工具会不会自己再解析一次"这件事。
+ */
+describe('网络分支', () => {
+  const fetcher = (over: Partial<Parameters<typeof defineTool>[0]> = {}): RegisteredTool =>
+    defineTool({
+      name: 'web.probe',
+      group: 'web',
+      description: '探针',
+      inputSchema: z.strictObject({ url: z.string() }),
+      risk: 'medium',
+      capabilities: ['net.fetch'],
+      hostInputs: ['url'],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *execute() {
+        yield { kind: 'result' as const, forModel: [] };
+      },
+      ...over,
+    });
+
+  const stubLookup = (
+    addresses: readonly { address: string; family: 4 | 6 }[],
+  ): { calls: string[]; dnsLookup: (hostname: string) => Promise<readonly { address: string; family: 4 | 6 }[]> } => {
+    const calls: string[] = [];
+    return {
+      calls,
+      dnsLookup: (hostname: string) => {
+        calls.push(hostname);
+        return Promise.resolve(addresses);
+      },
+    };
+  };
+
+  it('🔴 声明了网络类能力却没有 hostInputs → 拒绝，不放行', async () => {
+    const t = fetcher({ hostInputs: [] });
+    await expect(
+      nodeToolGateway().resolve(t, { url: 'https://example.com/' }, ctx(root)),
+    ).rejects.toThrow(/hostInputs/);
+  });
+
+  it('DNS 解析失败 → 拒绝，不问、不发权限事件', async () => {
+    const dnsLookup = () => Promise.reject(new Error('ENOTFOUND'));
+    await expect(
+      nodeToolGateway({ dnsLookup }).resolve(fetcher(), { url: 'https://example.com/' }, ctx(root)),
+    ).rejects.toThrow(GatewayError);
+  });
+
+  it('解析成功：产出两条 claim（域名 + 解析出的 IP），并把地址写进 pinnedHosts', async () => {
+    const { calls, dnsLookup } = stubLookup([{ address: '169.254.169.254', family: 4 }]);
+    const r = await nodeToolGateway({ dnsLookup }).resolve(
+      fetcher(),
+      { url: 'https://example.com/meta' },
+      ctx(root),
+    );
+
+    expect(calls).toEqual(['example.com']); // 🔴 只解析一次
+    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://example.com/meta' });
+    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://169.254.169.254/' });
+    expect(r.pinnedHosts?.get('example.com')).toEqual({ address: '169.254.169.254', family: 4 });
+  });
+
+  it('端口保留在解析出的 IP claim 里', async () => {
+    const { dnsLookup } = stubLookup([{ address: '10.0.0.5', family: 4 }]);
+    const r = await nodeToolGateway({ dnsLookup }).resolve(
+      fetcher(),
+      { url: 'https://internal.example:8443/api' },
+      ctx(root),
+    );
+    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://10.0.0.5:8443/' });
+  });
+
+  it('IPv6 地址在 claim 里带方括号', async () => {
+    const { dnsLookup } = stubLookup([{ address: '::1', family: 6 }]);
+    const r = await nodeToolGateway({ dnsLookup }).resolve(
+      fetcher(),
+      { url: 'http://example.com/' },
+      ctx(root),
+    );
+    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'http://[::1]/' });
+    expect(r.pinnedHosts?.get('example.com')).toEqual({ address: '::1', family: 6 });
+  });
+
+  it('归一失败（非 http(s)）：不抛错，产出一条带原始字符串的 claim 交给策略引擎失败关闭', async () => {
+    const dnsLookup = (): Promise<never> => {
+      throw new Error('不应该被调用——归一都没过，不该走到 DNS 这一步');
+    };
+    const r = await nodeToolGateway({ dnsLookup }).resolve(
+      fetcher(),
+      { url: 'file:///etc/passwd' },
+      ctx(root),
+    );
+    expect(r.claims).toEqual([{ capability: 'net.fetch', target: 'file:///etc/passwd' }]);
+    expect(r.pinnedHosts?.size ?? 0).toBe(0);
+  });
+
+  it('URL 字段不是字符串 → 拒绝', async () => {
+    await expect(
+      nodeToolGateway().resolve(fetcher(), { url: 42 }, ctx(root)),
+    ).rejects.toThrow(/URL 字符串/);
+  });
+});
+
 const realNative = promisify(realpathCb.native);
 
 /**

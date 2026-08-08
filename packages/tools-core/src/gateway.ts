@@ -1,4 +1,5 @@
 import { realpath as realpathCb } from 'node:fs';
+import { lookup as dnsLookupNode } from 'node:dns/promises';
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { isPathCapability, targetKindOf } from '@xm/contracts';
@@ -9,7 +10,13 @@ import type {
   ToolContext,
   ToolGateway,
 } from '@xm/kernel';
-import { GatewayError, analyzeArgv, claimsOfCapabilities, normalizePathTarget } from '@xm/kernel';
+import {
+  GatewayError,
+  analyzeArgv,
+  claimsOfCapabilities,
+  normalizeHostTarget,
+  normalizePathTarget,
+} from '@xm/kernel';
 
 /**
  * **必须是 `.native`。**
@@ -65,12 +72,24 @@ export interface NodeGatewayOptions {
    * 省略则不展开：带 `~` 的路径会在内核那里失败关闭地 deny，行为仍然是安全的。
    */
   readonly home?: string;
+  /**
+   * DNS 解析的注入点（M1-d，web.fetch 的 IP 级 SSRF 判定）。省略则用
+   * `node:dns/promises` 的真实解析——测试用假实现替换它，不发真实网络请求。
+   *
+   * 与 `cwd`/`home` 是同一个模式：生产环境用真实实现，测试注入桩。
+   */
+  readonly dnsLookup?: (
+    hostname: string,
+  ) => Promise<readonly { readonly address: string; readonly family: 4 | 6 }[]>;
 }
 
 export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway => ({
   async resolve(tool: RegisteredTool, input: unknown, ctx: ToolContext): Promise<ResolvedCall> {
     const needsCommand = tool.descriptor.capabilities.some((c) => targetKindOf(c) === 'command');
     if (needsCommand) return resolveCommand(tool, input, ctx, options);
+
+    const needsHost = tool.descriptor.capabilities.some((c) => targetKindOf(c) === 'host');
+    if (needsHost) return resolveHost(tool, input, options);
 
     const needsPath = tool.descriptor.capabilities.some(isPathCapability);
 
@@ -215,6 +234,146 @@ async function resolveCwd(raw: unknown, fallback: string, tool: string): Promise
   }
   const candidate = typeof raw === 'string' && raw !== '' ? resolve(fallback, raw) : fallback;
   return canonical(await resolveDeep(candidate), tool, 'cwd');
+}
+
+/**
+ * 网络类调用的解析（M1-d，web.fetch 的 IP 级 SSRF 判定）。
+ *
+ * 与路径/命令分支同一个分工：内核（`normalizeHostTarget`）只做词法归一，
+ * 它自己写明了"真正的 SSRF 防御是在发请求的那一层按解析出的 IP 判定"——这里就是
+ * 那一层。做两件内核做不了的事（它零 I/O）：
+ *
+ *   一、**DNS 解析**，且只在这里解析一次。
+ *   二、**产出两条 claim**：一条是原始域名（命中默认的 `ask`，用户在确认框里看到
+ *      可读的域名），一条是解析出的 IP 拼成的合法 URL（命中新增的 IP 段 deny）。
+ *      两条都挂在同一个能力上，`turn.ts` 现有的"任一 claim 被拒即整体拒"不用改一行
+ *      代码就能让两道闸门同时生效。
+ *
+ * ── 为什么不像路径分支那样回写入参 ──
+ *
+ * 路径分支回写是因为判定看到的路径必须与执行打开的路径是同一个字符串。网络场景做
+ * 不到同样的事——URL 字符串本身不能被改写成解析出的 IP：改了 Host 就变了 SNI/虚拟主机
+ * 语义，工具连的就不再是同一个"名字"了。真正需要"判定与执行共用同一个值"的是**地址**，
+ * 不是 URL 本身，所以这里走的是 `ResolvedCall.pinnedHosts` 这条带外通道：把这次解析
+ * 出的地址原样交给执行阶段，工具建连时只准用这张表里的地址，不许自己再解析一次——
+ * 这是唯一能保证"判定用的 IP = 实际建连的 IP"、从而堵死 DNS rebinding 窗口的做法。
+ */
+async function resolveHost(
+  tool: RegisteredTool,
+  input: unknown,
+  options: NodeGatewayOptions,
+): Promise<ResolvedCall> {
+  const name = tool.descriptor.name;
+
+  if (tool.hostInputs.length === 0) {
+    /*
+     * 声明了网络类能力却没有 `hostInputs`——**拒绝，不放行**。与 `pathInputs`/
+     * `commandInputs` 缺失时同一个理由：不知道 URL 在哪个字段，就判不出这次调用
+     * 要去哪，这次调用会以一个空 target 通过所有基于目标的规则（含 IP 段判定）。
+     */
+    throw new GatewayError(
+      `工具 ${name} 声明了网络类能力，却没有声明 hostInputs——` +
+        `网关无法知道哪个入参是网络目的地，也就判不出这次调用要连到哪。` +
+        `这会让所有基于目标的规则（含 IP 段判定）匹配不上，因此直接拒绝。`,
+      { tool: name },
+    );
+  }
+
+  const record = asRecord(input, name);
+  const hostCapabilities = tool.descriptor.capabilities.filter((c) => targetKindOf(c) === 'host');
+  const lookup = options.dnsLookup ?? defaultDnsLookup;
+  const claims: PermissionClaim[] = [];
+  const pinnedHosts = new Map<string, { address: string; family: 4 | 6 }>();
+  let any = false;
+
+  for (const field of tool.hostInputs) {
+    const raw = record[field];
+    // 可选的网络目的地字段没给值就跳过——与 pathInputs 同一个宽容度
+    if (raw === undefined) continue;
+    any = true;
+    if (typeof raw !== 'string' || raw === '') {
+      throw new GatewayError(
+        `工具 ${name} 的入参 "${field}" 应当是一个非空的 URL 字符串。`,
+        { tool: name, field },
+      );
+    }
+
+    const normalized = normalizeHostTarget(raw);
+    if (!normalized.ok) {
+      /*
+       * 判不了：不抛错，产出一条带原始字符串的 claim，交给 `evaluate()` 已有的
+       * "target 规范化失败 → deny"逻辑接住（与 `resolveCommand` 里"判不了的命令
+       * 交给规则判"是同一个分工），不在这一层重复判定逻辑。
+       */
+      for (const capability of hostCapabilities) claims.push({ capability, target: raw });
+      continue;
+    }
+
+    const { host, port } = splitNormalizedHostPort(normalized.value);
+    const dnsHostname = host.startsWith('[') ? host.slice(1, -1) : host;
+
+    let addresses: readonly { readonly address: string; readonly family: 4 | 6 }[];
+    try {
+      addresses = await lookup(dnsHostname);
+    } catch (err) {
+      // 解析失败：不问、不发权限事件——判不了就不放行，与其它"判不了"分支同一个姿态
+      throw new GatewayError(
+        `工具 ${name} 的入参 "${field}" 里的主机 "${dnsHostname}" 无法解析：` +
+          `${err instanceof Error ? err.message : String(err)}。` +
+          `解析不了就不放行——网关不知道这次调用真正会连到哪。`,
+        { tool: name, field, host: dnsHostname },
+      );
+    }
+    const first = addresses[0];
+    if (first === undefined) {
+      throw new GatewayError(
+        `工具 ${name} 的入参 "${field}" 里的主机 "${dnsHostname}" 没有解析出任何地址。`,
+        { tool: name, field, host: dnsHostname },
+      );
+    }
+
+    // 判定与执行共用同一个地址——见本函数顶部注释
+    pinnedHosts.set(host, { address: first.address, family: first.family });
+
+    const scheme = (/^(https?):\/\//i.exec(raw)?.[1] ?? 'http').toLowerCase();
+    const ipLiteral = first.family === 6 ? `[${first.address}]` : first.address;
+    const ipUrl = `${scheme}://${ipLiteral}${port === undefined ? '' : `:${port}`}/`;
+
+    for (const capability of hostCapabilities) {
+      claims.push({ capability, target: raw }); // claim A：可读域名，命中默认 ask
+      claims.push({ capability, target: ipUrl }); // claim B：解析出的 IP，命中 IP 段 deny
+    }
+  }
+
+  if (!any) {
+    /*
+     * 一条网络目的地字段都没给值——与路径分支同一个兜底：仍然覆盖每个声明的能力
+     * （`PermissionClaim` 的不变量是"主张只能加不能减"），空 target 会在
+     * `evaluate()` 里被 `normalizeHostTarget` 判定为失败关闭，不是静默放行。
+     */
+    for (const capability of hostCapabilities) claims.push({ capability, target: '' });
+  }
+
+  return { input, claims: dedupeClaims(claims), pinnedHosts };
+}
+
+/** 把 `normalizeHostTarget` 归一后的 `host[:port]` 拆开——IPv6 是 `[::1]:8080` 这种形状 */
+function splitNormalizedHostPort(value: string): { host: string; port: string | undefined } {
+  if (value.startsWith('[')) {
+    const close = value.indexOf(']');
+    const host = value.slice(0, close + 1);
+    const rest = value.slice(close + 1);
+    return { host, port: rest.startsWith(':') ? rest.slice(1) : undefined };
+  }
+  const idx = value.lastIndexOf(':');
+  return idx === -1 ? { host: value, port: undefined } : { host: value.slice(0, idx), port: value.slice(idx + 1) };
+}
+
+async function defaultDnsLookup(
+  hostname: string,
+): Promise<readonly { readonly address: string; readonly family: 4 | 6 }[]> {
+  const results = await dnsLookupNode(hostname, { all: true, verbatim: true });
+  return results.map((r) => ({ address: r.address, family: r.family as 4 | 6 }));
 }
 
 /**

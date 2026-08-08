@@ -20,6 +20,18 @@ export const PolicyRule = z.object({
       target: z.string().optional(),
       executor: z.enum(['local', 'container', 'remote']).optional(),
       trustLevel: z.array(TrustLevel).optional(),
+      /**
+       * 按解析出的 IP 地址段匹配（M1-d，web.fetch 的 SSRF 判定）。只对 `host` kind
+       * 的能力有意义——构造期由 `assertRules()` 强制。
+       *
+       * 故意是**闭集字面量**，不是让用户在配置里写任意 CIDR 字符串：SSRF 防护不需要
+       * 用户可配置网段（用户要放行的是"这一个具体地址"，走 `target` 字面量 allow），
+       * 这与 `Capability` 用闭集而不是自由字符串防止插件自造能力名是同一个理由。
+       * `172.16.0.0/12` 这类不对齐在点分段边界的网段，极简 glob 表达不了，
+       * 需要专门的位运算判定（见 `policy/ip-range.ts`），因此单独开一个匹配维度，
+       * 不硬塞进 `target` 的 glob 里。
+       */
+      ipRange: z.enum(['private']).optional(),
     })
     .optional(),
   /** 展示给用户的理由。Verdict 会原样带出去，所以要写人话 */

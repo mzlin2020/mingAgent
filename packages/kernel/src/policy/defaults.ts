@@ -535,6 +535,43 @@ export const persistencePathRules = (env: PolicyEnv): readonly PolicyRule[] => {
   ];
 };
 
+// ── 网络访问的 IP 级判定（SSRF）─────────────────────────────────
+
+/**
+ * `net.fetch` / `browser.control` 按解析出的 IP 拒绝内网/保留网段（M1-d）。
+ *
+ * ── 为什么必须存在 ──
+ *
+ * `def.net-fetch` 只是 `ask`——用户点一次允许，此后网关按域名写法归一之后就放行了。
+ * `normalizeHostTarget` 自己写明了它的边界："归一之后的匹配仍然只是目的地写法层面的
+ * 防线，真正的 SSRF 防御是在发请求的那一层按解析出的 IP 判定"。这条规则就是那一层——
+ * 它匹配的不是 `target`（域名/字面量写法），而是 `ipRange`（网关解析域名之后拼出的
+ * 第二条 claim，见 `packages/tools-core/src/gateway.ts`）。
+ *
+ * ── 为什么是普通 deny，不是红线 ──
+ *
+ * 挑选标准与 ADR-0025/0027 相同：访问内网/回环地址有大量正当用途——用户完全可能真的
+ * 想让小明访问自己电脑上的 `localhost:3000` 开发服务器，或者局域网里的路由器管理页。
+ * 云元数据地址（`169.254.169.254` 等）造成的伤害是"凭据进了模型上下文"，这与
+ * ADR-0025 里 `.pem` 文件的伤害模型完全同构——而 `.pem` 本身也只是普通 deny，
+ * 不是红线。红线不给任何出口，这里的正确解法是"给一个用户显式打开的出口"。
+ *
+ * `browser.control` 同为 `host` kind，一并挂上——M4 之前没有工具用到它，
+ * 但补一条规则的成本是零，而漏掉的代价是那个能力接上工具的第一天就敞着（ADR-0025 的论证方式）。
+ */
+export const ssrfDenyRules = (): readonly PolicyRule[] =>
+  (['net.fetch', 'browser.control'] as const).map((capability) => ({
+    id: `def.no-fetch-private-network${capability === 'net.fetch' ? '' : '-browser'}`,
+    effect: 'deny' as const,
+    capability,
+    match: { ipRange: 'private' as const },
+    reason:
+      '这个域名解析到了一个内网/保留网段的地址（含云元数据端点）。' +
+      '这类地址背后的服务通常没有身份校验，一旦能被访问，凭据或内部接口就直接暴露给了模型上下文。' +
+      '确属你的本意的话，在用户配置里对解析出的那个具体地址写一条 allow 即可放开。',
+    immutable: false,
+  }));
+
 // ── 判不了的命令 ────────────────────────────────────────────────
 
 /**
@@ -590,11 +627,27 @@ export const commandDenyRules = (): readonly PolicyRule[] =>
  * `deny process.spawn "rm -rf /*"` 是 docs/06 里真写过的那种规则，而
  * `rm  -rf /`（两个空格）、`rm -fr /`、`/bin/rm -rf /`、`sh -c 'rm -rf /'` 全都绕得过去。
  * 契约落地之前，这种规则一条也不许存在——存在一条，就有人以为这里防住了。
+ *
+ * ── 三、`ipRange` 只能挂在 `host` kind 上 ──
+ *
+ * `matches()` 的 `ipRange` 分支只对 `host` kind 生效（非 host 一律不匹配），
+ * 在别的能力上写这个字段不会报错也不会生效——一条"看起来配置了、实际是死规则"的
+ * 规则，和"红线建在没有契约的 target 上"是同一类失效，同样要在写下来的那一刻炸掉。
  */
 function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
   for (const r of rules) {
-    if (r.match?.target === undefined || r.capability === '*') continue;
+    if (r.capability === '*') continue;
     const kind = targetKindOf(r.capability);
+
+    if (r.match?.ipRange !== undefined && kind !== 'host') {
+      throw new Error(
+        `规则 "${r.id}" 对能力 "${r.capability}" 使用了 ipRange 匹配，而这个能力的` +
+          `target kind 是 "${kind}" 不是 "host"——ipRange 判定只认已解析的网络地址，` +
+          `在其它 kind 上它永远不会匹配，是一条看起来配置了、实际是死规则的规则。`,
+      );
+    }
+
+    if (r.match?.target === undefined) continue;
 
     /*
      * ── 命令类 target：**红线仍然不许，普通规则放开**（ADR-0026 决策四，修正 ADR-0020 决策五）──
@@ -651,6 +704,7 @@ export const builtinRules = (env: PolicyEnv): PolicyRuleSet =>
     ...BALANCED_DEFAULT_RULES,
     ...sensitiveReadRules(env),
     ...persistencePathRules(env),
+    ...ssrfDenyRules(),
     ...commandDenyRules(),
   ]);
 
