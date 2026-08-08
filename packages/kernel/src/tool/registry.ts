@@ -7,6 +7,70 @@ import type {
   ToolSpec,
 } from './types.js';
 
+/**
+ * 声明空能力集（`capabilities: []`）的工具白名单，键是工具名，值是批准它这么做的
+ * ADR 编号（ADR-0032 #5）。
+ *
+ * ── 为什么这是一件需要专门拦一道的事 ──
+ *
+ * `evaluate()` 判的是 claim，而 claim 由能力产出——声明空能力集的工具**结构性地
+ * 不经过权限闸门**，红线与用户自己写的 deny 都碰不到它一根手指。这与原则四的
+ * 约束"所有产生副作用的工具必须声明 capabilities 与 risk，并经过权限闸门"字面
+ * 冲突；原则四本身也写了"任何'绕过审批'的代码路径都要有 ADR 说明"，`shell.session`
+ * 的三个工具就是这样一份说明（ADR-0031）。**问题是这条纪律此前完全靠人记得住**——
+ * 没有任何机制会在下一个想抄近道的新工具声明 `capabilities: []` 时发出信号，
+ * 要求它必须先有一份 ADR。地基复审三（ADR-0032）把这一点点破：不允许"字面上
+ * 不算违反"只靠没人滥用来维持，得让它变成机器能拦下来的东西。
+ *
+ * ── 为什么白名单在这里（`defineTool()`），不是一份独立的 lint 规则 ──
+ *
+ * `assertToolSchema()` 已经确立了"注册时就炸，而不是等模型在生产里填出一个诡异
+ * 参数"（ADR-0009）这条先例——离风险最近的地方拦，而不是指望有人记得跑一个
+ * 独立的静态扫描脚本。工具是不是声明了空能力集，`defineTool()` 本来就在看
+ * （`spec.capabilities`），加一道检查不需要新的基础设施。
+ */
+export const EMPTY_CAPABILITIES_ALLOWLIST: Readonly<Record<string, string>> = {
+  'shell.session.write': 'ADR-0031（会话内容结构性不判权，见 ADR-0031/0032 的代价说明）',
+  'shell.session.resize': 'ADR-0031（同上）',
+  'shell.session.close': 'ADR-0031（同上）',
+  /*
+   * `demo.echo` 是这条纪律建立之前就存在的一个更早的例子（M0-b，`packages/
+   * runtime/src/tools/demo.ts`）——本轮复审 ADR-0032 说"全项目只有 PTY 的三个
+   * 工具用到 capabilities: []，没有扩散"，写这条白名单实现时才发现这句话不准确，
+   * 如实改正。**它与 shell.session 三个工具性质不同，不需要一份新 ADR**：
+   * `demo.echo` 单纯把入参文本原样回显，没有任何副作用可言——原则四要求
+   * "所有产生副作用的工具必须声明 capabilities"，一个真的不产生副作用的工具
+   * 声明空能力集不是绕过闸门，是如实反映"这里没有什么好判的"。它确实被注册进了
+   * 桌面应用（`apps/desktop/src/main/services.ts`），不只是测试专用，因此仍然
+   * 要登记在这里，只是登记理由与 ADR 编号不同，写清楚以免和真正的安全例外混淆。
+   */
+  'demo.echo': '无 ADR——零副作用玩具工具（M0-b 冒烟用），非安全例外，与 shell.session 性质不同',
+  /*
+   * 以下两条是测试夹具，不是真实工具，登记理由与上面两类都不同：它们的存在
+   * 只是为了让测试能构造出"一个声明了空能力集的工具"这个样本，用来验证
+   * 网关/上下文隔离的某个行为，样本本身从不会被真正注册进任何一个运行中的应用。
+   */
+  'fs.probe': 'test-fixture（packages/tools-core/tests/gateway.test.ts）',
+  'demo.spy': 'test-fixture（packages/runtime/tests/untrusted-clear.test.ts）',
+};
+
+/** 工具声明了空能力集，但没有登记在 `EMPTY_CAPABILITIES_ALLOWLIST` 里。 */
+export class UnlistedEmptyCapabilitiesError extends Error {
+  readonly toolName: string;
+
+  constructor(toolName: string) {
+    super(
+      `工具 "${toolName}" 声明了空能力集（capabilities: []），意味着它的每次调用完全` +
+        `不经过权限闸门——红线与用户自己写的 deny 规则都拦不住它（ADR-0032 #5）。` +
+        `如果这是有意为之，必须先写一份 ADR 说明为什么可以这样做，再把工具名和 ADR` +
+        `编号加进 packages/kernel/src/tool/registry.ts 的 EMPTY_CAPABILITIES_ALLOWLIST。` +
+        `如果只是手滑漏填了 capabilities，把它填上就好。`,
+    );
+    this.name = 'UnlistedEmptyCapabilitiesError';
+    this.toolName = toolName;
+  }
+}
+
 /** 模型给出的入参没通过 strict 校验。会被转成 tool_result{isError:true} 回灌给模型。 */
 export class ToolInputError extends Error {
   readonly toolName: string;
@@ -33,6 +97,11 @@ export class ToolInputError extends Error {
 export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
   // 注册时就炸，而不是等模型在生产里填出一个诡异参数（ADR-0009）
   assertToolSchema(spec.inputSchema);
+
+  // 声明空能力集必须显式登记（ADR-0032 #5），同样是注册时就炸
+  if (spec.capabilities.length === 0 && !(spec.name in EMPTY_CAPABILITIES_ALLOWLIST)) {
+    throw new UnlistedEmptyCapabilitiesError(spec.name);
+  }
 
   const descriptor: ToolDescriptor = {
     name: spec.name,

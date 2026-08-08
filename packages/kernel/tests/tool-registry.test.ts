@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import { ToolSchemaError } from '@xm/contracts';
-import { ToolInputError, ToolRegistry, defineTool } from '@xm/kernel';
+import {
+  EMPTY_CAPABILITIES_ALLOWLIST,
+  ToolInputError,
+  ToolRegistry,
+  UnlistedEmptyCapabilitiesError,
+  defineTool,
+} from '@xm/kernel';
 import type { ToolAvailabilityContext, ToolContext } from '@xm/kernel';
 import { ALL_CAPABILITIES, newSessionId } from '@xm/contracts';
 
@@ -73,7 +79,9 @@ describe('defineTool', () => {
       description: 'd',
       inputSchema: z.strictObject({}),
       risk: 'safe',
-      capabilities: [],
+      // 这条测试只关心 concurrency 默认值（只看 spec.resources，与 capabilities
+      // 无关），随便给一个非空能力即可，不要撞上 ADR-0032 #5 的空能力集白名单检查
+      capabilities: ['fs.read'],
       // eslint-disable-next-line @typescript-eslint/require-await
       execute: async function* (): AsyncIterable<ToolProgress> {
         yield { kind: 'result', forModel: [] };
@@ -217,5 +225,65 @@ describe('工具可用性过滤', () => {
     );
     expect(r.descriptors(availCtx({ cwd: '/tmp' }))).toHaveLength(0);
     expect(r.descriptors(availCtx({ cwd: '/repo/x' }))).toHaveLength(1);
+  });
+});
+
+describe('声明空能力集必须显式登记（ADR-0032 #5）', () => {
+  const emptyCapTool = (name: string) =>
+    defineTool({
+      name,
+      group: 'x',
+      description: 'd',
+      inputSchema: z.strictObject({}),
+      risk: 'safe',
+      capabilities: [],
+      // eslint-disable-next-line @typescript-eslint/require-await
+      execute: async function* (): AsyncIterable<ToolProgress> {
+        yield { kind: 'result', forModel: [] };
+      },
+    });
+
+  it('🔴 未登记的工具声明空能力集：注册时就炸，不是等到判权那一刻才发现绕过了闸门', () => {
+    expect(() => emptyCapTool('some.new.tool.nobody.reviewed')).toThrow(UnlistedEmptyCapabilitiesError);
+  });
+
+  it('错误信息指向白名单该改哪个文件，不是一句"不行"就完事', () => {
+    try {
+      emptyCapTool('another.unlisted.tool');
+      expect.unreachable('应该抛出');
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnlistedEmptyCapabilitiesError);
+      expect((e as Error).message).toContain('EMPTY_CAPABILITIES_ALLOWLIST');
+      expect((e as UnlistedEmptyCapabilitiesError).toolName).toBe('another.unlisted.tool');
+    }
+  });
+
+  it('已登记的工具名不受影响，正常定义成功', () => {
+    for (const name of Object.keys(EMPTY_CAPABILITIES_ALLOWLIST)) {
+      expect(() => emptyCapTool(name)).not.toThrow();
+    }
+  });
+
+  it('白名单里每一条都写明了理由（ADR 编号或 test-fixture/说明），不是空字符串', () => {
+    for (const [name, reason] of Object.entries(EMPTY_CAPABILITIES_ALLOWLIST)) {
+      expect(reason.length, `${name} 的登记理由不该是空的`).toBeGreaterThan(0);
+    }
+  });
+
+  it('非空能力集不受这条规则约束，正常工具完全不用管这张白名单', () => {
+    expect(() =>
+      defineTool({
+        name: 'normal.tool',
+        group: 'x',
+        description: 'd',
+        inputSchema: z.strictObject({}),
+        risk: 'safe',
+        capabilities: ['fs.read'],
+        // eslint-disable-next-line @typescript-eslint/require-await
+        execute: async function* (): AsyncIterable<ToolProgress> {
+          yield { kind: 'result', forModel: [] };
+        },
+      }),
+    ).not.toThrow();
   });
 });
