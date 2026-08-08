@@ -26,8 +26,10 @@ export default tseslint.config(
 
   // 测试不在各包的构建工程里（那里只 include src/），projectService 找不到它们。
   // 显式指到 tsconfig.tests.json —— 与 `pnpm typecheck` 用的是同一份配置，不会漂移。
+  // evals/ 也在这里：它不属于任何包，但 evals/regression/schema.test.ts 一样是
+  // 要类型检查的测试代码（ADR-0032 #4）。
   {
-    files: ['packages/*/tests/**/*.ts', 'apps/*/tests/**/*.ts'],
+    files: ['packages/*/tests/**/*.ts', 'apps/*/tests/**/*.ts', 'evals/**/*.ts'],
     languageOptions: {
       parserOptions: {
         projectService: false,
