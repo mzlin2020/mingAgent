@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
@@ -10,8 +11,14 @@ import { describe, expect, it } from 'vitest';
  * JSON 会一直静静地待在这里，直到 M5 真的写运行器那天才被发现，那时候多半
  * 已经攒了一堆同样的错误。这条测试现在就把 `evals/README.md` 里写的 schema
  * 变成一个可执行的约束，不等运行器落地。
+ *
+ * `fileURLToPath` 而不是 `.pathname`：后者在 Windows 上是
+ * `/D:/a/mingAgent/mingAgent/...` 这种带前导斜杠的 URL 路径，不是合法的
+ * 文件系统路径——`readdirSync` 拿着它在 Windows CI 上直接 ENOENT
+ * （实测报错路径里能看到被拼出一个荒谬的 `D:\D:\...`）。`fileURLToPath`
+ * 才是 file:// URL 转本地路径的正确、跨平台的写法。
  */
-const DIR = new URL('.', import.meta.url).pathname;
+const DIR = fileURLToPath(new URL('.', import.meta.url));
 
 function regressionFiles(): string[] {
   return readdirSync(DIR).filter((f) => f.endsWith('.json'));

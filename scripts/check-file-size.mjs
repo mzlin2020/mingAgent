@@ -30,8 +30,13 @@
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = new URL('..', import.meta.url).pathname;
+// fileURLToPath 而不是 `.pathname`：后者在 Windows 上产出 `/D:/a/...` 这种带
+// 前导斜杠的 URL 路径，不是合法的文件系统路径，`readdirSync`/`readFileSync`
+// 在 Windows CI 上会直接 ENOENT（同一个坑在 evals/regression/schema.test.ts
+// 里已经实测炸过一次）。
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const MAX_LINES = 400;
 
 const SCAN_DIRS = ['packages', 'apps/desktop/src'];

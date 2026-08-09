@@ -15,6 +15,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
 import { newCallId, newSessionId } from '../packages/contracts/dist/index.js';
@@ -46,7 +47,9 @@ import {
   textInput,
 } from '../packages/runtime/dist/index.js';
 
-const APP_ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
+// fileURLToPath 而不是 `.pathname`：后者在 Windows 上是 `/D:/a/...` 这种带
+// 前导斜杠的 URL 路径，不是合法的文件系统路径（同一个坑见 check-file-size.mjs）。
+const APP_ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[/\\]$/, '');
 const dataDir = mkdtempSync(join(tmpdir(), 'xm-headless-'));
 /** 主 DoD 任务的工作区。真文件、真读写——闸门第一次被真实输入喂 */
 const workspace = mkdtempSync(join(tmpdir(), 'xm-workspace-'));
