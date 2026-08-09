@@ -181,12 +181,36 @@ describe('🔴 curl 不再绕过不可信标记', () => {
         id: 'user.allow-fetch',
         effect: 'allow',
         capability: 'net.fetch',
-        match: { target: 'example.com' },
+        match: { target: 'localhost:1' },
         reason: '用例放行，只为看能力有没有被记下来',
         immutable: false,
       },
     ]);
-    const all = await exec(['curl', 'https://example.com/a']);
+    /*
+     * `tool.start` 只在 `executeCall` 里发（`turn.ts`），而那只在全部主张判完
+     * 都是 allow 之后才会走到——被拒的调用只会有 `tool.end{ok:false}`，压根
+     * 不会有 `tool.start`。所以这条用例**必须真的走到执行**，也就必须真的
+     * spawn 一次 curl，没有绕开的办法（本文件其它用例断言 `deny` 是因为它们
+     * 测的正是"别执行"，这条用例的性质完全相反）。
+     *
+     * 之前打真实外网地址（`https://example.com/a`）在 Windows CI runner 上
+     * 量出了两个连带问题：一是真的 curl 出网偶发挂起/变慢，超过 vitest 5s 的
+     * testTimeout；二是超时后子进程没被杀干净，拿会话 cwd 当自己的工作目录
+     * 一直占着，afterEach 的 rm(dir) 就撞上 `EBUSY: resource busy or locked`
+     * ——Windows 上运行中进程会锁住自己的 cwd，POSIX 上不会，这个坑只在
+     * Windows 上现形。
+     *
+     * 换成 `localhost:1`（一个几乎必然没人监听的端口）之后：
+     *   · `localhost` 是主机名，不是字面量 IP —— `matches()` 只在 IP 字面量上
+     *     跑 `isPrivateOrReservedIp`（`engine.ts`），域名本身判不了也不需要判，
+     *     所以不会撞上 SSRF 那条 deny，请求照常走到 allow → executeCall。
+     *   · `localhost` 到回环地址的解析是操作系统本地完成的，不查真实网络，
+     *     任何平台上都是毫秒级；连到一个没人监听的端口会立刻收到 RST/拒绝，
+     *     不会像打真实外网那样可能悬着等。curl 因此总是快速地"连接失败"
+     *     退出——退出码非零完全不影响断言（只看 `tool.start` 记的能力集合，
+     *     不看 `ended`/退出码），却换来了不依赖任何真实网络访问的确定性。
+     */
+    const all = await exec(['curl', 'http://localhost:1/a']);
     expect(started(all)[0]?.capabilities).toContain('net.fetch');
   });
 });
