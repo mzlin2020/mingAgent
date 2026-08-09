@@ -2,8 +2,9 @@ import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { ApprovalModeSwitcher } from './components/approval-mode-switcher.js';
 import {
-  CrashRecoveryBanner,
+  InterruptedSessionBanner,
   NoticeBanner,
+  SessionConflictBanner,
   SetupBanner,
   TurnErrorBanner,
   UntrustedBanner,
@@ -94,7 +95,6 @@ export function App(): ReactNode {
     <div className="flex h-screen bg-[var(--xm-bg)] text-[var(--xm-fg)]">
       <SessionList />
       <main className="flex min-w-0 flex-1 flex-col">
-        <CrashRecoveryBanner />
         <header className="flex items-center justify-between border-b border-[var(--xm-border)] px-4 py-2">
           <span className="truncate text-sm font-medium">
             {session?.title === '' || session === undefined ? '小明' : session.title}
@@ -117,6 +117,8 @@ export function App(): ReactNode {
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
               <SetupBanner />
+              <SessionConflictBanner />
+              <InterruptedSessionBanner />
               <TurnErrorBanner />
               <NoticeBanner />
               <UntrustedBanner />

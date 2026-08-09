@@ -19,9 +19,9 @@
     "test:watch": "vitest",
     "depcruise": "depcruise packages apps --config .dependency-cruiser.cjs",
     "size": "size-limit",
-    "verify": "node scripts/assert-toolchain.mjs && node scripts/check-workflows.mjs && node scripts/check-tsconfig-paths.mjs && node scripts/check-file-size.mjs && tsc -b && tsc -p tsconfig.tests.json && tsc -p apps/desktop/tsconfig.main.json && tsc -p apps/desktop/tsconfig.renderer.json && eslint . && vitest run && node scripts/smoke-headless.mjs && pnpm depcruise && pnpm size",
+    "verify": "node scripts/assert-toolchain.mjs && node scripts/check-workflows.mjs && node scripts/check-tsconfig-paths.mjs && node scripts/check-file-size.mjs && tsc -b && tsc -p tsconfig.tests.json && tsc -p apps/desktop/tsconfig.main.json && tsc -p apps/desktop/tsconfig.renderer.json && eslint . && vitest run && node scripts/smoke-headless.mjs && node scripts/smoke-write-lease-recovery.mjs && pnpm depcruise && pnpm size",
     "clean": "tsc -b --clean && rimraf packages/*/dist",
-    "smoke": "tsc -b && node scripts/smoke-headless.mjs",
+    "smoke": "tsc -b && node scripts/smoke-headless.mjs && node scripts/smoke-write-lease-recovery.mjs",
     "check:workflows": "node scripts/check-workflows.mjs",
     "check:paths": "node scripts/check-tsconfig-paths.mjs",
     "check:file-size": "node scripts/check-file-size.mjs"

@@ -15,6 +15,7 @@ import {
   ReadSessionRequest,
   ReadSessionResult,
   SendUserMessageRequest,
+  SessionListStatus,
   SetApprovalModeRequest,
   SetApprovalModeResult,
 } from '../src/shared/ipc.js';
@@ -235,9 +236,25 @@ describe('渲染层对未知事件的容忍', () => {
 describe('会话列表投影的形状', () => {
   it('lastSeq = 0 是合法的（会话已建但一条事件都没有）', () => {
     const r = ListSessionsResult.safeParse([
-      { sessionId: newSessionId(), createdAt: 0, updatedAt: 0, lastSeq: 0 },
+      { sessionId: newSessionId(), createdAt: 0, updatedAt: 0, lastSeq: 0, status: 'idle' },
     ]);
     expect(r.success).toBe(true);
+  });
+
+  it('status 缺失时不通过——M1-e 起这是必填字段，不是新加的可选口子', () => {
+    const r = ListSessionsResult.safeParse([{ sessionId: newSessionId(), createdAt: 0, updatedAt: 0, lastSeq: 0 }]);
+    expect(r.success).toBe(false);
+  });
+
+  it.each(['idle', 'running', 'interrupted'] as const)('status=%s 三态都能通过 schema', (status) => {
+    const r = ListSessionsResult.safeParse([
+      { sessionId: newSessionId(), createdAt: 0, updatedAt: 0, lastSeq: 0, status },
+    ]);
+    expect(r.success).toBe(true);
+  });
+
+  it('status 只认这三个值，不是任意字符串', () => {
+    expect(SessionListStatus.safeParse('busy').success).toBe(false);
   });
 });
 

@@ -33,16 +33,7 @@ import type { Services } from './services.js';
  * permission_denied，就是为了 UI 能说出"改策略 / 重新审批 / 改系统权限"这三句不同的话。
  */
 export function registerIpc(services: Services, windows: () => BrowserWindow[]): void {
-  handle(CH.listSessions, undefined, async () => {
-    const list = await services.stores.events.listSessions();
-    return list.map((s) => ({
-      sessionId: s.sessionId,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-      lastSeq: s.lastSeq,
-      ...(s.title === undefined ? {} : { title: s.title }),
-    }));
-  });
+  handle(CH.listSessions, undefined, async () => services.listSessions());
 
   handle(CH.createSession, CreateSessionRequest, async (req) => ({
     sessionId: await services.createSession({

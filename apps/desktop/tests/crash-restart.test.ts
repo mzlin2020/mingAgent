@@ -20,8 +20,9 @@ import { EventBus, SessionRuntime, abandonOrphanedTurn, scanForOrphanedSessions 
  * `packages/storage/src/sqlite-event-store.ts`）。单个 vitest 进程里开两个 `SqliteEventStore`
  * 实例，`pid` 永远是同一个、永远"活着"——第二次 `openForWrite()` 只会正确地抛
  * `WriteLeaseError`（见下面那条用例），这本身没错，但它验证不了"进程真的死了之后
- * 陈旧标记被回收"。那条分支需要一个真正被 `SIGKILL` 的子进程，由 `scripts/smoke-headless.mjs`
- * （或它的姊妹脚本）覆盖，vitest 单进程测不到。
+ * 陈旧标记被回收"。那条分支需要一个真正被 `SIGKILL` 的子进程，vitest 单进程测不到，
+ * 现在由 `scripts/smoke-write-lease-recovery.mjs`（+ 姊妹脚本
+ * `smoke-write-lease-recovery-child.mjs`）覆盖，见该脚本头部注释。
  */
 describe('崩溃恢复：真实 SqliteEventStore', () => {
   let dir: string | undefined;

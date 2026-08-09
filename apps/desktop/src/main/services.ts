@@ -45,10 +45,11 @@ import {
   synthesizeInterruption,
 } from '@xm/runtime';
 import { PtySessionManager, coreTools, nodeCheckpointer, nodeToolGateway, shellSessionTools } from '@xm/tools-core';
-import type { ApprovalMode, ImageAttachment, OrphanedSessionKind } from '../shared/ipc.js';
+import type { ApprovalMode, ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { ApprovalModeStore, TIER_OF } from './approval-mode.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { keychainSecretStore } from './secrets.js';
+import { sessionListStatus } from './session-list-status.js';
 
 /**
  * 主进程的装配。
@@ -73,6 +74,17 @@ export interface Services {
   readonly layers: readonly RuleLayer[];
   readonly tools: ToolRegistry;
   createSession(options?: { title?: string; cwd?: string }): Promise<SessionId>;
+  /**
+   * 会话列表投影，带一个粗粒度的 `status` 徽标（M1-e 会话列表状态整合）。
+   *
+   * `status` **纯读** `running`/`orphanedSessions` 两张既有内存 Map 拼出来——
+   * 不重放任何事件流，不新增持久化：`running` 存在即"这一轮真的在跑"，
+   * `orphanedSessions` 存在即"启动扫描时发现它停在没收尾的回合里"（且尚未被
+   * 继续/放弃处理掉）。两者都不命中就是 `idle`。这与 `SerializedSessionStateResult.status`
+   * （单会话回放语义，只有打开过的会话才低成本可得）是两个不同粒度的概念，
+   * 见 `shared/ipc.ts` 里 `SessionListStatus` 的注释。
+   */
+  listSessions(): Promise<ListSessionsResult>;
   sendUserMessage(
     sessionId: SessionId,
     text: string,
@@ -392,6 +404,18 @@ export async function startServices(): Promise<Services> {
       }
 
       return sessionId;
+    },
+
+    async listSessions(): Promise<ListSessionsResult> {
+      const list = await stores.events.listSessions();
+      return list.map((s) => ({
+        sessionId: s.sessionId,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        lastSeq: s.lastSeq,
+        ...(s.title === undefined ? {} : { title: s.title }),
+        status: sessionListStatus(s.sessionId, { running, orphaned: orphanedSessions }),
+      }));
     },
 
     async sendUserMessage(

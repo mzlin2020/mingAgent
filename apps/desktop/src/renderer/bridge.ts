@@ -22,6 +22,7 @@ import {
   SetApprovalModeResult,
   StatusResult,
 } from '../shared/ipc.js';
+import { IpcError } from './ipc-error.js';
 
 /**
  * 渲染层这一侧的 IPC 边界。
@@ -63,15 +64,6 @@ const bridge = (): XmBridge => {
   }
   return w.xm;
 };
-
-export class IpcError extends Error {
-  readonly code: string;
-  constructor(code: string, message: string) {
-    super(message);
-    this.name = 'IpcError';
-    this.code = code;
-  }
-}
 
 async function call<T extends z.ZodType>(promise: Promise<unknown>, schema: T): Promise<z.infer<T>> {
   const envelope = IpcEnvelope.safeParse(await promise);

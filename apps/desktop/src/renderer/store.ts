@@ -13,6 +13,7 @@ import type {
 } from '../shared/ipc.js';
 import type { z } from 'zod';
 import { api } from './bridge.js';
+import { classifyIpcError } from './ipc-error.js';
 
 type Status = z.infer<typeof StatusResult>;
 
@@ -76,6 +77,13 @@ interface UiState {
    * 所以横幅在渲染层里挂在顶层，不像 `TurnErrorBanner` 那样只在打开某个会话时才显示。
    */
   orphanedSessions: ListOrphanedSessionsResult;
+  /**
+   * 会话冲突（M1-e 错误态呈现）：这个会话正被另一个写句柄占用（`WriteLeaseError`，
+   * 典型场景是另一个窗口/另一个小明进程正开着同一个会话）。跟 `error` 一样是纯
+   * UI 态，不进事件流；跟 `error` 不一样的地方是它有专门的呈现（`SessionConflictBanner`），
+   * 不落进通用兜底红条。见 `ipc-error.ts` 的 `classifyIpcError`。
+   */
+  sessionConflict: { sessionId: SessionId; message: string } | undefined;
 
   // 写成箭头属性而不是方法：zustand 的选择器会把它们从对象上摘下来单独传，
   // 方法类型在那时会触发 unbound-method——而这里确实不需要 this
@@ -113,226 +121,257 @@ function toCoreEvent(pushed: PushedEvent): AnyEvent | undefined {
   }
 }
 
-export const useUi = create<UiState>((set, get) => ({
-  sessions: [],
-  currentId: undefined,
-  session: undefined,
-  live: EMPTY_LIVE,
-  busy: false,
-  error: undefined,
-  status: undefined,
-  approvalMode: 'ask',
-  orphanedSessions: [],
-
-  refreshSessions: async () => {
-    try {
-      set({ sessions: await api.listSessions(), error: undefined });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  newSession: async (cwd) => {
-    const { sessionId } = await api.createSession({
-      title: cwd === undefined ? '新会话' : (cwd.split(/[/\\]/).pop() ?? '新会话'),
-      ...(cwd === undefined ? {} : { cwd }),
-    });
-    await get().refreshSessions();
-    await get().openSession(sessionId);
-  },
-
-  chooseWorkspace: async () => {
-    try {
-      return (await api.chooseWorkspace()).path;
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-      return undefined;
-    }
-  },
-
+export const useUi = create<UiState>((set, get) => {
   /**
-   * 应答审批。**与 stop / clearUntrusted 同一个姿态：发出去就完了，不乐观更新。**
-   *
-   * 在这里顺手把 `pendingPermission` 清掉会快一帧，代价是主进程若没收到
-   * （requestId 已经过期、窗口刚重载），用户看到的是"已允许"而闸门其实拒了。
-   * 权限状态尤其不能乐观更新——它是这套系统里最不该出现"看起来生效了"的地方。
+   * 统一收口：一次 IPC 调用失败之后该往哪个状态字段写，见 `ipc-error.ts`。
+   * 有 `sessionId` 的调用点传它，让 `WriteLeaseError` 能落进专门的 `sessionConflict`；
+   * 没有单一会话作用域的调用点（比如 `refreshSessions`）不传，永远走通用 `error`。
    */
-  respondPermission: async (requestId, effect, scope) => {
-    const id = get().currentId;
-    if (id === undefined) return;
-    try {
-      const { accepted } = await api.respondPermission(id, requestId, effect, scope);
-      /*
-       * `accepted: false` 意味着主进程里没有一个在等这个 requestId 的 waiter——
-       * 请求已经过期（重复点击、上一条已经被处理、或者窗口重载丢了状态）。
-       *
-       * 这曾经是"点了没反应"的表现形式之一：卡片是乐观渲染之外的真实状态
-       * （`pendingPermission` 来自事件流），不会自己收起，用户点了却什么都
-       * 没发生，也不知道是网络慢还是点错了。这里必须给一个能看见的反馈，
-       * 而不是像从前那样把返回值直接扔掉。
-       */
-      if (!accepted) {
-        set({
-          error: '这条确认请求已经失效（可能已被处理，或已出现新的待确认请求），请重新查看当前状态。',
-        });
+  const applyIpcError = (e: unknown, sessionId?: SessionId): void => {
+    const classified = classifyIpcError(e, sessionId);
+    if (classified.field === 'sessionConflict') set({ sessionConflict: classified.value });
+    else set({ error: classified.value });
+  };
+
+  return {
+    sessions: [],
+    currentId: undefined,
+    session: undefined,
+    live: EMPTY_LIVE,
+    busy: false,
+    error: undefined,
+    status: undefined,
+    approvalMode: 'ask',
+    orphanedSessions: [],
+    sessionConflict: undefined,
+
+    refreshSessions: async () => {
+      try {
+        set({ sessions: await api.listSessions(), error: undefined });
+      } catch (e) {
+        applyIpcError(e);
       }
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
+    },
 
-  /*
-   * `readSession` 现在直接返回主进程里已经 `reduce()` 过的状态（ADR-0032，修 G4/G5）
-   * ——不再是原始事件数组，这里也就不用自己重放一遍历史。`deserializeSessionState`
-   * 只做"镜像 → SessionState"这一步纯转换（Map 从 entry 数组建回来），不是第二次判断。
-   */
-  openSession: async (id) => {
-    // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
-    set({ currentId: id, session: undefined, live: EMPTY_LIVE, error: undefined, approvalMode: 'ask' });
-    const serialized: SerializedSessionState = await api.readSession(id);
-    set({ session: deserializeSessionState(serialized) });
-    try {
-      const { mode } = await api.getApprovalMode(id);
-      // 会话可能在这次 await 期间又被切走——不要用一个旧会话的模式覆盖当前会话
-      if (get().currentId === id) set({ approvalMode: mode });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  /**
-   * 切审批模式。**乐观更新是安全的**——不像 `respondPermission`，这里没有"看起来
-   * 生效了、实际没生效"的窗口：切换本身没有副作用，真正受影响的是*下一次*
-   * `sendUserMessage` 用哪个 `tier`，而那次调用会重新读一遍主进程里的当前值。
-   */
-  setApprovalMode: async (mode) => {
-    const id = get().currentId;
-    if (id === undefined) return;
-    try {
-      const result = await api.setApprovalMode(id, mode);
-      if (get().currentId === id) set({ approvalMode: result.mode });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  send: async (text, images) => {
-    const id = get().currentId;
-    if (id === undefined) return;
-    set({ busy: true, error: undefined });
-    try {
-      await api.sendUserMessage(id, text, images);
+    newSession: async (cwd) => {
+      const { sessionId } = await api.createSession({
+        title: cwd === undefined ? '新会话' : (cwd.split(/[/\\]/).pop() ?? '新会话'),
+        ...(cwd === undefined ? {} : { cwd }),
+      });
       await get().refreshSessions();
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ busy: false });
-    }
-  },
+      await get().openSession(sessionId);
+    },
 
-  /**
-   * 停止。与 `clearUntrusted` 同一个姿态：**发出去就完了，不乐观更新**。
-   *
-   * 真正的"已停止"由主进程推回来的 `message.interrupted` 经 reduce 得出。
-   * 在这里顺手把 busy 置回 false 会快一帧，代价是取消若没生效，
-   * 用户看到的是"已停止"而模型还在吐字——那比慢一帧糟得多。
-   */
-  stop: async () => {
-    const id = get().currentId;
-    if (id === undefined) return;
-    try {
-      await api.interrupt(id);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
+    chooseWorkspace: async () => {
+      try {
+        return (await api.chooseWorkspace()).path;
+      } catch (e) {
+        applyIpcError(e);
+        return undefined;
+      }
+    },
 
-  refreshStatus: async () => {
-    try {
-      set({ status: await api.status() });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  setApiKey: async (providerId, key) => {
-    try {
-      await api.setApiKey(providerId, key);
-      await get().refreshStatus();
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  /**
-   * 解除不可信标记。**不在这里改状态**——发出去就完了，状态由主进程推回来的
-   * `trust.cleared` 事件经 `reduce` 得出（ADR-0015）。
-   *
-   * 在这里顺手 `set({ session: { ...session, untrustedContext: undefined } })` 会快一帧，
-   * 代价是 UI 上的"已解除"与事件流里的"已解除"变成两件事——而如果主进程那一侧失败了，
-   * 用户看到的是解除成功、实际仍被拒绝。安全状态尤其不能乐观更新。
-   */
-  clearUntrusted: async () => {
-    const id = get().currentId;
-    if (id === undefined) return;
-    try {
-      await api.clearUntrusted(id);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  refreshOrphanedSessions: async () => {
-    try {
-      set({ orphanedSessions: await api.listOrphanedSessions() });
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    }
-  },
-
-  /**
-   * 继续/放弃都不乐观更新状态本身——与 `stop`/`clearUntrusted` 同一个姿态。
-   * 唯一在这里做的乐观更新是把这一条从列表里摘掉：`resolved: false` 说明
-   * 扫描时的旧缓存已经过期（多半是已经被处理过一次），显示一条僵尸行没有意义。
-   * 若这个会话此刻正打开着，真正的状态变化经总线推来的事件走 `applyEvent`，
-   * 跟"停止"按钮完全一样，不需要在这里另外拉一次。
-   */
-  resumeOrphaned: async (sessionId) => {
-    try {
-      await api.resumeOrphanedSession(sessionId);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
-    }
-  },
-
-  abandonOrphaned: async (sessionId) => {
-    try {
-      await api.abandonOrphanedSession(sessionId);
-    } catch (e) {
-      set({ error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
-    }
-  },
-
-  applyEvent: (pushed) => {
-    const { currentId, session } = get();
-    if (currentId === undefined || session === undefined) return;
-    if (pushed.sessionId !== currentId) return;
-
-    const e = toCoreEvent(pushed);
-    if (e === undefined || !isCoreEvent(e)) return;
+    /**
+     * 应答审批。**与 stop / clearUntrusted 同一个姿态：发出去就完了，不乐观更新。**
+     *
+     * 在这里顺手把 `pendingPermission` 清掉会快一帧，代价是主进程若没收到
+     * （requestId 已经过期、窗口刚重载），用户看到的是"已允许"而闸门其实拒了。
+     * 权限状态尤其不能乐观更新——它是这套系统里最不该出现"看起来生效了"的地方。
+     */
+    respondPermission: async (requestId, effect, scope) => {
+      const id = get().currentId;
+      if (id === undefined) return;
+      try {
+        const { accepted } = await api.respondPermission(id, requestId, effect, scope);
+        /*
+         * `accepted: false` 意味着主进程里没有一个在等这个 requestId 的 waiter——
+         * 请求已经过期（重复点击、上一条已经被处理、或者窗口重载丢了状态）。
+         *
+         * 这曾经是"点了没反应"的表现形式之一：卡片是乐观渲染之外的真实状态
+         * （`pendingPermission` 来自事件流），不会自己收起，用户点了却什么都
+         * 没发生，也不知道是网络慢还是点错了。这里必须给一个能看见的反馈，
+         * 而不是像从前那样把返回值直接扔掉。
+         */
+        if (!accepted) {
+          set({
+            error: '这条确认请求已经失效（可能已被处理，或已出现新的待确认请求），请重新查看当前状态。',
+          });
+        }
+      } catch (e) {
+        applyIpcError(e, id);
+      }
+    },
 
     /*
-     * 两条线各走各的：
-     *   · `reduce` 只认持久化事实，`message.delta` 在它眼里是空操作（ADR-0008，不动）
-     *   · `applyLive` 只认在途事件，`message.end` 一到就归零
+     * `readSession` 现在直接返回主进程里已经 `reduce()` 过的状态（ADR-0032，修 G4/G5）
+     * ——不再是原始事件数组，这里也就不用自己重放一遍历史。`deserializeSessionState`
+     * 只做"镜像 → SessionState"这一步纯转换（Map 从 entry 数组建回来），不是第二次判断。
      *
-     * 顺序无关紧要（两者互不读对方），但**必须都调**——只调 reduce 就是 G6 那个洞，
-     * 只调 applyLive 就成了真正的第二份状态。
+     * **`readSession` 本身也可能失败**（典型是 `WriteLeaseError`——这个会话正被另一个
+     * 写句柄占用，`getSessionState` 内部照样要 `runtimeFor()`，读也要先拿到运行时）。
+     * 此前这一步没有 `try/catch`，失败会变成一个没人接的 unhandled rejection，
+     * 界面上什么反馈都没有——这正是"错误态呈现"这条 M1-e 条目要补的洞之一。
      */
-    set({ session: reduce(session, e), live: applyLive(get().live, e) });
-  },
-}));
+    openSession: async (id) => {
+      // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
+      set({
+        currentId: id,
+        session: undefined,
+        live: EMPTY_LIVE,
+        error: undefined,
+        sessionConflict: undefined,
+        approvalMode: 'ask',
+      });
+      try {
+        const serialized: SerializedSessionState = await api.readSession(id);
+        // 会话可能在这次 await 期间又被切走——不要用一个旧会话的状态覆盖当前会话
+        if (get().currentId === id) set({ session: deserializeSessionState(serialized) });
+      } catch (e) {
+        applyIpcError(e, id);
+        return;
+      }
+      try {
+        const { mode } = await api.getApprovalMode(id);
+        if (get().currentId === id) set({ approvalMode: mode });
+      } catch (e) {
+        applyIpcError(e, id);
+      }
+    },
+
+    /**
+     * 切审批模式。**乐观更新是安全的**——不像 `respondPermission`，这里没有"看起来
+     * 生效了、实际没生效"的窗口：切换本身没有副作用，真正受影响的是*下一次*
+     * `sendUserMessage` 用哪个 `tier`，而那次调用会重新读一遍主进程里的当前值。
+     */
+    setApprovalMode: async (mode) => {
+      const id = get().currentId;
+      if (id === undefined) return;
+      try {
+        const result = await api.setApprovalMode(id, mode);
+        if (get().currentId === id) set({ approvalMode: result.mode });
+      } catch (e) {
+        applyIpcError(e, id);
+      }
+    },
+
+    send: async (text, images) => {
+      const id = get().currentId;
+      if (id === undefined) return;
+      set({ busy: true, error: undefined });
+      try {
+        await api.sendUserMessage(id, text, images);
+        await get().refreshSessions();
+      } catch (e) {
+        applyIpcError(e, id);
+      } finally {
+        set({ busy: false });
+      }
+    },
+
+    /**
+     * 停止。与 `clearUntrusted` 同一个姿态：**发出去就完了，不乐观更新**。
+     *
+     * 真正的"已停止"由主进程推回来的 `message.interrupted` 经 reduce 得出。
+     * 在这里顺手把 busy 置回 false 会快一帧，代价是取消若没生效，
+     * 用户看到的是"已停止"而模型还在吐字——那比慢一帧糟得多。
+     */
+    stop: async () => {
+      const id = get().currentId;
+      if (id === undefined) return;
+      try {
+        await api.interrupt(id);
+      } catch (e) {
+        applyIpcError(e, id);
+      }
+    },
+
+    refreshStatus: async () => {
+      try {
+        set({ status: await api.status() });
+      } catch (e) {
+        applyIpcError(e);
+      }
+    },
+
+    setApiKey: async (providerId, key) => {
+      try {
+        await api.setApiKey(providerId, key);
+        await get().refreshStatus();
+      } catch (e) {
+        applyIpcError(e);
+      }
+    },
+
+    /**
+     * 解除不可信标记。**不在这里改状态**——发出去就完了，状态由主进程推回来的
+     * `trust.cleared` 事件经 `reduce` 得出（ADR-0015）。
+     *
+     * 在这里顺手 `set({ session: { ...session, untrustedContext: undefined } })` 会快一帧，
+     * 代价是 UI 上的"已解除"与事件流里的"已解除"变成两件事——而如果主进程那一侧失败了，
+     * 用户看到的是解除成功、实际仍被拒绝。安全状态尤其不能乐观更新。
+     */
+    clearUntrusted: async () => {
+      const id = get().currentId;
+      if (id === undefined) return;
+      try {
+        await api.clearUntrusted(id);
+      } catch (e) {
+        applyIpcError(e, id);
+      }
+    },
+
+    refreshOrphanedSessions: async () => {
+      try {
+        set({ orphanedSessions: await api.listOrphanedSessions() });
+      } catch (e) {
+        applyIpcError(e);
+      }
+    },
+
+    /**
+     * 继续/放弃都不乐观更新状态本身——与 `stop`/`clearUntrusted` 同一个姿态。
+     * 唯一在这里做的乐观更新是把这一条从列表里摘掉：`resolved: false` 说明
+     * 扫描时的旧缓存已经过期（多半是已经被处理过一次），显示一条僵尸行没有意义。
+     * 若这个会话此刻正打开着，真正的状态变化经总线推来的事件走 `applyEvent`，
+     * 跟"停止"按钮完全一样，不需要在这里另外拉一次。
+     */
+    resumeOrphaned: async (sessionId) => {
+      try {
+        await api.resumeOrphanedSession(sessionId);
+      } catch (e) {
+        applyIpcError(e, sessionId);
+      } finally {
+        set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
+      }
+    },
+
+    abandonOrphaned: async (sessionId) => {
+      try {
+        await api.abandonOrphanedSession(sessionId);
+      } catch (e) {
+        applyIpcError(e, sessionId);
+      } finally {
+        set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
+      }
+    },
+
+    applyEvent: (pushed) => {
+      const { currentId, session } = get();
+      if (currentId === undefined || session === undefined) return;
+      if (pushed.sessionId !== currentId) return;
+
+      const e = toCoreEvent(pushed);
+      if (e === undefined || !isCoreEvent(e)) return;
+
+      /*
+       * 两条线各走各的：
+       *   · `reduce` 只认持久化事实，`message.delta` 在它眼里是空操作（ADR-0008，不动）
+       *   · `applyLive` 只认在途事件，`message.end` 一到就归零
+       *
+       * 顺序无关紧要（两者互不读对方），但**必须都调**——只调 reduce 就是 G6 那个洞，
+       * 只调 applyLive 就成了真正的第二份状态。
+       */
+      set({ session: reduce(session, e), live: applyLive(get().live, e) });
+    },
+  };
+});

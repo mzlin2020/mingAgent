@@ -185,7 +185,7 @@ export function UntrustedBanner(): ReactNode {
   );
 }
 
-const ORPHAN_KIND_LABEL: Record<'message' | 'tool' | 'permission' | 'none', string> = {
+export const ORPHAN_KIND_LABEL: Record<'message' | 'tool' | 'permission' | 'none', string> = {
   message: '模型正在生成回复',
   tool: '有工具调用没跑完',
   permission: '正等着你批一个权限',
@@ -193,63 +193,94 @@ const ORPHAN_KIND_LABEL: Record<'message' | 'tool' | 'permission' | 'none', stri
 };
 
 /**
- * 崩溃恢复（M1-e，docs/04 §8）。
+ * 崩溃恢复（M1-e，docs/04 §8）。**会话内横幅**——只在当前打开的会话恰好是一个
+ * 被中断的会话时渲染，和 `TurnErrorBanner` 并列。
  *
- * ── 为什么它是跨会话的，不像别的横幅那样只在打开某个会话时才显示 ──
+ * ── 为什么从"跨会话全局横幅"降格成这样（M1-e 会话列表状态整合） ──
  *
- * 别的横幅（`TurnErrorBanner` 等）读的是当前打开会话的 `session` 字段，天然只对
- * 这一个会话有意义。崩溃恢复的列表来自启动时对**全部会话**的一次扫描——用户很可能
- * 根本没打开过那个被中断的会话，若横幅只在"恰好点进那个会话"时才出现，
- * 就退回了 docs/04 §8 明确要防的"任务消失了但没人知道"。
+ * 老版本（`CrashRecoveryBanner`）是跨会话的：用户很可能根本没打开过那个被中断的
+ * 会话，若横幅只在"恰好点进那个会话"时才出现，就退回了 docs/04 §8 明确要防的
+ * "任务消失了但没人知道"。这个诉求现在由 `SessionList` 的状态徽标 +
+ * 状态优先排序覆盖——被中断的会话固定排在列表最上方一段并带"已中断"标记，
+ * 不需要打开就能看到，比一段汇总在顶部、找不到具体是哪个会话的文案更有用。
+ * 腾出来的这个位置换成"贴着当前会话上下文"的展示：用户能同时看到卡在哪、
+ * 卡成什么样，跟 `TurnErrorBanner` 一样的姿态。
  *
- * ── 为什么不做完整的会话列表/详情 ──
- *
- * 这里只做"看得见、能选继续或放弃"这两件事本身要求的最小面——不做会话切换器、
- * 不做详情页。那是一条独立的、还没排期的 M1-e 条目（docs/08）。
+ * 继续/放弃两个动作与文案原样保留，只是渲染条件从"遍历全部 `orphanedSessions`"
+ * 收窄成"只取 `currentId` 对应的一条"。
  */
-export function CrashRecoveryBanner(): ReactNode {
+export function InterruptedSessionBanner(): ReactNode {
+  const currentId = useUi((s) => s.currentId);
   const orphanedSessions = useUi((s) => s.orphanedSessions);
   const resumeOrphaned = useUi((s) => s.resumeOrphaned);
   const abandonOrphaned = useUi((s) => s.abandonOrphaned);
-  const [busyId, setBusyId] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
 
-  if (orphanedSessions.length === 0) return null;
+  const orphan = orphanedSessions.find((o) => o.sessionId === currentId);
+  if (orphan === undefined) return null;
 
   return (
-    <div className="border-b border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-4 py-2 text-xs">
-      <p className="font-medium">
-        {orphanedSessions.length} 个会话在你不在时被中断——它们不会自己消失，选一个处理方式：
+    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
+      <p className="font-medium">这个会话在你不在时被中断了</p>
+      <p className="mt-1 text-[var(--xm-fg-muted)]">{ORPHAN_KIND_LABEL[orphan.kind]}——它不会自己消失，选一个处理方式：</p>
+      <div className="mt-2 flex items-center gap-2">
+        <Button
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void resumeOrphaned(orphan.sessionId).finally(() => {
+              setBusy(false);
+            });
+          }}
+        >
+          继续
+        </Button>
+        <Button
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            void abandonOrphaned(orphan.sessionId).finally(() => {
+              setBusy(false);
+            });
+          }}
+        >
+          放弃
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 会话冲突（M1-e 错误态呈现）：这个会话正被另一个写句柄占用（`WriteLeaseError`）。
+ *
+ * 与顶层的通用 `error` 横幅不同——那条是"未分类错误的最后防线"，这条是专门给
+ * 这一种、用户能采取具体行动的错误准备的文案：告诉他"是什么"而不是甩一句
+ * 原始异常消息。见 `ipc-error.ts` 的 `classifyIpcError`。
+ *
+ * 不做自动重试：另一个窗口/进程什么时候放手是不可预测的，硬轮询只会把这条
+ * 横幅变成一个不停闪烁的东西。用户自己决定什么时候点"重新打开"。
+ */
+export function SessionConflictBanner(): ReactNode {
+  const conflict = useUi((s) => s.sessionConflict);
+  const openSession = useUi((s) => s.openSession);
+  if (conflict === undefined) return null;
+
+  return (
+    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
+      <p className="font-medium">这个会话正被另一个窗口占用</p>
+      <p className="mt-1 text-[var(--xm-fg-muted)]">
+        通常是另一个小明窗口或进程正开着同一个会话。关掉那一边之后再重新打开这个会话。
       </p>
-      <ul className="mt-1 flex flex-col gap-1">
-        {orphanedSessions.map((o) => (
-          <li key={o.sessionId} className="flex items-center gap-2">
-            <span className="font-mono text-[var(--xm-fg-muted)]">{o.sessionId.slice(0, 8)}</span>
-            <span>{ORPHAN_KIND_LABEL[o.kind]}</span>
-            <Button
-              disabled={busyId !== undefined}
-              onClick={() => {
-                setBusyId(o.sessionId);
-                void resumeOrphaned(o.sessionId).finally(() => {
-                  setBusyId(undefined);
-                });
-              }}
-            >
-              继续
-            </Button>
-            <Button
-              disabled={busyId !== undefined}
-              onClick={() => {
-                setBusyId(o.sessionId);
-                void abandonOrphaned(o.sessionId).finally(() => {
-                  setBusyId(undefined);
-                });
-              }}
-            >
-              放弃
-            </Button>
-          </li>
-        ))}
-      </ul>
+      <p className="mt-1 font-mono text-[var(--xm-fg-muted)]">{conflict.message}</p>
+      <Button
+        className="mt-2"
+        onClick={() => {
+          void openSession(conflict.sessionId);
+        }}
+      >
+        重新打开
+      </Button>
     </div>
   );
 }
