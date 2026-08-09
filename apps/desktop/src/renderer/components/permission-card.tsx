@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Button, Card } from './ui.js';
 import { useUi } from '../store.js';
@@ -22,10 +23,23 @@ import { useUi } from '../store.js';
  *
  * 它会写进用户级配置文件并在重启后继续生效，是这四个按钮里唯一有持久后果的那个。
  * 四个等宽按钮并排会让它和"本次允许"看起来一样轻。
+ *
+ * ── 出现时为什么强制滚进可视区 ──
+ *
+ * App 的 stickToBottom 只跟 `messages` / `live`（流式增量）。`permission.request`
+ * 不改那两样，卡片会长在底部可视区外，用户不知道在等审批。这是阻塞交互，
+ * 不能沿用"用户翻历史就别拽回去"——按 requestId 出现时滚一次，答完就不再动。
  */
 export function PermissionCard(): ReactNode {
   const request = useUi((s) => s.session?.pendingPermission);
   const respond = useUi((s) => s.respondPermission);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (request === undefined) return;
+    cardRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [request?.requestId]);
+
   if (request === undefined) return null;
 
   const answer = (effect: 'allow' | 'deny', scope: 'once' | 'session' | 'always') => () => {
@@ -33,50 +47,54 @@ export function PermissionCard(): ReactNode {
   };
 
   return (
-    <Card className="border-[var(--xm-accent)]">
-      <p className="font-medium">需要你的确认</p>
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-        <dt className="text-[var(--xm-fg-muted)]">操作</dt>
-        <dd className="font-mono">{request.capability}</dd>
-        {/*
-          一次调用可能过好几道闸门（ADR-0026：一条 `rm foo` 同时主张"执行命令"
-          与"删除某个文件"），卡片一次显示一道，逐个应答。目标这一栏的名字随之而变——
-          命令类能力下它是一条命令，路径类下它是一个文件。
-        */}
-        <dt className="text-[var(--xm-fg-muted)]">{request.capability.startsWith('shell.') ? '命令' : '目标'}</dt>
-        <dd className="break-all font-mono">{request.target === '' ? '（无）' : request.target}</dd>
-        <dt className="text-[var(--xm-fg-muted)]">风险</dt>
-        <dd>{request.risk}</dd>
-        <dt className="text-[var(--xm-fg-muted)]">原因</dt>
-        <dd>{request.reason}</dd>
-      </dl>
+    <div ref={cardRef}>
+      <Card className="border-[var(--xm-accent)]">
+        <p className="font-medium">需要你的确认</p>
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          <dt className="text-[var(--xm-fg-muted)]">操作</dt>
+          <dd className="font-mono">{request.capability}</dd>
+          {/*
+            一次调用可能过好几道闸门（ADR-0026：一条 `rm foo` 同时主张"执行命令"
+            与"删除某个文件"），卡片一次显示一道，逐个应答。目标这一栏的名字随之而变——
+            命令类能力下它是一条命令，路径类下它是一个文件。
+          */}
+          <dt className="text-[var(--xm-fg-muted)]">
+            {request.capability.startsWith('shell.') ? '命令' : '目标'}
+          </dt>
+          <dd className="break-all font-mono">{request.target === '' ? '（无）' : request.target}</dd>
+          <dt className="text-[var(--xm-fg-muted)]">风险</dt>
+          <dd>{request.risk}</dd>
+          <dt className="text-[var(--xm-fg-muted)]">原因</dt>
+          <dd>{request.reason}</dd>
+        </dl>
 
-      {request.trustLevel === 'untrusted' && (
-        <p className="mt-2 rounded bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
-          本会话读过外部内容。请特别确认这次操作确实是你要的。
-        </p>
-      )}
+        {request.trustLevel === 'untrusted' && (
+          <p className="mt-2 rounded bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
+            本会话读过外部内容。请特别确认这次操作确实是你要的。
+          </p>
+        )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <Button onClick={answer('allow', 'once')}>允许本次</Button>
-        <Button variant="ghost" onClick={answer('allow', 'session')}>
-          本会话都允许
-        </Button>
-        <Button variant="ghost" onClick={answer('deny', 'once')}>
-          拒绝
-        </Button>
-        <Button variant="ghost" onClick={answer('deny', 'session')}>
-          本会话都拒绝
-        </Button>
-      </div>
-      <div className="mt-2 flex items-center gap-2 border-t border-[var(--xm-border)] pt-2">
-        <Button variant="ghost" onClick={answer('allow', 'always')}>
-          永久允许这个目标
-        </Button>
-        <span className="text-xs text-[var(--xm-fg-muted)]">
-          会写进用户配置，重启后仍然生效。只针对上面那一个目标。
-        </span>
-      </div>
-    </Card>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button onClick={answer('allow', 'once')}>允许本次</Button>
+          <Button variant="ghost" onClick={answer('allow', 'session')}>
+            本会话都允许
+          </Button>
+          <Button variant="ghost" onClick={answer('deny', 'once')}>
+            拒绝
+          </Button>
+          <Button variant="ghost" onClick={answer('deny', 'session')}>
+            本会话都拒绝
+          </Button>
+        </div>
+        <div className="mt-2 flex items-center gap-2 border-t border-[var(--xm-border)] pt-2">
+          <Button variant="ghost" onClick={answer('allow', 'always')}>
+            永久允许这个目标
+          </Button>
+          <span className="text-xs text-[var(--xm-fg-muted)]">
+            会写进用户配置，重启后仍然生效。只针对上面那一个目标。
+          </span>
+        </div>
+      </Card>
+    </div>
   );
 }

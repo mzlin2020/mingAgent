@@ -88,7 +88,9 @@ export function App(): ReactNode {
     if (el === null || !stickToBottom.current) return;
     el.scrollTop = el.scrollHeight;
     // `live` 覆盖了正文/思考的流式增量与工具进度——那两类内容不落进
-    // `session.messages`（ADR-0021），只看 messages 会漏掉整个流式过程
+    // `session.messages`（ADR-0021），只看 messages 会漏掉整个流式过程。
+    // 待审批卡片不走这里：它由 `PermissionCard` 在 requestId 出现时自行
+    // scrollIntoView（阻塞交互，不能被 stickToBottom 挡住）。
   }, [session?.messages, live]);
 
   return (
