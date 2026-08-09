@@ -184,3 +184,72 @@ export function UntrustedBanner(): ReactNode {
     </div>
   );
 }
+
+const ORPHAN_KIND_LABEL: Record<'message' | 'tool' | 'permission' | 'none', string> = {
+  message: '模型正在生成回复',
+  tool: '有工具调用没跑完',
+  permission: '正等着你批一个权限',
+  none: '停在了一次往返之间',
+};
+
+/**
+ * 崩溃恢复（M1-e，docs/04 §8）。
+ *
+ * ── 为什么它是跨会话的，不像别的横幅那样只在打开某个会话时才显示 ──
+ *
+ * 别的横幅（`TurnErrorBanner` 等）读的是当前打开会话的 `session` 字段，天然只对
+ * 这一个会话有意义。崩溃恢复的列表来自启动时对**全部会话**的一次扫描——用户很可能
+ * 根本没打开过那个被中断的会话，若横幅只在"恰好点进那个会话"时才出现，
+ * 就退回了 docs/04 §8 明确要防的"任务消失了但没人知道"。
+ *
+ * ── 为什么不做完整的会话列表/详情 ──
+ *
+ * 这里只做"看得见、能选继续或放弃"这两件事本身要求的最小面——不做会话切换器、
+ * 不做详情页。那是一条独立的、还没排期的 M1-e 条目（docs/08）。
+ */
+export function CrashRecoveryBanner(): ReactNode {
+  const orphanedSessions = useUi((s) => s.orphanedSessions);
+  const resumeOrphaned = useUi((s) => s.resumeOrphaned);
+  const abandonOrphaned = useUi((s) => s.abandonOrphaned);
+  const [busyId, setBusyId] = useState<string | undefined>(undefined);
+
+  if (orphanedSessions.length === 0) return null;
+
+  return (
+    <div className="border-b border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-4 py-2 text-xs">
+      <p className="font-medium">
+        {orphanedSessions.length} 个会话在你不在时被中断——它们不会自己消失，选一个处理方式：
+      </p>
+      <ul className="mt-1 flex flex-col gap-1">
+        {orphanedSessions.map((o) => (
+          <li key={o.sessionId} className="flex items-center gap-2">
+            <span className="font-mono text-[var(--xm-fg-muted)]">{o.sessionId.slice(0, 8)}</span>
+            <span>{ORPHAN_KIND_LABEL[o.kind]}</span>
+            <Button
+              disabled={busyId !== undefined}
+              onClick={() => {
+                setBusyId(o.sessionId);
+                void resumeOrphaned(o.sessionId).finally(() => {
+                  setBusyId(undefined);
+                });
+              }}
+            >
+              继续
+            </Button>
+            <Button
+              disabled={busyId !== undefined}
+              onClick={() => {
+                setBusyId(o.sessionId);
+                void abandonOrphaned(o.sessionId).finally(() => {
+                  setBusyId(undefined);
+                });
+              }}
+            >
+              放弃
+            </Button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}

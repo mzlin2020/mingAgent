@@ -6,6 +6,7 @@ import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kern
 import type {
   ApprovalMode,
   ImageAttachment,
+  ListOrphanedSessionsResult,
   ListSessionsResult,
   PushedEvent,
   StatusResult,
@@ -69,6 +70,12 @@ interface UiState {
    * 不进事件流，也不持久化，回放回放不出来。切会话时重新拉一次。
    */
   approvalMode: ApprovalMode;
+  /**
+   * 崩溃恢复（M1-e，docs/04 §8）：启动时扫描出的、停在没收尾回合里的会话。
+   * 跟 `status` 一样不是任何一个会话状态的一部分——它是跨会话的一张列表，
+   * 所以横幅在渲染层里挂在顶层，不像 `TurnErrorBanner` 那样只在打开某个会话时才显示。
+   */
+  orphanedSessions: ListOrphanedSessionsResult;
 
   // 写成箭头属性而不是方法：zustand 的选择器会把它们从对象上摘下来单独传，
   // 方法类型在那时会触发 unbound-method——而这里确实不需要 this
@@ -89,6 +96,11 @@ interface UiState {
   readonly refreshStatus: () => Promise<void>;
   readonly setApiKey: (providerId: string, key: string) => Promise<void>;
   readonly applyEvent: (event: PushedEvent) => void;
+  readonly refreshOrphanedSessions: () => Promise<void>;
+  /** 继续：从崩溃发生的那个迭代边界续跑。若那时正打开着这个会话，事件会经总线自然刷新界面 */
+  readonly resumeOrphaned: (sessionId: SessionId) => Promise<void>;
+  /** 放弃：写 turn.end(reason:'aborted')，语义与停止按钮相同 */
+  readonly abandonOrphaned: (sessionId: SessionId) => Promise<void>;
 }
 
 /** 推送来的是信封形态，走与存储读取同一条解析路径（有版本闸门与 upcaster） */
@@ -110,6 +122,7 @@ export const useUi = create<UiState>((set, get) => ({
   error: undefined,
   status: undefined,
   approvalMode: 'ask',
+  orphanedSessions: [],
 
   refreshSessions: async () => {
     try {
@@ -266,6 +279,41 @@ export const useUi = create<UiState>((set, get) => ({
       await api.clearUntrusted(id);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  refreshOrphanedSessions: async () => {
+    try {
+      set({ orphanedSessions: await api.listOrphanedSessions() });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  /**
+   * 继续/放弃都不乐观更新状态本身——与 `stop`/`clearUntrusted` 同一个姿态。
+   * 唯一在这里做的乐观更新是把这一条从列表里摘掉：`resolved: false` 说明
+   * 扫描时的旧缓存已经过期（多半是已经被处理过一次），显示一条僵尸行没有意义。
+   * 若这个会话此刻正打开着，真正的状态变化经总线推来的事件走 `applyEvent`，
+   * 跟"停止"按钮完全一样，不需要在这里另外拉一次。
+   */
+  resumeOrphaned: async (sessionId) => {
+    try {
+      await api.resumeOrphanedSession(sessionId);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
+    }
+  },
+
+  abandonOrphaned: async (sessionId) => {
+    try {
+      await api.abandonOrphanedSession(sessionId);
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
     }
   },
 

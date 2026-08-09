@@ -32,6 +32,9 @@ contextBridge.exposeInMainWorld('xm', {
   chooseWorkspace: () => ipcRenderer.invoke(CH.chooseWorkspace),
   status: () => ipcRenderer.invoke(CH.status),
   setApiKey: (req: unknown) => ipcRenderer.invoke(CH.setApiKey, req),
+  listOrphanedSessions: () => ipcRenderer.invoke(CH.listOrphanedSessions),
+  resumeOrphanedSession: (req: unknown) => ipcRenderer.invoke(CH.resumeOrphanedSession, req),
+  abandonOrphanedSession: (req: unknown) => ipcRenderer.invoke(CH.abandonOrphanedSession, req),
 
   onEvent: (listener: (event: unknown) => void) => {
     const handler = (_e: unknown, payload: unknown): void => {

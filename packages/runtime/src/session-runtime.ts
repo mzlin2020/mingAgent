@@ -28,6 +28,37 @@ import type { EventBus } from './event-bus.js';
 const SNAPSHOT_INTERVAL = 500;
 
 /**
+ * 子 Agent 的污点回传尚未实现（ADR-0033 · G2）。
+ *
+ * `reduce()` 已经能处理 `subagent.start`/`subagent.end`（`packages/kernel/src/state/reduce.ts`），
+ * 但只做了 `runningSubagents` 的记账——子会话的 `untrustedContext` 不会在 `subagent.end` 时
+ * 并回父会话。派一个子 Agent 去读网页，是当前设计下完整的注入防御绕过路径。
+ *
+ * 这道闸门刻意不放进 `reduce()`：`reduce()` 要对它声明过的整个事件词表保持"全"，
+ * 已有测试拿合法的 `subagent.start`/`subagent.end` 事件驱动它验证持久化包含性/快照往返，
+ * 让 `reduce()` 在这里抛错会连累这些无关断言。正确的位置是写入边界——`record()` 是全系统
+ * 唯一分配 `seq` 的地方，任何未来代码想让这两种事件落库，绕不开这里。
+ *
+ * M1 没有任何真正派生子 Agent 的载体，此时实现污点合并等于在从未跑过的真实输入上
+ * 再造一次"测试全绿"（与 MCP 侧的 `UnimplementedMcpTaintPropagationError` 同一个理由）。
+ */
+export class UnimplementedSubagentTaintPropagationError extends Error {
+  readonly eventType: 'subagent.start' | 'subagent.end';
+
+  constructor(eventType: 'subagent.start' | 'subagent.end') {
+    super(
+      `子 Agent 的污点回传尚未实现（ADR-0033 · G2）：docs/09 的既定倾向是在 subagent.end 时` +
+        `把子会话的 untrustedContext 并回父会话，但 M1 没有任何真正派生子 Agent 的载体，此时` +
+        `实现它等于在从未跑过的真实输入上再造一次"测试全绿"。事件 "${eventType}" 在污点回传` +
+        `实现之前不允许被记录。要让这个错误消失，在 M2 落地子 Agent 的真实派生路径时一并实现` +
+        `污点合并，并删除这道闸门。`,
+    );
+    this.name = 'UnimplementedSubagentTaintPropagationError';
+    this.eventType = eventType;
+  }
+}
+
+/**
  * 一个会话的运行时：**全系统唯一分配 `seq` 的地方**。
  *
  * ADR-0013 的不变量三、五、六在这里从"类型上做得到"变成"代码里只有一条路"：
@@ -126,6 +157,11 @@ export class SessionRuntime {
     readonly turnId?: TurnId;
   }): Promise<EventOf<T>> {
     if (this.#closed) throw new Error(`会话 ${this.sessionId} 的运行时已关闭。`);
+
+    // 子 Agent 污点传播闸门（ADR-0033 · G2）——挡在写入边界，reduce() 保持全
+    if (input.type === 'subagent.start' || input.type === 'subagent.end') {
+      throw new UnimplementedSubagentTaintPropagationError(input.type);
+    }
 
     const persisted = isPersistedType(input.type);
     const event = createEvent({

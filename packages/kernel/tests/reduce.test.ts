@@ -102,6 +102,57 @@ describe('reduce：崩溃与中断的可见性', () => {
   });
 });
 
+/**
+ * 真正的崩溃形状：进程被杀，**连 `turn.end` 都没有**——上面那组用例只去掉了
+ * `tool.end`，`turn.end` 还在，那是"工具挂了但回合正常收尾"，不是崩溃恢复要处理的
+ * 情形。这里连 `turn.end` 一起去掉，验证 `reduce()` 老老实实停在半路，
+ * 不做任何"自动迁移"——迁移是崩溃恢复扫描时 `detectOrphanedTurn()` 的活，不是
+ * `reduce()` 的活（reduce() 无法区分"还在跑"和"进程已经死了"，见 orphan.ts 的注释）。
+ */
+describe('reduce：真崩溃形状（无 turn.end）', () => {
+  const upTo = (type: XmEvent['type'], nth = 1): XmEvent[] => {
+    const events = fixture();
+    let seen = 0;
+    const at = events.findIndex((e) => {
+      if (e.type !== type) return false;
+      seen += 1;
+      return seen === nth;
+    });
+    return events.slice(0, at + 1);
+  };
+
+  it('停在 message.start：activeMessage 挂着，status 仍是 running', () => {
+    const events = upTo('message.start');
+    const state = reduceAll(emptySessionState(events[0]!.sessionId), events);
+
+    expect(state.status).toBe('running');
+    expect(state.activeTurn).toBeDefined();
+    expect(state.activeMessage).toBeDefined();
+    expect(state.runningCalls.size).toBe(0);
+    expect(state.interruptedCalls, 'reduce 不自动迁移——没有 turn.end 就没有 interruptedCalls').toHaveLength(0);
+  });
+
+  it('停在 tool.start：runningCalls 挂着一个调用，不会被误判成 interrupted', () => {
+    const events = upTo('tool.start');
+    const state = reduceAll(emptySessionState(events[0]!.sessionId), events);
+
+    expect(state.status).toBe('running');
+    expect(state.activeTurn).toBeDefined();
+    expect(state.runningCalls.size).toBe(1);
+    expect([...state.runningCalls.values()][0]!.name).toBe('fs.list');
+    expect(state.interruptedCalls).toHaveLength(0);
+  });
+
+  it('停在 permission.request：pendingPermission 挂着，status 是 waiting_permission', () => {
+    const events = upTo('permission.request');
+    const state = reduceAll(emptySessionState(events[0]!.sessionId), events);
+
+    expect(state.status).toBe('waiting_permission');
+    expect(state.activeTurn).toBeDefined();
+    expect(state.pendingPermission).toBeDefined();
+  });
+});
+
 describe('reduce：lastError 不能是一条永远挂着的横幅', () => {
   const sessionId = newSessionId();
   let seq = 0;

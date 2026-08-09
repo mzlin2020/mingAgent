@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import type { ToolProgress } from '@xm/contracts';
+import type { ToolDescriptor, ToolProgress } from '@xm/contracts';
 import { ToolSchemaError } from '@xm/contracts';
 import {
   EMPTY_CAPABILITIES_ALLOWLIST,
   ToolInputError,
   ToolRegistry,
+  UnimplementedMcpTaintPropagationError,
   UnlistedEmptyCapabilitiesError,
   defineTool,
 } from '@xm/kernel';
@@ -285,5 +286,54 @@ describe('声明空能力集必须显式登记（ADR-0032 #5）', () => {
         },
       }),
     ).not.toThrow();
+  });
+});
+
+describe('MCP 工具的污点传播闸门（ADR-0033 · G2）', () => {
+  const toolWithSource = (name: string, source: ToolDescriptor['source']) =>
+    defineTool({
+      name,
+      group: 'x',
+      description: 'd',
+      inputSchema: z.strictObject({}),
+      risk: 'safe',
+      capabilities: ['net.fetch'],
+      source,
+      // eslint-disable-next-line @typescript-eslint/require-await
+      execute: async function* (): AsyncIterable<ToolProgress> {
+        yield { kind: 'result', forModel: [] };
+      },
+    });
+
+  it('🔴 source.kind === "mcp" 的工具：注册时就炸，污点传播还没实现', () => {
+    const reg = new ToolRegistry();
+    const tool = toolWithSource('mcp.example', { kind: 'mcp', serverId: 'srv-1' });
+    expect(() => {
+      reg.register(tool);
+    }).toThrow(UnimplementedMcpTaintPropagationError);
+  });
+
+  it('错误信息指向 ADR-0033，且携带工具名', () => {
+    const reg = new ToolRegistry();
+    const tool = toolWithSource('mcp.another', { kind: 'mcp', serverId: 'srv-1' });
+    try {
+      reg.register(tool);
+      expect.unreachable('应该抛出');
+    } catch (e) {
+      expect(e).toBeInstanceOf(UnimplementedMcpTaintPropagationError);
+      expect((e as Error).message).toContain('ADR-0033');
+      expect((e as UnimplementedMcpTaintPropagationError).toolName).toBe('mcp.another');
+    }
+  });
+
+  it('builtin / plugin 来源不受影响，正常注册（今天的真实代码不会撞上这道闸门）', () => {
+    const reg = new ToolRegistry();
+    expect(() => {
+      reg.register(toolWithSource('builtin.example', { kind: 'builtin' }));
+    }).not.toThrow();
+    expect(() => {
+      reg.register(toolWithSource('plugin.example', { kind: 'plugin', pluginId: 'p-1' }));
+    }).not.toThrow();
+    expect(reg.size).toBe(2);
   });
 });

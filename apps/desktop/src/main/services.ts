@@ -4,6 +4,7 @@ import type { BlobRef, Config, ContentBlock, RequestId, SessionId } from '@xm/co
 import { newSessionId } from '@xm/contracts';
 import type {
   ModelProvider,
+  OrphanedTurn,
   PlatformPort,
   RuleLayer,
   SecretBackend,
@@ -13,6 +14,7 @@ import type {
 import {
   ToolRegistry,
   composeRules,
+  detectOrphanedTurn,
   policyEnvFromPaths,
   readBlob as readBlobBytes,
   serializeSessionState,
@@ -29,17 +31,21 @@ import {
 import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
 import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
-import type { PermissionAnswer } from '@xm/runtime';
+import type { PermissionAnswer, TurnDeps } from '@xm/runtime';
 import {
   EventBus,
   ScriptedProvider,
   SessionRuntime,
+  abandonOrphanedTurn,
   echoTool,
   fakeDeleteTool,
+  resumeTurn,
   runTurn,
+  scanForOrphanedSessions,
+  synthesizeInterruption,
 } from '@xm/runtime';
 import { PtySessionManager, coreTools, nodeCheckpointer, nodeToolGateway, shellSessionTools } from '@xm/tools-core';
-import type { ApprovalMode, ImageAttachment } from '../shared/ipc.js';
+import type { ApprovalMode, ImageAttachment, OrphanedSessionKind } from '../shared/ipc.js';
 import { ApprovalModeStore, TIER_OF } from './approval-mode.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { keychainSecretStore } from './secrets.js';
@@ -97,6 +103,16 @@ export interface Services {
   setApprovalMode(sessionId: SessionId, mode: ApprovalMode): void;
   status(): Promise<RuntimeStatus>;
   setApiKey(providerId: string, key: string): Promise<void>;
+  /**
+   * 崩溃恢复（M1-e，docs/04 §8）。启动时扫描出的、停在没收尾回合里的会话。
+   * 只是给渲染层挑文案用的粗粒度分类，处理时会重新在 `runtime.state` 上判一遍
+   * （不信任这份扫描时的旧缓存）。
+   */
+  listOrphanedSessions(): readonly { sessionId: SessionId; kind: OrphanedSessionKind }[];
+  /** 继续：合成缺失的收尾事件，再续跑这个回合。返回 false = 扫描缓存已过期，没什么可续的 */
+  resumeOrphanedSession(sessionId: SessionId): Promise<boolean>;
+  /** 放弃：合成缺失的收尾事件，写 turn.end(reason:'aborted')。语义与停止按钮相同 */
+  abandonOrphanedSession(sessionId: SessionId): Promise<boolean>;
   close(): Promise<void>;
 }
 
@@ -173,6 +189,19 @@ export async function startServices(): Promise<Services> {
   const runtimes = new Map<SessionId, SessionRuntime>();
   /** 每会话一个 AbortController。它的存在期就是"这一轮正在跑" */
   const running = new Map<SessionId, AbortController>();
+
+  /**
+   * 崩溃恢复的起始扫描（M1-e，docs/04 §8 步骤 1）。**只读**——`scanForOrphanedSessions`
+   * 不 `openForWrite()`，不会跟仍然真的活着的另一个进程抢锁。
+   *
+   * 扫描一次性做完，结果缓存在这张表里；`resumeOrphanedSession`/`abandonOrphanedSession`
+   * 处理时会在真实的 `runtime.state` 上重新判一遍（不信任这份缓存），处理掉的会话
+   * 从表里删掉。
+   */
+  const orphanedSessions = new Map<SessionId, OrphanedTurn>();
+  for (const { sessionId, orphan } of await scanForOrphanedSessions(stores.events)) {
+    orphanedSessions.set(sessionId, orphan);
+  }
 
   /**
    * 等待用户应答的审批请求。
@@ -269,6 +298,50 @@ export async function startServices(): Promise<Services> {
     }
   };
 
+  /**
+   * 组一份 `TurnDeps`——`sendUserMessage`（全新一轮）与 `resumeOrphanedSession`
+   * （续跑一个崩溃恢复出来的回合）共用同一套装配，不重复维护两份。
+   */
+  const buildTurnDeps = async (
+    sessionId: SessionId,
+    runtime: SessionRuntime,
+    controller: AbortController,
+    /** 没配置真 Provider 时，兜底的本地回显要说点什么——`sendUserMessage` 传用户刚打的字 */
+    demoEcho = '（崩溃恢复续跑，没有新的用户输入）',
+  ): Promise<TurnDeps> => {
+    const { model } = modelRef();
+    const provider = (await providerFor()) ?? demoProvider(demoEcho);
+
+    return {
+      runtime,
+      provider,
+      tools,
+      layers,
+      tier: TIER_OF[approvalModes.get(sessionId)],
+      model: provider.id === 'scripted' ? 'scripted-1' : model,
+      prices: config.prices,
+      gateway,
+      checkpointer,
+      blobs: stores.blobs,
+      pathCaseInsensitive: platform.os === 'windows',
+      signal: controller.signal,
+      // 审批：把请求挂起来，等渲染层送答复回来（见 sendUserMessage 原来那份注释）
+      decide: (request) =>
+        new Promise<PermissionAnswer>((resolve) => {
+          if (controller.signal.aborted) {
+            resolve({ effect: 'deny', scope: 'once' });
+            return;
+          }
+          pending.set(request.requestId, resolve);
+        }),
+      persistGrant: async (rule) => {
+        await appendUserRule({ paths, env: policyEnv, rule });
+        userRules = [...userRules.filter((r) => r.id !== rule.id), rule];
+        layers = composeRules({ env: policyEnv, user: userRules, project: loaded.permissionRules.project });
+      },
+    };
+  };
+
   return {
     platform,
     stores,
@@ -327,8 +400,6 @@ export async function startServices(): Promise<Services> {
       images?: readonly ImageAttachment[],
     ): Promise<string> {
       const runtime = await runtimeFor(sessionId);
-      const { provider: providerId, model } = modelRef();
-      const provider = (await providerFor()) ?? demoProvider(text);
 
       /*
        * 一个会话同时只跑一轮。已经在跑时**拒绝**而不是排队：
@@ -348,60 +419,66 @@ export async function startServices(): Promise<Services> {
       running.set(sessionId, controller);
 
       try {
-        return await runTurn(
-          {
-            runtime,
-            provider,
-            tools,
-            layers,
-            tier: TIER_OF[approvalModes.get(sessionId)],
-            model: provider.id === 'scripted' ? 'scripted-1' : model,
-            prices: config.prices,
-            gateway,
-            checkpointer,
-            blobs: stores.blobs,
-            pathCaseInsensitive: platform.os === 'windows',
-            signal: controller.signal,
-            /*
-             * 审批：把请求挂起来，等渲染层送答复回来。
-             *
-             * 挂起期间**不做超时**——用户可能去看代码、去问同事，一个会自己
-             * 超时变成拒绝的确认框只会让人养成"赶紧点允许"的习惯。
-             * 兜底靠三条兑现路径（关窗 / 退出 / 停止），见 pending 的注释。
-             */
-            decide: (request) =>
-              new Promise<PermissionAnswer>((resolve) => {
-                if (controller.signal.aborted) {
-                  resolve({ effect: 'deny', scope: 'once' });
-                  return;
-                }
-                pending.set(request.requestId, resolve);
-              }),
-            /**
-             * 「永久」落进用户级配置。
-             *
-             * 写完之后**立刻重算 layers**：不重算的话，这条规则要等下次启动才生效，
-             * 而本会话靠 grants 顶着——两条路径的行为差异会在"重启后范围变了"
-             * 这种最难查的形态上暴露出来。
-             */
-            persistGrant: async (rule) => {
-              await appendUserRule({ paths, env: policyEnv, rule });
-              userRules = [...userRules.filter((r) => r.id !== rule.id), rule];
-              layers = composeRules({
-                env: policyEnv,
-                user: userRules,
-                project: loaded.permissionRules.project,
-              });
-            },
-          },
-          blocks,
-        );
+        const deps = await buildTurnDeps(sessionId, runtime, controller, text);
+        return await runTurn(deps, blocks);
       } finally {
         running.delete(sessionId);
         // 这一轮结束了，还挂着的审批不可能再有人处理它 —— 兑现成拒绝
         denyAllPending();
-        void providerId;
       }
+    },
+
+    /**
+     * 崩溃恢复：启动时扫描出的会话列表（只给渲染层挑文案，不带细节）。
+     */
+    listOrphanedSessions(): readonly { sessionId: SessionId; kind: OrphanedSessionKind }[] {
+      return [...orphanedSessions.entries()].map(([sessionId, orphan]) => ({
+        sessionId,
+        kind: orphan.kind,
+      }));
+    },
+
+    /**
+     * 继续：合成缺失的收尾事件，从崩溃发生的那个迭代边界续跑。
+     *
+     * 在真实的 `runtime.state` 上重新判一遍 `detectOrphanedTurn`，不信任扫描时的
+     * 旧缓存——扫描发生在启动那一刻，用户点"继续"可能是几分钟之后，这中间
+     * 会话可能已经被别的入口处理过（比如被另一次 `sendUserMessage` 顶掉——
+     * 虽然那要求先手动清掉 pendingPermission，正常操作走不到，但"重新判一遍"
+     * 比"信旧缓存"总是更安全）。
+     */
+    async resumeOrphanedSession(sessionId: SessionId): Promise<boolean> {
+      if (!orphanedSessions.has(sessionId)) return false;
+      const runtime = await runtimeFor(sessionId);
+      const orphan = detectOrphanedTurn(runtime.state);
+      orphanedSessions.delete(sessionId);
+      if (orphan === undefined) return false;
+
+      if (running.has(sessionId)) return false; // 已经在跑了，不该被崩溃恢复的"继续"再插一脚
+
+      const controller = new AbortController();
+      running.set(sessionId, controller);
+      try {
+        await synthesizeInterruption(runtime, orphan);
+        const deps = await buildTurnDeps(sessionId, runtime, controller);
+        await resumeTurn(deps, orphan.turnId);
+      } finally {
+        running.delete(sessionId);
+        denyAllPending();
+      }
+      return true;
+    },
+
+    /** 放弃：合成缺失的收尾事件，写 turn.end(reason:'aborted')——与停止按钮同一套语义 */
+    async abandonOrphanedSession(sessionId: SessionId): Promise<boolean> {
+      if (!orphanedSessions.has(sessionId)) return false;
+      const runtime = await runtimeFor(sessionId);
+      const orphan = detectOrphanedTurn(runtime.state);
+      orphanedSessions.delete(sessionId);
+      if (orphan === undefined) return false;
+
+      await abandonOrphanedTurn(runtime, orphan);
+      return true;
     },
 
     async readBlob(ref: BlobRef): Promise<string> {

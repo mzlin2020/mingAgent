@@ -71,6 +71,36 @@ export class UnlistedEmptyCapabilitiesError extends Error {
   }
 }
 
+/**
+ * 工具来自 MCP，但污点传播尚未实现（ADR-0033 · G2）。
+ *
+ * `ToolDescriptor.source.kind === 'mcp'` 这个判别式早就在契约里了（`contracts/tool/descriptor.ts`），
+ * 但没有任何代码读它——`taintOf()`（kernel/state/reduce.ts）只看 `capabilities`，一个不如实
+ * 声明 `net.fetch` 的 MCP server 拉回来的内容不会被标记为不可信。而 MCP server 是第三方的，
+ * 声明是否如实完全不受我们控制，这是 docs/09 G2 记的注入防御上"唯一剩下的绕过路径"。
+ *
+ * M1 没有 MCP 客户端，没有载体就无法用真实输入验证"MCP 工具默认按不可信内容源处理"这条
+ * 实现是否正确——这是 `trustLevel` 硬编码（ADR-0017）与 Windows 8.3 短文件名（ADR-0018）
+ * 两次翻车的同一个形状：写了实现、测试全绿、真实输入下从未跑过。所以先在注册路径上
+ * 失败关闭，真正的实现随 M3 的 MCP 客户端一起落地。
+ */
+export class UnimplementedMcpTaintPropagationError extends Error {
+  readonly toolName: string;
+
+  constructor(toolName: string) {
+    super(
+      `工具 "${toolName}" 来自 MCP（source.kind === 'mcp'），但污点传播尚未实现（ADR-0033 · G2）：` +
+        `MCP server 是第三方的，不能假设它会如实声明 net.fetch 之类的能力，因此这里失败关闭。` +
+        `按 docs/09 G2 的既定倾向，MCP 工具本该一律默认按不可信内容源处理——这需要 taintOf()` +
+        `（kernel/state/reduce.ts）对 source.kind === 'mcp' 的工具无条件标记 untrustedContext，` +
+        `而这段实现要等 M3 真正接入 MCP 客户端时才能在真实输入下验证。要让这个错误消失，去实现` +
+        `那段逻辑并在这里删除这道闸门，不要绕过它。`,
+    );
+    this.name = 'UnimplementedMcpTaintPropagationError';
+    this.toolName = toolName;
+  }
+}
+
 /** 模型给出的入参没通过 strict 校验。会被转成 tool_result{isError:true} 回灌给模型。 */
 export class ToolInputError extends Error {
   readonly toolName: string;
@@ -165,6 +195,12 @@ export class ToolRegistry {
         `工具名冲突："${name}" 已被注册。工具名在整个进程内唯一——` +
           `插件与 MCP 工具应带自己的前缀以避免撞名。`,
       );
+    }
+    // MCP 工具的污点传播尚未实现，注册时就炸（ADR-0033 · G2）。放在 register() 而不是
+    // defineTool()：这里是任何 RegisteredTool（不管是手写 ToolSpec 还是未来动态发现的
+    // MCP 工具描述符）最终都必须经过的唯一入口，defineTool() 只覆盖前一种构造路径。
+    if (tool.descriptor.source.kind === 'mcp') {
+      throw new UnimplementedMcpTaintPropagationError(name);
     }
     this.#tools.set(name, tool);
   }

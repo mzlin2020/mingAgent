@@ -3,12 +3,14 @@ import type { BrowserWindow } from 'electron';
 import type { z } from 'zod';
 import { CH } from '../shared/channels.js';
 import {
+  AbandonOrphanedSessionRequest,
   ClearUntrustedRequest,
   CreateSessionRequest,
   GetApprovalModeRequest,
   InterruptRequest,
   ReadBlobRequest,
   ReadSessionRequest,
+  ResumeOrphanedSessionRequest,
   RespondPermissionRequest,
   SendUserMessageRequest,
   SetApiKeyRequest,
@@ -69,6 +71,21 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
     // 同步执行、立刻返回：停止这条路径上不该有任何 await（见 services.interrupt 的注释）
     Promise.resolve({ interrupted: services.interrupt(req.sessionId) }),
   );
+
+  /*
+   * 崩溃恢复（M1-e，docs/04 §8）。列表在启动时已经扫描好、缓存在主进程内存里；
+   * 继续/放弃这两个处理器把请求转给 services.ts，那里会重新在 runtime.state 上
+   * 判一遍，不信任这份扫描时的旧缓存。
+   */
+  handle(CH.listOrphanedSessions, undefined, () => Promise.resolve(services.listOrphanedSessions()));
+
+  handle(CH.resumeOrphanedSession, ResumeOrphanedSessionRequest, async (req) => ({
+    resolved: await services.resumeOrphanedSession(req.sessionId),
+  }));
+
+  handle(CH.abandonOrphanedSession, AbandonOrphanedSessionRequest, async (req) => ({
+    resolved: await services.abandonOrphanedSession(req.sessionId),
+  }));
 
   /*
    * 审批应答。`requestId` 对不上就返回 accepted:false，**不去猜"用户大概是想答那个"**——

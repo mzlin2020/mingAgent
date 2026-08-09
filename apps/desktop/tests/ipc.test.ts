@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { newCallId, newPtySessionId, newSessionId } from '@xm/contracts';
+import { newCallId, newMessageId, newPtySessionId, newSessionId } from '@xm/contracts';
 import { emptySessionState, serializeSessionState } from '@xm/kernel';
 import { CH } from '../src/shared/channels.js';
 import {
@@ -81,7 +81,12 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
     const sessionId = newSessionId();
     const state = {
       ...emptySessionState(sessionId),
-      runningCalls: new Map([[newCallId(), { callId: newCallId(), name: 'fs.read', startedAt: 1 }]]),
+      runningCalls: new Map([
+        [
+          newCallId(),
+          { callId: newCallId(), name: 'fs.read', startedAt: 1, messageId: newMessageId(), input: { path: '/w' } },
+        ],
+      ]),
       ptySessions: new Map([
         [newPtySessionId(), { ptySessionId: newPtySessionId(), cwd: '/w', startedAt: 1 }],
       ]),

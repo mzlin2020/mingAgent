@@ -12,5 +12,6 @@
 export * from './event-bus.js';
 export * from './session-runtime.js';
 export * from './turn.js';
+export * from './crash-recovery.js';
 export * from './provider/scripted.js';
 export * from './tools/demo.js';

@@ -177,6 +177,25 @@ export async function runTurn(deps: TurnDeps, input: readonly ContentBlock[]): P
     payload: { turnId, input: [...input] },
   });
 
+  return driveTurnLoop(deps, turnId, maxIterations);
+}
+
+/**
+ * 续跑一个已经开始、但因为进程崩溃而没跑完的回合（M1-e 崩溃恢复，docs/04 §8 步骤 3"继续"）。
+ *
+ * **调用方必须先用 `synthesizeInterruption()`（`crash-recovery.ts`）补完缺失的收尾事件**，
+ * 这里不做——"要不要补、补哪些"是 `OrphanedTurn` 该回答的问题，这个函数只负责"从这里
+ * 继续跑"，与 `runTurn()` 写完 `turn.start` 之后要做的事完全一样：下一步就是 `streamOnce`，
+ * 效果等价于"崩溃发生的那个迭代边界之后，循环本来就会做的下一步"。不重连任何原生进程、
+ * 不重放原始工具调用——模型只是被如实告知"这次没跑完"，这是没有幂等性契约时唯一安全
+ * 的做法。`maxIterations` 重新计满：崩溃前用了几次不落库，这是可接受的近似。
+ */
+export async function resumeTurn(deps: TurnDeps, turnId: TurnId): Promise<StopReason> {
+  return driveTurnLoop(deps, turnId, deps.maxIterations ?? 9999);
+}
+
+async function driveTurnLoop(deps: TurnDeps, turnId: TurnId, maxIterations: number): Promise<StopReason> {
+  const { runtime } = deps;
   let reason: StopReason = 'end_turn';
 
   try {

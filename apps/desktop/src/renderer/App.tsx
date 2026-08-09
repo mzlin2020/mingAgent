@@ -1,7 +1,14 @@
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { ApprovalModeSwitcher } from './components/approval-mode-switcher.js';
-import { NoticeBanner, SetupBanner, TurnErrorBanner, UntrustedBanner, UsageBadge } from './components/banners.js';
+import {
+  CrashRecoveryBanner,
+  NoticeBanner,
+  SetupBanner,
+  TurnErrorBanner,
+  UntrustedBanner,
+  UsageBadge,
+} from './components/banners.js';
 import { Composer } from './components/composer.js';
 import { LiveCalls, LiveMessage } from './components/live-views.js';
 import { MessageStream } from './components/message-stream.js';
@@ -33,14 +40,16 @@ export function App(): ReactNode {
   const live = useUi((s) => s.live);
   const refreshSessions = useUi((s) => s.refreshSessions);
   const refreshStatus = useUi((s) => s.refreshStatus);
+  const refreshOrphanedSessions = useUi((s) => s.refreshOrphanedSessions);
   const applyEvent = useUi((s) => s.applyEvent);
 
   useEffect(() => {
     void refreshSessions();
     void refreshStatus();
+    void refreshOrphanedSessions();
     // 订阅主进程推来的事件。总线在主进程，这里只是消费端（ADR-0013 不变量五）
     return api.onEvent(applyEvent);
-  }, [refreshSessions, refreshStatus, applyEvent]);
+  }, [refreshSessions, refreshStatus, refreshOrphanedSessions, applyEvent]);
 
   /*
    * 自动跟随滚动。
@@ -85,6 +94,7 @@ export function App(): ReactNode {
     <div className="flex h-screen bg-[var(--xm-bg)] text-[var(--xm-fg)]">
       <SessionList />
       <main className="flex min-w-0 flex-1 flex-col">
+        <CrashRecoveryBanner />
         <header className="flex items-center justify-between border-b border-[var(--xm-border)] px-4 py-2">
           <span className="truncate text-sm font-medium">
             {session?.title === '' || session === undefined ? '小明' : session.title}

@@ -123,6 +123,10 @@ export interface RunningCall {
   readonly callId: CallId;
   readonly name: string;
   readonly startedAt: number;
+  /** 触发这次调用的那条模型消息——崩溃恢复合成中断结果时用得上（orphan.ts） */
+  readonly messageId: MessageId;
+  /** 原始入参，同上 */
+  readonly input: unknown;
 }
 
 export interface RunningSubagent {

@@ -148,7 +148,14 @@ const UntrustedContextSchema = z.object({
   since: z.number(),
 });
 
-const RunningCallSchema = z.object({ callId: CallId, name: z.string(), startedAt: z.number() });
+const RunningCallSchema = z.object({
+  callId: CallId,
+  name: z.string(),
+  startedAt: z.number(),
+  // 崩溃恢复要能合成结构化中断结果，见 kernel/state/session-state.ts 的 RunningCall
+  messageId: MessageId,
+  input: z.unknown(),
+});
 const RunningSubagentSchema = z.object({
   agentId: AgentId,
   childSessionId: SessionId,
@@ -249,6 +256,28 @@ export const ClearUntrustedResult = z.object({ cleared: z.boolean() });
  */
 export const InterruptRequest = z.strictObject({ sessionId: SessionId });
 export const InterruptResult = z.object({ interrupted: z.boolean() });
+
+/**
+ * 崩溃恢复（M1-e，docs/04 §8）。启动时扫描出的"停在没收尾回合里"的会话——
+ * 独立通道，不塞进 `ListSessionsResult`，避免牵连到还没排期的"会话列表"功能。
+ *
+ * `kind` 只是给渲染层挑文案用的粗粒度分类（正在生成回复 / 工具没跑完 / 等你批权限 /
+ * 卡在边界上），不携带 `OrphanedTurn` 的其余细节——那些细节只在主进程侧的
+ * `resumeOrphanedSession`/`abandonOrphanedSession` 处理器里当场重新算一遍
+ * （不信任扫描时的旧缓存），渲染层不需要、也不该拿到。
+ */
+export const OrphanedSessionKind = z.enum(['message', 'tool', 'permission', 'none']);
+export type OrphanedSessionKind = z.infer<typeof OrphanedSessionKind>;
+
+export const ListOrphanedSessionsResult = z.array(z.object({ sessionId: SessionId, kind: OrphanedSessionKind }));
+export type ListOrphanedSessionsResult = z.infer<typeof ListOrphanedSessionsResult>;
+
+export const ResumeOrphanedSessionRequest = z.strictObject({ sessionId: SessionId });
+/** `resolved: false` = 扫描时的旧缓存已经过期（比如已经被处理过一次），UI 该把这一条收起来 */
+export const ResumeOrphanedSessionResult = z.object({ resolved: z.boolean() });
+
+export const AbandonOrphanedSessionRequest = z.strictObject({ sessionId: SessionId });
+export const AbandonOrphanedSessionResult = z.object({ resolved: z.boolean() });
 
 /**
  * 应答一次权限审批。

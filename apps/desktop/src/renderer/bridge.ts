@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { BlobRef } from '@xm/contracts';
 import {
+  AbandonOrphanedSessionResult,
   ApprovalMode,
   ChooseWorkspaceResult,
   ClearUntrustedResult,
@@ -9,10 +10,12 @@ import {
   ImageAttachment,
   InterruptResult,
   IpcEnvelope,
+  ListOrphanedSessionsResult,
   ListSessionsResult,
   PushedEvent,
   ReadBlobResult,
   ReadSessionResult,
+  ResumeOrphanedSessionResult,
   RespondPermissionResult,
   SendUserMessageResult,
   SetApiKeyResult,
@@ -45,6 +48,9 @@ interface XmBridge {
   chooseWorkspace(): Promise<unknown>;
   status(): Promise<unknown>;
   setApiKey(req: unknown): Promise<unknown>;
+  listOrphanedSessions(): Promise<unknown>;
+  resumeOrphanedSession(req: unknown): Promise<unknown>;
+  abandonOrphanedSession(req: unknown): Promise<unknown>;
   onEvent(listener: (event: unknown) => void): () => void;
 }
 
@@ -137,6 +143,15 @@ export const api = {
   /** 录入密钥。**注意没有对应的读取方法**——渲染层永远拿不到密钥的值 */
   setApiKey: (providerId: string, key: string) =>
     call(bridge().setApiKey({ providerId, key }), SetApiKeyResult),
+
+  /** 崩溃恢复（M1-e，docs/04 §8）：启动时扫描出的、停在没收尾回合里的会话 */
+  listOrphanedSessions: () => call(bridge().listOrphanedSessions(), ListOrphanedSessionsResult),
+
+  resumeOrphanedSession: (sessionId: string) =>
+    call(bridge().resumeOrphanedSession({ sessionId }), ResumeOrphanedSessionResult),
+
+  abandonOrphanedSession: (sessionId: string) =>
+    call(bridge().abandonOrphanedSession({ sessionId }), AbandonOrphanedSessionResult),
 
   /**
    * 事件推送。**解析不了的事件原样忽略并继续**，不让整条流断掉——
