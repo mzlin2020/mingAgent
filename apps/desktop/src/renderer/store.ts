@@ -100,7 +100,6 @@ interface UiState {
   readonly setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   readonly send: (text: string, images?: readonly ImageAttachment[]) => Promise<void>;
   readonly stop: () => Promise<void>;
-  readonly clearUntrusted: () => Promise<void>;
   readonly refreshStatus: () => Promise<void>;
   readonly setApiKey: (providerId: string, key: string) => Promise<void>;
   readonly applyEvent: (event: PushedEvent) => void;
@@ -172,7 +171,7 @@ export const useUi = create<UiState>((set, get) => {
     },
 
     /**
-     * 应答审批。**与 stop / clearUntrusted 同一个姿态：发出去就完了，不乐观更新。**
+     * 应答审批。**与 stop 同一个姿态：发出去就完了，不乐观更新。**
      *
      * 在这里顺手把 `pendingPermission` 清掉会快一帧，代价是主进程若没收到
      * （requestId 已经过期、窗口刚重载），用户看到的是"已允许"而闸门其实拒了。
@@ -269,7 +268,7 @@ export const useUi = create<UiState>((set, get) => {
     },
 
     /**
-     * 停止。与 `clearUntrusted` 同一个姿态：**发出去就完了，不乐观更新**。
+     * 停止。**发出去就完了，不乐观更新**。
      *
      * 真正的"已停止"由主进程推回来的 `message.interrupted` 经 reduce 得出。
      * 在这里顺手把 busy 置回 false 会快一帧，代价是取消若没生效，
@@ -302,24 +301,6 @@ export const useUi = create<UiState>((set, get) => {
       }
     },
 
-    /**
-     * 解除不可信标记。**不在这里改状态**——发出去就完了，状态由主进程推回来的
-     * `trust.cleared` 事件经 `reduce` 得出（ADR-0015）。
-     *
-     * 在这里顺手 `set({ session: { ...session, untrustedContext: undefined } })` 会快一帧，
-     * 代价是 UI 上的"已解除"与事件流里的"已解除"变成两件事——而如果主进程那一侧失败了，
-     * 用户看到的是解除成功、实际仍被拒绝。安全状态尤其不能乐观更新。
-     */
-    clearUntrusted: async () => {
-      const id = get().currentId;
-      if (id === undefined) return;
-      try {
-        await api.clearUntrusted(id);
-      } catch (e) {
-        applyIpcError(e, id);
-      }
-    },
-
     refreshOrphanedSessions: async () => {
       try {
         set({ orphanedSessions: await api.listOrphanedSessions() });
@@ -329,7 +310,7 @@ export const useUi = create<UiState>((set, get) => {
     },
 
     /**
-     * 继续/放弃都不乐观更新状态本身——与 `stop`/`clearUntrusted` 同一个姿态。
+     * 继续/放弃都不乐观更新状态本身——与 `stop` 同一个姿态。
      * 唯一在这里做的乐观更新是把这一条从列表里摘掉：`resolved: false` 说明
      * 扫描时的旧缓存已经过期（多半是已经被处理过一次），显示一条僵尸行没有意义。
      * 若这个会话此刻正打开着，真正的状态变化经总线推来的事件走 `applyEvent`，

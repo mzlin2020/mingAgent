@@ -18,7 +18,7 @@ import { useUi } from '../store.js';
  * 它与"帮我批准"在判定机制上完全相同（都映射到已经过 ADR-0017/C5 验证过的 YOLO
  * 语义：跳过 `ask`，红线与任何 `deny` 原样生效，ADR-0030），区别只在开启门槛与
  * 文案。选中它不会立刻生效，而是先内联展开一段警告 + 一个"确认开启"按钮
- * （跟 `PermissionCard`/`UntrustedBanner` 一样，不用模态框）——讲清楚"完全"指的是
+ * （跟 `PermissionCard` 一样，不用模态框）——讲清楚"完全"指的是
  * "不再问你"而不是"没有底线"，避免用户以为开了这个开关就真的没有任何保护。
  */
 export function ApprovalModeSwitcher(): ReactNode {

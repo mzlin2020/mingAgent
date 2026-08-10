@@ -7,7 +7,6 @@ import {
   SessionConflictBanner,
   SetupBanner,
   TurnErrorBanner,
-  UntrustedBanner,
   UsageBadge,
 } from './components/banners.js';
 import { Composer } from './components/composer.js';
@@ -119,8 +118,8 @@ export function App(): ReactNode {
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
               {/*
-                留在这里的都是**会话级的常驻状态**：没配模型、密钥后端降级、上下文被外部
-                内容弄脏。它们描述的是"这个会话现在是什么样"，不绑定某一个时刻，
+                留在这里的都是**会话级的常驻状态**：没配模型、密钥后端降级等。
+                它们描述的是"这个会话现在是什么样"，不绑定某一个时刻，
                 用户回看历史时在顶部看到它们是合理的。
 
                 "刚刚出事了、要你现在处理"的那两条不在这里——见下面滚动区外那一块。
@@ -128,7 +127,6 @@ export function App(): ReactNode {
               <SetupBanner />
               <SessionConflictBanner />
               <NoticeBanner />
-              <UntrustedBanner />
               <MessageStream messages={session?.messages ?? []} />
               <LiveMessage />
               <LiveCalls />

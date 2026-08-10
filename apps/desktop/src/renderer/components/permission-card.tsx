@@ -78,7 +78,7 @@ export function PermissionCard(): ReactNode {
 
           所以这里复述的是事件流里的事实：哪个工具、经由哪个能力、什么时候把上下文
           弄脏的。三个字段都来自 `UntrustedContext`（`reduce` 从 `tool.start` 算出），
-          模型碰不到——与 `UntrustedBanner` 反社工的理由完全相同。
+          模型碰不到——用户确认的是一件具体的事，不是一个措辞。
         */}
         {request.trustLevel === 'untrusted' && (
           <div className="mt-2 rounded border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
