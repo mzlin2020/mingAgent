@@ -124,11 +124,18 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
 
   return (
     /*
-      不再画一条 `border-t`：输入区自己已经是一个有边框的盒子，再来一条横贯全宽的线等于
-      把界面切成两半。改用 `shadow-raise` —— 极淡的一层向上晕开，只在滚动内容顶到底部时
-      才隐约看得出来，是"下面这块浮在上面"而不是"这里有一道分界"。
+      不画 `border-t`：输入区自己已经是一个有边框的盒子，再来一条横贯全宽的线等于把界面
+      切成两半。
+      也不用向上的 box-shadow——那个**必然**在输入区上沿留一道硬线：阴影恰好在它停止的
+      地方最浓（实测那里有 12 级灰阶的突变），下面又是干净的底色，接缝反而比一条边框还显眼。
+      改用渐隐带：末端就是输入区自己的底色，两者完全对齐，没有任何断层；
+      滚动内容压到底下时会淡出去，这才是"下面这块浮在上面"该有的样子。
     */
-    <div className="shrink-0 bg-canvas pb-5 pt-1 shadow-raise">
+    <div className="relative shrink-0 bg-canvas pb-5 pt-1">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-linear-to-t from-canvas to-transparent"
+      />
       <div className={COLUMN}>
         {attachError !== undefined && (
           <p className="mb-1.5 text-meta text-danger">{attachError}</p>

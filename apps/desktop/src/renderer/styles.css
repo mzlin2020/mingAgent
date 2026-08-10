@@ -76,11 +76,10 @@
   --text-title: 17px;
   --text-title--line-height: 1.4;
 
-  /* ── 阴影只有两档 ── */
-  /* 悬浮层：汉堡菜单、"完全访问权限"确认气泡 */
+  /* ── 阴影只有一档 ── */
+  /* 悬浮层：汉堡菜单、"完全访问权限"确认气泡。
+     贴边"浮起"不走阴影——向上的 box-shadow 在停止处必然留一道硬线，见 `composer.tsx` */
   --shadow-pop: 0 1px 2px rgb(31 30 27 / 0.06), 0 12px 28px -10px rgb(31 30 27 / 0.18);
-  /* 贴边浮起：输入区从消息流里抬起来一点 */
-  --shadow-raise: 0 -6px 20px -14px rgb(31 30 27 / 0.35);
 
   /* ── 字体 ── */
   --font-sans:
@@ -134,7 +133,6 @@
     --color-danger-border: #543029;
 
     --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 28px -10px rgb(0 0 0 / 0.6);
-    --shadow-raise: 0 -6px 20px -14px rgb(0 0 0 / 0.8);
   }
 }
 
@@ -169,6 +167,18 @@ body {
 }
 
 :focus:not(:focus-visible) {
+  outline: none;
+}
+
+/**
+ * 文本框**不吃**这圈 outline —— 它们用自己的边框变色表示聚焦（`ui.tsx` 的 `Textarea`、
+ * `SetupBanner` 的密钥输入框，以及输入区那层一体式外壳的 `focus-within:border-accent`）。
+ *
+ * 两者叠加的后果是真实的：输入区里 textarea 是无边框的，外壳才有边框，于是聚焦时
+ * outline 会在外壳内部再画一圈，横穿输入区中间——正好是 `composer.tsx` 顶部注释里
+ * 写明要避免的"框套框"。焦点指示没有丢，只是交给边框那一层。
+ */
+:where(input, textarea):focus-visible {
   outline: none;
 }
 

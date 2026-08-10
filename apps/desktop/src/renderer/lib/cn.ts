@@ -41,7 +41,7 @@ const twMerge = extendTailwindMerge({
       ],
       radius: ['card', 'control', 'chip'],
       text: ['micro', 'meta', 'body', 'title'],
-      shadow: ['pop', 'raise'],
+      shadow: ['pop'],
       font: ['sans', 'mono'],
       ease: ['out-soft'],
       animate: ['pop-in'],
