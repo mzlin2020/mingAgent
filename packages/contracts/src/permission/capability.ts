@@ -62,6 +62,49 @@ export const IRREVERSIBLE_CAPABILITIES: readonly Capability[] = [
 export const isIrreversible = (c: Capability): boolean => IRREVERSIBLE_CAPABILITIES.includes(c);
 
 /**
+ * 不可信上下文下的**严重项** —— 注入降级里"哪怕用户已经说了别问我，也还是要问"的那一小撮
+ * （ADR-0035）。
+ *
+ * ── 这张表存在的理由 ──
+ *
+ * 注入降级排在 `evaluate()` 的最后一步，在 YOLO 之后。后果是用户开了「帮我批准」/
+ * 「完全访问权限」，第一次 `web.fetch` 把会话污染掉之后，**每一个新域名仍然弹一个框**——
+ * 一次新闻搜索就是十几次"允许"。这是用户第三次报同一个形状的反馈，
+ * 而这种噪音不换来安全：它只训练人闭着眼点允许（`turn.ts` 自己写着这句话）。
+ *
+ * 修法不是把整道防御关掉，而是承认"别问我"这个开关对**绝大多数**不可撤销操作是
+ * 一次有效的预先回答，只对那些"一旦发生就跨出本机、超出本会话"的少数几件事保留提问。
+ *
+ * ── 为什么恰好是这三个，不多也不少 ──
+ *
+ * 少了不行：这三件事的共同点是**后果留在本会话之外**——推上去的提交撤不回、
+ * 装上的包会一直执行、改掉的系统设置关掉小明也还在。一个网页说服模型做了它们，
+ * 用户回过神来时已经没有现场可以恢复。
+ *
+ * 多了也不行：`IRREVERSIBLE_CAPABILITIES` 里的其余成员分两类，都不该进来——
+ *
+ *   · `net.fetch` / `fs.delete` / `shell.session` / `net.listen`
+ *     正是用户开 YOLO 时明确表示"这一段时间别问我"的日常操作。把它们留在表里，
+ *     等于这个开关照旧不生效，也就是这张表要解决的那个问题原样还在。
+ *   · `gui.input` / `plugin.install`（以及不在不可撤销表里的 `secrets.read`）
+ *     在不可信上下文下**已经是红线硬拒绝**（`red.*-untrusted`，见 policy/defaults.ts），
+ *     红线在第 1 步就定案，根本走不到注入降级那一步。把它们写进来只会造成
+ *     "这里也管着"的错觉，而两处表达同一条规则迟早会分叉。
+ *
+ * 同一张表还有第二个用法：`ask → deny` 那一半（ADR-0017）**只对这三项保留**。
+ * 其余能力在默认档下从硬 `deny` 放宽成一个指名污染源的高警示 `ask`，
+ * 好让用户能当场只授权一个域名，而不是被迫去解除整轮的不可信标记那个大得多的锤子。
+ */
+export const CRITICAL_UNDER_UNTRUSTED: readonly Capability[] = [
+  'git.push',
+  'package.install',
+  'system.settings',
+];
+
+export const isCriticalUnderUntrusted = (c: Capability): boolean =>
+  CRITICAL_UNDER_UNTRUSTED.includes(c);
+
+/**
  * **把外部内容带进上下文**的能力子集 —— 提示词注入的入口。
  *
  * 这个子集存在的理由，是 M0-b 复审时实测出来的一个洞：`PermissionRequest.trustLevel`

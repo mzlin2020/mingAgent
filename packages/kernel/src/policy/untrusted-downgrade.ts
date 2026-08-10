@@ -1,13 +1,32 @@
-import type { Capability, PermissionRequest, PolicyRule, PolicyVerdict } from '@xm/contracts';
-import { isIrreversible } from '@xm/contracts';
+import type {
+  Capability,
+  PermissionRequest,
+  PermissionTier,
+  PolicyRule,
+  PolicyVerdict,
+} from '@xm/contracts';
+import { isCriticalUnderUntrusted, isIrreversible } from '@xm/contracts';
 import type { RuleLayerId } from './layer.js';
 
 /**
- * 提示词注入降级 —— `evaluate()` 求值顺序的最后一步（ADR-0003 / ADR-0017 / ADR-0034）。
+ * 提示词注入降级 —— `evaluate()` 求值顺序的最后一步
+ * （ADR-0003 / ADR-0017 / ADR-0034 / ADR-0035）。
  *
  * 从 `engine.ts` 抽出来，是因为它已经不再是"一个 if"了：ADR-0034 给它加了知情授权的
- * 穿透条件，而那组条件本身需要被穷举测试、需要写清楚每一条的理由。engine.ts 那边
- * 只留 `evaluate()` 的求值骨架——顺带把它从 400 行的豁免名单里摘了出去（418 → 379）。
+ * 穿透条件，ADR-0035 又让它感知档位与"严重项"，而每一条判据都需要被穷举测试、
+ * 需要写清楚理由。engine.ts 那边只留 `evaluate()` 的求值骨架。
+ *
+ * ── 降级矩阵（ADR-0035）──
+ *
+ * ```
+ *                        非严重项                     严重项（CRITICAL_UNDER_UNTRUSTED）
+ *   yolo   allow →   allow（不降级）                  ask
+ *   yolo   ask   →   （走不到：第 4 步已变 allow）     （同左）
+ *   其余档 allow →   ask                              ask
+ *   其余档 ask   →   ask（高警示，可当场授权）         deny（ADR-0017 原样）
+ * ```
+ *
+ * 红线（`red.*-untrusted`）在第 1 步就定案，压根走不到这里，因此不出现在这张表里。
  */
 
 /** 注入降级用的合成规则 ID。出现在 Verdict 里时，UI 要说明"因为上下文含不可信内容" */
@@ -61,16 +80,32 @@ export interface WinningRule {
  *
  *     污染时刻取自 `SessionState.untrustedContext.since`，授权时刻取自
  *     `PermissionGrant.ts`——两个都是事件流里已有的事实，不新增任何持久化状态。
+ *
+ * 四、**或者，这条授权批准的正是造成污染的那次调用**（ADR-0035）。
+ *
+ *     条件 ③ 单看是对的，但它有一条缝：污点标在 `tool.start`，而放行这次调用的那次
+ *     授权记在更早的 `permission.decision` 上。于是**批准了这次污染本身的那条授权**
+ *     反而 `grantedAt < untrustedSince`——用户刚点过"本会话都允许 a.example"，
+ *     a.example 的内容一进上下文，下一次访问 a.example 又被问一遍。实测确认过。
+ *
+ *     那次授权当然是知情的：用户点"允许"时，接下来要发生的正是这次污染。
+ *     拿 callId 对齐就没有这条缝，而且不放开条件 ③ 要挡的攻击——会话早期对
+ *     `api.github.com` 的旧授权属于**另一次**调用，callId 对不上，仍然穿不透。
  */
 export function isInformedGrant(
   winner: WinningRule | undefined,
   untrustedSince: number | undefined,
+  untrustedCallId: string | undefined,
 ): boolean {
   if (winner === undefined || untrustedSince === undefined) return false;
   if (winner.layerId !== 'session') return false;
   if (winner.rule.match?.target === undefined) return false;
   if (winner.rule.grantedAt === undefined) return false;
-  return winner.rule.grantedAt >= untrustedSince;
+  if (winner.rule.grantedAt >= untrustedSince) return true;
+  // 条件 ④：授权与污染出自同一次调用。`undefined === undefined` 不算命中
+  return (
+    untrustedCallId !== undefined && winner.rule.grantedCallId === untrustedCallId
+  );
 }
 
 /**
@@ -83,10 +118,29 @@ export function downgradeIfUntrusted(
   verdict: PolicyVerdict,
   request: PermissionRequest,
   informed: boolean,
+  tier: PermissionTier,
 ): PolicyVerdict {
   if (verdict.effect === 'deny') return verdict;
   if (request.trustLevel !== 'untrusted') return verdict;
   if (!isIrreversible(request.capability)) return verdict;
+
+  const critical = isCriticalUnderUntrusted(request.capability);
+
+  /*
+   * YOLO 档、非严重项 —— 不降级（ADR-0035）。
+   *
+   * 这一步之前不存在，后果是第 5 步把第 4 步刚放行的东西又打回来问一遍：
+   * 用户开着「完全访问权限」搜一条新闻，每一个新域名一个确认框，十几次"允许"。
+   * 「别再问我」这个开关对不可撤销操作**整体失效**，恰恰在用户最需要它的时候。
+   *
+   * 放在这里而不是让 `evaluate()` 干脆跳过第 5 步：`ask → deny` 那一半以及严重项
+   * 仍然要走完下面的逻辑，档位只改变"哪些能力还值得再问一次"，不改变这道防御的形状。
+   *
+   * 代价是真实的，写在 ADR-0035 的后果里：污染之后，注入可以让小明往任意域名发请求
+   * 而不再有任何提示。它之所以可接受，是因为这个档位是会话级的、要显式开、
+   * 开「完全访问权限」还要过一道二次确认——而不是像原来那样对所有档位无条件生效。
+   */
+  if (tier === 'yolo' && !critical) return verdict;
 
   const why =
     `本轮上下文包含不可信内容（网页 / MCP 返回 / 子 Agent 结果），` +
@@ -110,21 +164,42 @@ export function downgradeIfUntrusted(
   }
 
   /*
-   * ask → deny。
+   * ask → deny —— **只对严重项**（ADR-0017 立的这一半，ADR-0035 收窄了它的适用范围）。
    *
-   * 这一半之前漏了，而它恰恰是拦住典型注入的那一半：注入攻击的形状是
-   * "读到外部内容 → 立刻做一次不可撤销的操作"，而那类操作在默认规则里本来就是 ask。
-   * 只做 allow→ask 的话，攻击路径上的判定压根没变过——弹一个和平时一模一样的确认框，
-   * 用户照点不误。docs/06 §9 的验收项"读过网页后要求 git push → 从 ask 变 deny"
-   * 说的就是这条。
+   * 它拦的是典型注入的形状："读到外部内容 → 立刻做一次不可撤销的操作"，
+   * 而那类操作在默认规则里本来就是 ask。只做 allow→ask 的话，攻击路径上的判定
+   * 压根没变过——弹一个和平时一模一样的确认框，用户照点不误。
+   * docs/06 §9 的验收项"读过网页后要求 git push → 从 ask 变 deny"说的就是这条，
+   * 而 `git.push` 正在严重项里，那条验收原样成立。
    *
    * deny 不是死路：用户在 UI 上显式解除本轮的不可信标记后重试即可。区别在于
    * **他必须先意识到"这轮读过不可信内容"**，而不是在一个日常弹窗上顺手点允许。
    */
+  if (critical) {
+    return {
+      effect: 'deny',
+      ruleId: INJECTION_DOWNGRADE_RULE_ID,
+      reason: `${why}，且该操作本就需要确认，因此本轮直接拒绝。若确属你的本意，请显式解除本轮的不可信标记后重试。`,
+    };
+  }
+
+  /*
+   * 非严重项：ask → ask，但**换成注入降级自己的 ruleId 与理由**（ADR-0035）。
+   *
+   * 原来这里也是硬 deny，代价是用户连"只允许这一个域名"的机会都没有——想继续
+   * 只能去点横幅上的「解除标记」，那是一个把**整轮**防线一起放倒的锤子，
+   * 比他实际想做的决定大得多。防线越是只剩下"全开或全关"，用户就越会选全关。
+   *
+   * ADR-0017 担心的"弹一个和平时一模一样的框"由这个 `ruleId` 和 UI 一起解决：
+   * 审批卡看到 `trustLevel === 'untrusted'` 会渲染成指名污染源的高警示样式，
+   * 不是日常那个框。而无人值守场景不受影响——headless / CLI 没有审批责任人时，
+   * `turn.ts` 的 `decideOrAbort` 把 `ask` 自动判成 deny，原样保持 ADR-0017 的保护。
+   */
   return {
-    effect: 'deny',
+    effect: 'ask',
     ruleId: INJECTION_DOWNGRADE_RULE_ID,
-    reason: `${why}，且该操作本就需要确认，因此本轮直接拒绝。若确属你的本意，请显式解除本轮的不可信标记后重试。`,
+    reason: `${why}。本轮读过不可信内容之后才出现这个请求，请确认它确实是你要的。`,
+    risk: request.risk,
   };
 }
 

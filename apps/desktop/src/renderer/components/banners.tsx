@@ -157,14 +157,23 @@ export function NoticeBanner(): ReactNode {
  * 模型碰不到。用户确认的是一件具体的事，不是一个措辞。
  *
  * 横幅是常驻的、不可关闭的：能被关掉的安全提示等于没有提示。
+ *
+ * ── 为什么这段文案要跟着审批档位变（ADR-0035）──
+ *
+ * 「帮我批准」/「完全访问权限」下，注入降级对非严重项整体不再生效——访问网络、
+ * 删文件这类操作会**直接执行、不再询问**。横幅要是继续写着"会被直接拒绝"，
+ * 它就成了一句让人放心的假话，而这道防线恰恰是靠用户知道它在不在才有意义的。
+ * 收窄防御可以，让用户以为防御还在不行。
  */
 export function UntrustedBanner(): ReactNode {
   const session = useUi((s) => s.session);
+  const approvalMode = useUi((s) => s.approvalMode);
   const clearUntrusted = useUi((s) => s.clearUntrusted);
   const ctx = session?.untrustedContext;
   if (ctx === undefined) return null;
 
   const since = new Date(ctx.since).toLocaleTimeString();
+  const relaxed = approvalMode !== 'ask';
 
   return (
     <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
@@ -172,8 +181,22 @@ export function UntrustedBanner(): ReactNode {
       <p className="mt-1 text-[var(--xm-fg-muted)]">
         {since} 由工具 <span className="font-mono">{ctx.toolName}</span>（
         <span className="font-mono">{ctx.viaCapability}</span>）引入。
-        在此之后，删除文件、推送代码、访问网络这类<b>不可撤销</b>的操作会被直接拒绝——
-        你在这条横幅出现<b>之后</b>亲手允许过的那些具体目标除外（它们不会再反复问你）。
+        {relaxed ? (
+          <>
+            {' '}
+            你当前开着
+            <b>{approvalMode === 'full' ? '「完全访问权限」' : '「帮我批准」'}</b>
+            ，因此访问网络、删除文件这类<b>不可撤销</b>的操作<b>不会再向你确认，会直接执行</b>
+            —— 推送到远端、安装依赖、修改系统设置仍然会问你一次。
+            想恢复这道防线，把上方的审批模式切回「请求批准」。
+          </>
+        ) : (
+          <>
+            在此之后，删除文件、访问网络这类<b>不可撤销</b>的操作会重新向你确认一次（
+            推送到远端、安装依赖、修改系统设置则<b>直接拒绝</b>）——
+            你在这条横幅出现<b>之后</b>亲手允许过的那些具体目标除外（它们不会再反复问你）。
+          </>
+        )}
       </p>
       <Button
         className="mt-2"

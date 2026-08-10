@@ -160,6 +160,35 @@ describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {
   });
 });
 
+describe('🔴 解析出的 IP 主张只查 deny，不拿去问用户（ADR-0036）', () => {
+  /*
+   * `resolveHost` 每个 URL 产出两条主张：可读域名（claim A）和解析出的 IP（claim B）。
+   * claim B 存在只是为了让 SSRF 的 IP 段规则有东西可匹配——判定与建连必须看同一个
+   * 地址，否则就是 DNS 重绑定的窗口（ADR-0028）。
+   *
+   * 但它同时也匹配上了 `def.net-fetch` 的 ask，于是**每一次 web.fetch 弹两个框**：
+   * 一个写着域名，一个写着用户根本无从判断的裸 IP。实测确认过，这是审批噪音的
+   * 第二个来源，和 ADR-0035 修的那个乘在一起——用户报的"10+ 次"就是这么来的。
+   */
+  /*
+   * "公网地址只问一次"那一半放在 `informed-grant-noise.test.ts` 里用假网关考——
+   * 在这里考需要 DNS 指向一个真实可连的公网地址，那会让用例去拨真网络。
+   * 这里留的是**只有真网关才能证明的那一半**：deny 仍然拦得住。
+   */
+  it('🔴 deny 的那一半一个字没动：解析到保留网段仍然拦，且仍然零确认框', async () => {
+    const { exec, asked } = await harness({
+      dnsLookup: () => Promise.resolve([{ address: '10.1.2.3', family: 4 as const }]),
+    });
+    const all = await exec('https://looks-public.example/page');
+
+    expect(ended(all)[0]?.ok).toBe(false);
+    expect(decisions(all).find((d) => d.effect === 'deny')?.ruleId).toBe(
+      'def.no-fetch-private-network',
+    );
+    expect(asked).toHaveLength(0);
+  });
+});
+
 describe('🔴 DNS 只解析一次：判定用的地址就是唯一被建连过的地址', () => {
   let server: Server;
   let port: number;

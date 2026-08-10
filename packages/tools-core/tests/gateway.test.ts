@@ -418,7 +418,12 @@ describe('网络分支', () => {
 
     expect(calls).toEqual(['example.com']); // 🔴 只解析一次
     expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://example.com/meta' });
-    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://169.254.169.254/' });
+    // claim B 标着 checkOnly：它只用来给 SSRF 规则匹配，不拿去问用户（ADR-0036）
+    expect(r.claims).toContainEqual({
+      capability: 'net.fetch',
+      target: 'https://169.254.169.254/',
+      checkOnly: true,
+    });
     expect(r.pinnedHosts?.get('example.com')).toEqual({ address: '169.254.169.254', family: 4 });
   });
 
@@ -429,7 +434,11 @@ describe('网络分支', () => {
       { url: 'https://internal.example:8443/api' },
       ctx(root),
     );
-    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://10.0.0.5:8443/' });
+    expect(r.claims).toContainEqual({
+      capability: 'net.fetch',
+      target: 'https://10.0.0.5:8443/',
+      checkOnly: true,
+    });
   });
 
   it('IPv6 地址在 claim 里带方括号', async () => {
@@ -439,7 +448,11 @@ describe('网络分支', () => {
       { url: 'http://example.com/' },
       ctx(root),
     );
-    expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'http://[::1]/' });
+    expect(r.claims).toContainEqual({
+      capability: 'net.fetch',
+      target: 'http://[::1]/',
+      checkOnly: true,
+    });
     expect(r.pinnedHosts?.get('example.com')).toEqual({ address: '::1', family: 6 });
   });
 

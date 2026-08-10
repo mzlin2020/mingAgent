@@ -341,7 +341,14 @@ async function resolveHost(
 
     for (const capability of hostCapabilities) {
       claims.push({ capability, target: raw }); // claim A：可读域名，命中默认 ask
-      claims.push({ capability, target: ipUrl }); // claim B：解析出的 IP，命中 IP 段 deny
+      /*
+       * claim B：解析出的 IP，命中 IP 段 deny。
+       *
+       * `checkOnly` 是必需的，不是优化（ADR-0036）：不标的话它也匹配 `def.net-fetch`
+       * 的 ask，于是每次 `web.fetch` 弹两个框——一个域名，一个用户无从判断的裸 IP。
+       * 这条主张的用途从来只是"让 SSRF 规则有东西可匹配"，不是征求同意。
+       */
+      claims.push({ capability, target: ipUrl, checkOnly: true });
     }
   }
 

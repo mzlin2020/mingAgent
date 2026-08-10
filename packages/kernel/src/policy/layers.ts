@@ -72,6 +72,9 @@ export const GRANT_RULE_PREFIX = 'grant.';
  *     "用户看着不可信横幅、针对这个域名点的允许"和"污染发生之前顺手点的一次允许"——
  *     而这两者对注入防御的意义完全相反：前者是对"读过不可信内容之后还要不要继续"
  *     的明确回答，后者压根没被问过这个问题。
+ * 五、**授权所属的那次调用也要带上**（`grantedCallId`，ADR-0035）。它补的是第四条的
+ *     一条缝：批准了污染本身的那次授权，时间戳反而早于污染时刻（污点标在 `tool.start`，
+ *     授权记在更早的 `permission.decision`），于是用户刚点过的第一个域名下次还要再问。
  *
  * 规范化不了的直接跳过——**失败关闭**：那一条授权不生效，用户下次还会被问一遍，
  * 而不是拿到一条建立在判不了的 target 上的规则。
@@ -94,6 +97,7 @@ const grantRule = (g: PermissionGrant, target: string): PolicyRule => ({
       : `你在本会话${g.scope === 'always' ? '选择了永久拒绝' : '拒绝过这个操作'}`,
   immutable: false,
   grantedAt: g.ts,
+  ...(g.callId === undefined ? {} : { grantedCallId: g.callId }),
 });
 
 /**

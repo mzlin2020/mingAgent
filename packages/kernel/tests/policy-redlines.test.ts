@@ -211,9 +211,30 @@ describe('红线不受档位影响', () => {
  * 用户看到的还是那个每天都点的确认框。
  */
 describe('注入降级：ask → deny', () => {
-  it('🔴 untrusted + 不可撤销 + 本来 ask → deny', () => {
+  /*
+   * ADR-0035 把这一段收窄到**严重项**：后果留在本会话之外的那几件事仍然硬 deny，
+   * 其余停在一个指名污染源的高警示 ask。理由是硬 deny 之下用户想继续只能去
+   * 「解除标记」，那把整轮防线一起放倒——比他实际想做的决定大得多，
+   * 而防线越是只剩"全开或全关"，用户就越会选全关。
+   */
+  it('🔴 untrusted + 严重项 + 本来 ask → deny', () => {
     for (const [capability, target] of [
       ['git.push', '/repo'],
+      ['package.install', 'lodash'],
+      ['system.settings', 'dark-mode'],
+    ] as const) {
+      const v = judge({
+        request: { ...req(capability, target), trustLevel: 'untrusted' },
+        rules: RULES,
+        tier: 'balanced',
+      });
+      expect(v.effect, capability).toBe('deny');
+      expect(v.ruleId, capability).toBe('builtin.injection-downgrade');
+    }
+  });
+
+  it('🔴 untrusted + 非严重项 + 本来 ask → 高警示 ask（仍然指向注入降级）', () => {
+    for (const [capability, target] of [
       ['fs.delete', '/repo/src/a.ts'],
       ['net.fetch', 'https://example.com'],
     ] as const) {
@@ -222,7 +243,7 @@ describe('注入降级：ask → deny', () => {
         rules: RULES,
         tier: 'balanced',
       });
-      expect(v.effect, capability).toBe('deny');
+      expect(v.effect, capability).toBe('ask');
       expect(v.ruleId, capability).toBe('builtin.injection-downgrade');
     }
   });

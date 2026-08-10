@@ -43,6 +43,17 @@ export interface EvaluateInput {
    * 所以忘了传的后果是多问几次，不是少问几次。
    */
   readonly untrustedSince?: number;
+  /**
+   * **造成本会话污染的那次工具调用**（`SessionState.untrustedContext.callId`）。
+   * `undefined` = 尚未污染。
+   *
+   * 与 `untrustedSince` 必须同源取出。它补的是那条时间比较的一个边界：批准了这次污染
+   * 本身的那条授权，时间戳反而早于污染时刻（污点标在 `tool.start`，授权记在更早的
+   * `permission.decision`）。见 `isInformedGrant` 条件 ④（ADR-0035）。
+   *
+   * 同样是不传 = 不算知情，落在保守的那一侧。
+   */
+  readonly untrustedCallId?: string;
 }
 
 export const TIER_FALLBACK_RULE_ID = 'builtin.tier-fallback';
@@ -60,7 +71,9 @@ export const INVALID_TARGET_RULE_ID = 'builtin.invalid-target';
  * 2  自最后一层向前，第一个「有匹配」的层定案；层内 deny > ask > allow，同效果后定义者胜
  * 3  没有任何层匹配 → 档位兜底
  * 4  YOLO：把结论里的 ask 变成 allow —— **跳过 ask，跳不过任何 deny**（docs/09 C5）
- * 5  不可信上下文降级（allow→ask、ask→deny），只作用于不可撤销能力
+ * 5  不可信上下文降级，只作用于不可撤销能力；**且感知档位**（ADR-0035）：
+ *      · YOLO + 非严重项 → 不降级（否则第 5 步会把第 4 步刚放行的又打回来问）
+ *      · 其余情况 allow→ask；ask→deny 只对严重项，非严重项停在高警示 ask
  * ```
  *
  * ── 第 2 步为什么是「分层」而不是「一张拍平的表」──
@@ -187,11 +200,23 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
    * 5) 注入降级。ask 也要过——默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
    *    不在这里过一遍，注入降级就永远碰不到最该拦的那批操作。
    *
-   * 例外只有一个：**知情授权**（ADR-0034）。用户在污染之后、针对这个具体目标、
-   * 当场点过的允许不再被打回——否则同一个域名会被无限次重复询问，而重复的那几次
-   * 问的是同一个问题，不换来任何安全，只换来"顺手点允许"的肌肉记忆。
+   * 两个例外，都是为了消掉**零安全价值的重复提问**：
+   *
+   *   · **知情授权**（ADR-0034）：用户在污染之后、针对这个具体目标当场点过的允许
+   *     不再被打回——否则同一个域名会被无限次重复询问，问的是同一个问题。
+   *   · **档位**（ADR-0035）：用户开着「帮我批准」/「完全访问权限」时，非严重项
+   *     不再降级——否则这一步会把第 4 步刚放行的东西整批打回，"别问我"这个开关
+   *     对不可撤销操作**整体失效**，一次联网搜索就是十几个确认框。
+   *
+   * `tier` 原样传下去而不是在这里分支：降级矩阵（档位 × 严重项 × allow/ask）
+   * 是一件事，摊在两个文件里迟早会分叉。
    */
-  return downgradeIfUntrusted(verdict, request, isInformedGrant(winner, input.untrustedSince));
+  return downgradeIfUntrusted(
+    verdict,
+    request,
+    isInformedGrant(winner, input.untrustedSince, input.untrustedCallId),
+    tier,
+  );
 }
 
 function tierFallback(tier: Exclude<PermissionTier, 'yolo'>, risk: RiskLevel): PolicyVerdict {

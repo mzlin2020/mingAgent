@@ -32,6 +32,7 @@ import { useUi } from '../store.js';
  */
 export function PermissionCard(): ReactNode {
   const request = useUi((s) => s.session?.pendingPermission);
+  const untrusted = useUi((s) => s.session?.untrustedContext);
   const respond = useUi((s) => s.respondPermission);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
@@ -68,10 +69,29 @@ export function PermissionCard(): ReactNode {
           <dd>{request.reason}</dd>
         </dl>
 
+        {/*
+          不可信上下文下的高警示样式（ADR-0035）。
+
+          默认档里，污染之后的非严重不可撤销操作从硬 deny 放宽成了一个可以当场授权的
+          ask——放宽的前提是这个框**不能长得和日常那个一模一样**，否则就正好落进
+          ADR-0017 担心的那件事："弹一个平时天天点的确认框，用户照点不误"。
+
+          所以这里复述的是事件流里的事实：哪个工具、经由哪个能力、什么时候把上下文
+          弄脏的。三个字段都来自 `UntrustedContext`（`reduce` 从 `tool.start` 算出），
+          模型碰不到——与 `UntrustedBanner` 反社工的理由完全相同。
+        */}
         {request.trustLevel === 'untrusted' && (
-          <p className="mt-2 rounded bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
-            本会话读过外部内容。请特别确认这次操作确实是你要的。
-          </p>
+          <div className="mt-2 rounded border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
+            <p className="font-medium">这是读过外部内容之后才出现的请求</p>
+            {untrusted !== undefined && (
+              <p className="mt-0.5 text-[var(--xm-fg-muted)]">
+                {new Date(untrusted.since).toLocaleTimeString()} 由工具{' '}
+                <span className="font-mono">{untrusted.toolName}</span>（
+                <span className="font-mono">{untrusted.viaCapability}</span>）引入。
+                如果这不是你要求的，那它可能来自那段内容里的指示。
+              </p>
+            )}
+          </div>
         )}
 
         <div className="mt-3 flex flex-wrap items-center gap-2">

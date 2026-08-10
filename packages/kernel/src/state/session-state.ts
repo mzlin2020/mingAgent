@@ -100,6 +100,14 @@ export interface PermissionGrant {
   readonly effect: 'allow' | 'deny';
   readonly scope: 'session' | 'always';
   readonly ts: number;
+  /**
+   * 做出这个决定时正在判的那次工具调用（取自对应的 `permission.request`）。
+   *
+   * 用途只有一个：判断这条授权批准的是不是**造成本会话污染的那次调用**——
+   * 是的话它就算知情授权，不该再被注入降级打回（`isInformedGrant` 条件 ④，ADR-0035）。
+   * 缺省是可以的：老事件流回放出来没有它，退化成只看 `ts`，也就是 ADR-0034 的行为。
+   */
+  readonly callId?: CallId;
 }
 
 /** 上下文被外部内容污染的出处。留够信息让 UI 能说清"因为哪一次调用" */

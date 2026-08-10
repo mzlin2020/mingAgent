@@ -51,6 +51,19 @@ export const PolicyRule = z.object({
    * 事件。用户级/项目级配置永远进不了那一层——这不是靠校验挡住的，是靠层的来源本身。
    */
   grantedAt: z.number().optional(),
+  /**
+   * 这条规则背后那个决定是**在哪一次工具调用里**做出的（ADR-0035）。
+   *
+   * 与 `grantedAt` 同样只由 `grantsToRules()` 合成、只在 `session` 层有意义，
+   * 补的是 `grantedAt` 那条时间比较的一个边界：污点标在 `tool.start`，而放行这次调用的
+   * 授权记在更早的 `permission.decision` 上，于是**批准了这次污染本身的那条授权**
+   * 反而 `grantedAt < untrustedSince`，用户刚点过的第一个域名下一次还要再问一遍。
+   *
+   * 拿 callId 对齐就没有这个缝：授权与污染出自同一次调用，说明用户点"允许"时
+   * 要发生的正是这次污染，再问一遍问的是同一个问题。而会话早期对别的目标的旧授权
+   * 属于**另一次**调用，callId 对不上，仍然穿不透（ADR-0034 条件 ③ 要挡的就是它）。
+   */
+  grantedCallId: z.string().optional(),
 });
 export type PolicyRule = z.infer<typeof PolicyRule>;
 

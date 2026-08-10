@@ -199,6 +199,8 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
               effect,
               scope,
               ts: e.ts,
+              // 授权是在哪次调用里做出的（ADR-0035 条件 ④）。请求上没有就不带
+              ...(pending.callId === undefined ? {} : { callId: pending.callId }),
             }
           : undefined;
       return {

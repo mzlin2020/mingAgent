@@ -504,6 +504,13 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
    * 就又是 ADR-0012 ① 那个形状：判定用的事实和请求里的事实来自两个坐标系。
    */
   const untrustedSince = deps.runtime.state.untrustedContext?.since;
+  /*
+   * 同一个 `untrustedContext`，第三个字段。`evaluate()` 拿它补上 `untrustedSince`
+   * 的一条缝：批准了污染本身的那次授权，时间戳早于污染时刻（污点标在 `tool.start`，
+   * 授权记在更早的 `permission.decision`）——不给它 callId，用户刚点过"本会话都允许"
+   * 的第一个域名下一次还会再被问一遍（ADR-0035 条件 ④）。
+   */
+  const untrustedCallId = deps.runtime.state.untrustedContext?.callId;
 
   /*
    * 本会话的授权是**最后一层**，而且每次判定都现算。
@@ -567,6 +574,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       layers,
       tier: deps.tier,
       ...(untrustedSince === undefined ? {} : { untrustedSince }),
+      ...(untrustedCallId === undefined ? {} : { untrustedCallId }),
       ...(deps.pathCaseInsensitive === undefined
         ? {}
         : { pathCaseInsensitive: deps.pathCaseInsensitive }),
@@ -627,6 +635,17 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       await failCall(deps, turnId, call, xmError('policy_denied', verdict.reason));
       return;
     }
+
+    /*
+     * `ask` + 只检查的主张 → 视为已满足，不进待问队列（ADR-0036）。
+     *
+     * 走到这里说明没有任何 deny 匹配上它，而这条主张存在的全部意义就是"让 deny 有
+     * 东西可匹配"（网关解析出的 IP，用于 SSRF 判定）。再拿它去问用户，问的是一个
+     * 裸 IP 该不该访问——用户能做的判断全在同一次调用的域名那条主张上，
+     * 这一问只是把每次联网的确认框数量翻倍。**deny 的那一半在上面，一个字没动。**
+     */
+    if (claim.checkOnly === true) continue;
+
     pending.push(request);
   }
 
