@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelChunk, ModelRequest, ToolDescriptor } from '@xm/contracts';
-import { CallId, DEFAULT_RESULT_LIMITS, newMessageId, redact } from '@xm/contracts';
+import { CallId, DEFAULT_RESULT_LIMITS, newCallId, newMessageId, redact } from '@xm/contracts';
 import type { ModelProvider } from '@xm/kernel';
 import { AnthropicProvider, OpenAICompatibleProvider, ProviderHttpError } from '@xm/providers';
 import { abortLike } from './helpers/stream.js';
@@ -189,6 +189,98 @@ describe.skipIf(!LIVE)('真实 Provider 验收', () => {
       SLOW,
     );
   });
+
+  /**
+   * DeepSeek 思考模式：走过 tool_calls 的那一轮，`reasoning_content` 是必答题。
+   *
+   * ── 为什么这条只能在这里验 ──
+   *
+   * 它是一条**服务端契约**，不是我们的编码偏好。单元测试只能锁"我们发出去的字节长什么样"，
+   * 锁不了"对方收不收"。而这两件事曾经在这里分叉过：一次真实会话里，模型某一轮
+   * 只吐了 tool_calls、没吐思考，我们就把字段整个省掉，对面当场 400
+   * （the reasoning_content ... must be passed back to the API），且脏历史留在会话里之后
+   * 每发一条消息都会重现同一个 400。
+   *
+   * 下面的对照组不是凑数：没有它，这条用例在服务端哪天放宽规则后会变成一条永远绿的空断言。
+   */
+  it(
+    '历史里「只有 tool_calls、没有思考」的一轮，照样发得出去',
+    async () => {
+      const callId = newCallId();
+      const req: ModelRequest = {
+        ...ask('那上海呢？', 512),
+        tools: [WEATHER_TOOL],
+        messages: [
+          { id: newMessageId(), role: 'user', blocks: [{ type: 'text', text: '北京天气怎么样？' }], ts: 1 },
+          {
+            // 出事的那个形状：没有 thinking 块
+            id: newMessageId(),
+            role: 'assistant',
+            blocks: [{ type: 'tool_use', id: callId, name: WEATHER_TOOL.name, input: { city: '北京' } }],
+            ts: 2,
+          },
+          {
+            id: newMessageId(),
+            role: 'user',
+            blocks: [
+              {
+                type: 'tool_result',
+                toolUseId: callId,
+                content: [{ type: 'text', text: '晴，26 摄氏度' }],
+                isError: false,
+              },
+            ],
+            ts: 3,
+          },
+        ],
+      };
+
+      const provider = new OpenAICompatibleProvider({
+        apiKey: API_KEY,
+        baseUrl: OPENAI_BASE,
+        id: 'deepseek',
+      });
+      const chunks = await drain(provider.stream(req, abortLike().signal));
+      expect(chunks.at(-1)?.kind).toBe('stop');
+
+      // 对照组：把字段拿掉，同一份历史必须真的被拒——否则上面那条断言什么都没证明
+      const raw = await fetch(`${OPENAI_BASE}/chat/completions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${API_KEY}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 64,
+          tools: [
+            {
+              type: 'function',
+              function: {
+                name: 'weather_get',
+                description: WEATHER_TOOL.description,
+                parameters: WEATHER_TOOL.inputSchema,
+              },
+            },
+          ],
+          messages: [
+            { role: 'user', content: '北京天气怎么样？' },
+            {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: 'call_control_1',
+                  type: 'function',
+                  function: { name: 'weather_get', arguments: '{"city":"北京"}' },
+                },
+              ],
+            },
+            { role: 'tool', tool_call_id: 'call_control_1', content: '晴，26 摄氏度' },
+          ],
+        }),
+      });
+      expect(raw.status, '服务端不再强制回传 reasoning_content —— 闸门可以放宽了').toBe(400);
+    },
+    SLOW,
+  );
 
   /**
    * 端口中立性，这次的对手是**真实服务端**而不是我们写的 fixture。

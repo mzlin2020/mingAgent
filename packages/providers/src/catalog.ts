@@ -40,6 +40,19 @@ const CLAUDE: ModelCapabilities = {
 };
 
 /**
+ * DeepSeek 思考模式。
+ *
+ * `thinking` 在这里**不只是给 UI 看的一个标签**——`openai-compatible.ts` 的
+ * `toWire` 拿它当 `reasoning_content` 回传闸门的开关。在补上这一条之前，表里
+ * 没有任何 deepseek 条目，于是 `capabilitiesFor('deepseek-v4-flash').thinking`
+ * 取兜底值 `false`：我们一边在给它回传思考内容，一边在能力表里说它不会思考。
+ *
+ * 其余字段一律保守值——这张表的规矩是"不知道的往小了取"，而我们对这一家
+ * 真正有证据的只有"它会思考"这一件事（一次真调用，见 `live.test.ts`）。
+ */
+const DEEPSEEK: ModelCapabilities = { ...CONSERVATIVE_CAPABILITIES, thinking: true };
+
+/**
  * 前缀匹配的能力表。用前缀而不是全名，是因为模型 id 常带日期后缀
  * （`claude-haiku-4-5-20251001`），每出一个日期版本就要改一次代码是不可接受的。
  *
@@ -48,6 +61,7 @@ const CLAUDE: ModelCapabilities = {
 const PREFIX_CAPABILITIES: readonly (readonly [string, ModelCapabilities])[] = [
   ['claude-', CLAUDE],
   ['gpt-', { ...CONSERVATIVE_CAPABILITIES, parallelTools: true, vision: true }],
+  ['deepseek', DEEPSEEK],
 ];
 
 export function capabilitiesFor(

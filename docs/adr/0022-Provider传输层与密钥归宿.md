@@ -352,3 +352,76 @@ DeepSeek 思考模式的文档（Tool Calls 一节）写明：一旦某一轮 as
 reasoning_content、后续多轮工具调用不再报错"这一层**——这笔账比上一笔更具体：
 下次有真实 key，应该专门跑一轮"assistant(thinking + tool_use) → tool_result →
 再来一轮工具调用"的多轮 live 用例，而不是单轮。
+
+---
+
+## 补记（2026-08-10）：上一笔账还上了，而它照出的是同一个修复只修了一半
+
+上面结尾欠着一句："下次有真实 key，应该专门跑一轮『assistant(thinking + tool_use)
+→ tool_result → 再来一轮工具调用』的多轮 live 用例，而不是单轮。"
+
+这笔账是被用户的真实体验先一步撞开的。同一条报错原文重新出现：
+
+```
+The `reasoning_content` in the thinking mode must be passed back to the API.
+```
+
+**但它不是 8/7 那次修复的回归。** 同一个会话里，第一轮多轮工具调用全程成功——
+说明"有非空 thinking 就回传"这条路是通的。出事的是紧挨着它的另一半：模型某一轮
+**没吐思考文本、只吐了 `tool_calls`**。于是 `thinking !== ''` 的落库闸门不写块、
+`reasoningText !== ''` 的出站闸门不写字段，wire 上 `tool_calls` 在、
+`reasoning_content` 不在 —— 400。
+
+### 这一次先问服务端，再改代码
+
+上一次的教训是"注释里那句断言是凭直觉写的，从没被真实请求验证过"。所以这次的
+顺序反过来：先拿真实 key 打一组探针，把契约问死，再动代码。结果有三档，
+其中一档是**光看文档一定会踩的**：
+
+| 发出去的形状 | 服务端 |
+|---|---|
+| 完全不带 `reasoning_content` | **400** |
+| `reasoning_content: null` | **400** |
+| `reasoning_content: ""` | 200 |
+| `reasoning_content: "非空文本"` | 200 |
+
+`null` 也被拒这一条很关键：DeepSeek 官方示例写的是把 `message.reasoning_content`
+原样回传，而无思考的那一轮它就是 `None`/`null`——照抄示例正好落进 400 那一档。
+**空的表示只有空串这一种是对的。**
+
+### 修法：把闸门从"有没有思考文本"换成"这条链路认不认这个字段"
+
+`toWireMessages` 的条件从 `reasoningText !== ''` 改成
+`reasoningText !== '' || (reasoningRequired && toolCalls.length > 0)`。
+
+`reasoningRequired` 由 `toWire` 一次算好，两个来源缺一不可：
+
+1. **能力表说这个模型会思考**（`catalog.ts` 的 `thinking`）。这是开局就生效的一半——
+   哪怕第一条 assistant 就是"没有思考文本的 tool call"，字段也不会缺。
+   顺带修掉一个反讽：表里此前**根本没有 deepseek 条目**，
+   `capabilitiesFor('deepseek-v4-flash').thinking` 取兜底值 `false`——
+   我们一边给它回传思考内容，一边在能力表里声明它不会思考。
+2. **这段历史里实际出现过 thinking 块**。这是兜底的一半：能力表永远追不上新模型，
+   而"这一家真的吐过 reasoning"是比任何表都硬的证据。出事的那个会话正是这个形状。
+
+为什么要这道闸门、而不是"有 `tool_calls` 就无条件带"：无条件带会让 OpenAI 官方、
+Azure、各类网关在**每一轮工具调用**上都收到一个 `reasoning_content: ""`。上一版
+注释"不认它的兼容端不该无端多收一个陌生字段"这句话本身是对的，错的是它把
+"有没有思考文本"当成了"认不认这个字段"——两者在无思考轮上分叉。修的是判据，
+不是意图。
+
+**没做的两件事**，记下来免得日后被当成遗漏：
+
+- 不在 `turn.ts` 为"有 tool_use 的空思考"落一个占位 `thinking: { text: '' }` 块。
+  那会把空块扩散进 UI 与投影，为了一个纯粹的传输层问题污染领域模型。
+- 不做"打开旧会话时扫描并修补脏历史"。这个修复在**编码时**生效、不落库，
+  已经 400 过的旧会话下一次发送就自动好了——那份扫描代码永远不会被触发。
+
+### 账
+
+- `adapters.test.ts` 新增一组三条（思考模型无 thinking 也带字段 / 不思考的兼容端
+  一个字段都不多发 / 能力表不认但历史里真吐过思考的模型同样补上）。前两条里的
+  两条正向用例在改代码前确认是红的。
+- `live.test.ts` 补上欠的那条多轮用例：历史里放一条"只有 tool_calls、没有思考"的
+  assistant，真发一次。**带对照组**——把字段拿掉的同一份历史必须真被 400 拒，
+  否则这条用例会在服务端哪天放宽规则后变成一条永远绿的空断言。已用真实 key 跑通。

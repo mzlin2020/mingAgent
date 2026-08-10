@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import type { ModelChunk, ModelRequest } from '@xm/contracts';
+import type { ContentBlock, Message, ModelChunk, ModelRequest } from '@xm/contracts';
 import { CallId, newCallId, newMessageId } from '@xm/contracts';
 import { MemoryBlobStore } from '@xm/kernel';
 import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
@@ -336,7 +336,9 @@ describe('OpenAI 兼容适配器', () => {
     },
   );
 
-  it('没有思考块的历史消息不会凭空长出 reasoning_content 字段', async () => {
+  // 注意断言的主语是 **user 消息**：它任何时候都不该长出这个字段。
+  // 别把它读成"assistant 也不该长"——带过 tool_calls 的 assistant 恰恰相反，见下一组。
+  it('没有思考块的历史 user 消息不会凭空长出 reasoning_content 字段', async () => {
     let sent: { messages?: Record<string, unknown>[] } = {};
     const fetchImpl = ((_url: string, init?: RequestInit) => {
       sent = JSON.parse(init?.body as string) as typeof sent;
@@ -349,6 +351,100 @@ describe('OpenAI 兼容适配器', () => {
 
     const userMsg = sent.messages?.find((m) => m.role === 'user');
     expect(userMsg).not.toHaveProperty('reasoning_content');
+  });
+
+  /**
+   * ── reasoning_content 的回传闸门 ──
+   *
+   * 上面那条 🔴 用例锁的是"有思考文本要带回去"，它漏了紧挨着的另一半：模型这一轮
+   * **没吐思考、只吐了 tool_calls**。真实会话在这里 400，且一发不可收拾——脏历史留在
+   * 会话里，之后每发一条消息都会重新拼出同样缺字段的请求。
+   *
+   * 真调用问出来的契约（`live.test.ts` 里那条用例锁着实网行为）：
+   * 不带字段 → 400，`null` → 400，`""` → 200。
+   */
+  describe('带过 tool_calls 的 assistant 消息', () => {
+    /** 抓一次出站请求体——这一组要连写三条正反用例，再内联三份同样的 fetchImpl 就该抽了 */
+    function capture(): {
+      body: () => { messages?: Record<string, unknown>[] };
+      fetchImpl: typeof fetch;
+    } {
+      let sent: { messages?: Record<string, unknown>[] } = {};
+      const fetchImpl = ((_url: string, init?: RequestInit) => {
+        sent = JSON.parse(init?.body as string) as typeof sent;
+        return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+      }) as unknown as typeof fetch;
+      return { body: () => sent, fetchImpl };
+    }
+
+    /** 出事的那个形状：assistant 只有 tool_use，没有 thinking 块 */
+    function historyWithoutThinking(lead: readonly ContentBlock[] = []): Message[] {
+      const callId = newCallId();
+      return [
+        ...(lead.length === 0
+          ? []
+          : [{ id: newMessageId(), role: 'assistant' as const, blocks: [...lead], ts: 0 }]),
+        {
+          id: newMessageId(),
+          role: 'assistant',
+          blocks: [{ type: 'tool_use', id: callId, name: 'fs.list', input: { path: '/repo' } }],
+          ts: 1,
+        },
+        {
+          id: newMessageId(),
+          role: 'user',
+          blocks: [
+            {
+              type: 'tool_result',
+              toolUseId: callId,
+              content: [{ type: 'text', text: 'a.ts\nb.ts' }],
+              isError: false,
+            },
+          ],
+          ts: 2,
+        },
+      ];
+    }
+
+    const send = async (model: string, messages: Message[]): Promise<Record<string, unknown>[]> => {
+      const { body, fetchImpl } = capture();
+      await drain(
+        new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl }).stream(
+          { ...REQUEST, model, messages },
+          abortLike().signal,
+        ),
+      );
+      return (body().messages ?? []).filter((m) => m.role === 'assistant');
+    };
+
+    it('🔴 思考模型：没有 thinking 也要带 reasoning_content —— 缺字段会被 400 拒', async () => {
+      const [assistant] = await send('deepseek-v4-flash', historyWithoutThinking());
+
+      expect(assistant).toHaveProperty('tool_calls');
+      // 必须是空串。`null` 和"没有这个字段"一样会被 400 拒——
+      // 照抄官方示例回传 `message.reasoning_content` 正好会踩这里（无思考轮它是 None）
+      expect(assistant?.reasoning_content).toBe('');
+    });
+
+    it('不思考的兼容端不会白收一个陌生字段', async () => {
+      const [assistant] = await send('test-model', historyWithoutThinking());
+
+      expect(assistant).toHaveProperty('tool_calls');
+      expect(assistant).not.toHaveProperty('reasoning_content');
+    });
+
+    /*
+     * 能力表永远追不上新模型。所以闸门还认第二个证据：这段历史里真出现过 thinking 块，
+     * 就说明对面认这个字段——哪怕它的名字不在 `catalog.ts` 里。
+     * 出事的那个会话正是这个形状：第一轮有思考，后面某一轮没有。
+     */
+    it('能力表不认、但历史里真吐过思考的模型，同样补上字段', async () => {
+      const messages = historyWithoutThinking([{ type: 'thinking', text: '先看看目录里有什么。' }]);
+      const [thinker, silent] = await send('some-new-reasoner', messages);
+
+      expect(thinker?.reasoning_content).toBe('先看看目录里有什么。');
+      expect(silent?.reasoning_content).toBe('');
+    });
   });
 
   it('图片块存在时 content 从字符串换成数组 —— 两种形状不能混用', async () => {
