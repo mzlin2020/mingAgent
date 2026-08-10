@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-import { BrowserWindow, app, dialog } from 'electron';
+import { BrowserWindow, Menu, app, dialog } from 'electron';
 import { registerIpc } from './ipc.js';
 import type { Services } from './services.js';
 import { startServices } from './services.js';
@@ -10,6 +10,9 @@ import { assertStorageWorks } from './self-check.js';
  *
  * Agent 循环跑在这里（docs/04 §2）：渲染层崩溃或重载不影响运行中的任务，
  * 关窗到托盘时任务继续跑。渲染层零 Node 权限，只通过 preload 那四个具名调用通信。
+ *
+ * 应用菜单：ADR-0037 起由渲染层汉堡菜单承接入口，这里去掉默认菜单栏，
+ * 避免与自定义壳层重复一整排 File/Edit/View。
  */
 
 const DEV_SERVER = process.env.XM_DEV_SERVER;
@@ -91,6 +94,8 @@ app.whenReady().then(
     }
 
     registerIpc(services, () => BrowserWindow.getAllWindows());
+    // 空菜单 = 无系统菜单栏；会话/设置入口在渲染层 AppMenu（ADR-0037）
+    Menu.setApplicationMenu(null);
     createWindow();
 
     app.on('activate', () => {

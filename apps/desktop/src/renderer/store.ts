@@ -39,8 +39,18 @@ type Status = z.infer<typeof StatusResult>;
  * 为了拿几百个会话的标题去回放几百条事件流是荒唐的（ADR-0013 决策六）。
  */
 
+/** 壳层主区：Home 最近会话 vs 当前焦点会话（ADR-0037） */
+export type ShellView = 'home' | 'chat';
+
 interface UiState {
   sessions: ListSessionsResult;
+  /**
+   * 顶栏 tabs 的打开集合（ADR-0037）。纯 UI 态，不持久化、不进事件流。
+   * 关 tab ≠ 删会话。
+   */
+  openIds: readonly SessionId[];
+  /** Home 列表，或焦点会话的对话主视图 */
+  shellView: ShellView;
   currentId: SessionId | undefined;
   session: SessionState | undefined;
   /**
@@ -97,6 +107,13 @@ interface UiState {
     scope: 'once' | 'session' | 'always',
   ) => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
+  /** 回到 Home；保留 tabs 打开集合与 currentId，只切主区 */
+  readonly goHome: () => void;
+  /**
+   * 关闭一个 tab（移出打开集合）。**不删除**会话数据。
+   * 若关掉的是焦点，则聚焦剩余最后一个 tab，否则回 Home。
+   */
+  readonly closeTab: (id: SessionId) => Promise<void>;
   readonly setApprovalMode: (mode: ApprovalMode) => Promise<void>;
   readonly send: (text: string, images?: readonly ImageAttachment[]) => Promise<void>;
   readonly stop: () => Promise<void>;
@@ -108,6 +125,10 @@ interface UiState {
   readonly resumeOrphaned: (sessionId: SessionId) => Promise<void>;
   /** 放弃：写 turn.end(reason:'aborted')，语义与停止按钮相同 */
   readonly abandonOrphaned: (sessionId: SessionId) => Promise<void>;
+}
+
+function withOpenId(openIds: readonly SessionId[], id: SessionId): readonly SessionId[] {
+  return openIds.includes(id) ? openIds : [...openIds, id];
 }
 
 /** 推送来的是信封形态，走与存储读取同一条解析路径（有版本闸门与 upcaster） */
@@ -134,6 +155,8 @@ export const useUi = create<UiState>((set, get) => {
 
   return {
     sessions: [],
+    openIds: [],
+    shellView: 'home',
     currentId: undefined,
     session: undefined,
     live: EMPTY_LIVE,
@@ -153,12 +176,16 @@ export const useUi = create<UiState>((set, get) => {
     },
 
     newSession: async (cwd) => {
-      const { sessionId } = await api.createSession({
-        title: cwd === undefined ? '新会话' : (cwd.split(/[/\\]/).pop() ?? '新会话'),
-        ...(cwd === undefined ? {} : { cwd }),
-      });
-      await get().refreshSessions();
-      await get().openSession(sessionId);
+      try {
+        const { sessionId } = await api.createSession({
+          title: cwd === undefined ? '新会话' : (cwd.split(/[/\\]/).pop() ?? '新会话'),
+          ...(cwd === undefined ? {} : { cwd }),
+        });
+        await get().refreshSessions();
+        await get().openSession(sessionId);
+      } catch (e) {
+        applyIpcError(e);
+      }
     },
 
     chooseWorkspace: async () => {
@@ -215,6 +242,8 @@ export const useUi = create<UiState>((set, get) => {
       // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
       set({
         currentId: id,
+        openIds: withOpenId(get().openIds, id),
+        shellView: 'chat',
         session: undefined,
         live: EMPTY_LIVE,
         error: undefined,
@@ -235,6 +264,35 @@ export const useUi = create<UiState>((set, get) => {
       } catch (e) {
         applyIpcError(e, id);
       }
+    },
+
+    goHome: () => {
+      set({ shellView: 'home', error: undefined, sessionConflict: undefined });
+    },
+
+    closeTab: async (id) => {
+      const openIds = get().openIds.filter((x) => x !== id);
+      const wasCurrent = get().currentId === id;
+      if (!wasCurrent) {
+        set({ openIds });
+        return;
+      }
+      const next = openIds[openIds.length - 1];
+      if (next === undefined) {
+        set({
+          openIds,
+          currentId: undefined,
+          session: undefined,
+          live: EMPTY_LIVE,
+          shellView: 'home',
+          approvalMode: 'ask',
+          error: undefined,
+          sessionConflict: undefined,
+        });
+        return;
+      }
+      set({ openIds });
+      await get().openSession(next);
     },
 
     /**
