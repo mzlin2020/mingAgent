@@ -118,10 +118,15 @@ export function App(): ReactNode {
             <p className="mt-16 text-center text-sm text-[var(--xm-fg-muted)]">左侧新建一个会话开始。</p>
           ) : (
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
+              {/*
+                留在这里的都是**会话级的常驻状态**：没配模型、密钥后端降级、上下文被外部
+                内容弄脏。它们描述的是"这个会话现在是什么样"，不绑定某一个时刻，
+                用户回看历史时在顶部看到它们是合理的。
+
+                "刚刚出事了、要你现在处理"的那两条不在这里——见下面滚动区外那一块。
+              */}
               <SetupBanner />
               <SessionConflictBanner />
-              <InterruptedSessionBanner />
-              <TurnErrorBanner />
               <NoticeBanner />
               <UntrustedBanner />
               <MessageStream messages={session?.messages ?? []} />
@@ -131,6 +136,27 @@ export function App(): ReactNode {
               <PermissionCard />
             </div>
           )}
+        </div>
+
+        {/*
+          ── 出错与中断横幅**必须在滚动区外** ──
+
+          它们本来和上面那几条并排放在滚动容器里、`MessageStream` 之前。那等于把它们钉死在
+          整条消息流的最上方，而这个滚动区是 stick-to-bottom 的（见上面的 effect）：
+          只要会话超过一屏，横幅就必然在视口外。一次真实体验里正是这样——Provider 返回
+          400，`lastError` 算对了、也渲染了，用户却完全看不见，只感觉"发了消息没反应"。
+
+          `banners.tsx` 的注释里已经记着这个缺口的第一形态（算出来了但没人渲染）。
+          这是第二形态：渲染了，但渲染在看不见的地方。所以修法不是换个颜色或加个角标，
+          是把它挪出滚动区——放在输入框正上方，用户视线本来就在的地方。
+
+          还有一层：`lastError` 会在下一轮 `turn.start` 时清掉（reduce.ts）。用户出错后
+          随手再发一条，横幅会先消失再重新出现；如果它在视口外，这个过程零反馈。
+        */}
+        {/* `empty:hidden`：两条横幅都不渲染时这层整个消失，不留一条空白缝 */}
+        <div className="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-2 px-4 pb-2 empty:hidden">
+          <InterruptedSessionBanner />
+          <TurnErrorBanner />
         </div>
 
         {/*
