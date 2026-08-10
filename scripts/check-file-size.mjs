@@ -55,9 +55,6 @@ const ALLOWLIST = {
   'apps/desktop/src/main/services.ts':
     '整个应用唯一知道 Electron 与业务同时存在的装配文件（文件顶部注释原话）——' +
     '本质是一处，拆开多个文件反而会把"这里才是唯一装配点"这条不变量拆得不再一目了然。',
-  'packages/kernel/src/policy/engine.ts':
-    '核心判定函数 evaluate() 所在文件，超限比例低（1.05x），且是本项目里被审查最多、' +
-    '测试覆盖最密的文件之一——现在拆分的改动风险高于"稍微超限"本身的成本。',
   'packages/kernel/src/policy/command-claims.ts':
     'analyzeArgv() 的主张分解逻辑，超限比例低（1.01x），拆分需要先理清楚词法器/' +
     '主张构造两部分的边界，不是本轮复审的范围。',

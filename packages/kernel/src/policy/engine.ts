@@ -1,32 +1,24 @@
 import type {
-  Capability,
   PermissionRequest,
   PermissionTier,
   PolicyRule,
-  PolicyRuleSet,
   PolicyVerdict,
   RiskLevel,
   TargetKind,
 } from '@xm/contracts';
-import { isIrreversible, targetKindOf } from '@xm/contracts';
+import { targetKindOf } from '@xm/contracts';
 import { isPrivateOrReservedIp } from './ip-range.js';
 import { normalizeTarget } from './normalize.js';
 import { normalizePathPattern } from './target.js';
+import type { RuleLayer } from './layer.js';
+import type { WinningRule } from './untrusted-downgrade.js';
+import { downgradeIfUntrusted, isInformedGrant } from './untrusted-downgrade.js';
+
+export { INJECTION_DOWNGRADE_RULE_ID, capabilityLabel } from './untrusted-downgrade.js';
 
 export type Executor = 'local' | 'container' | 'remote';
 
-/**
- * 规则的来源层。**顺序即优先级**，见 `evaluate()` 的求值顺序说明。
- *
- * 层名不只是标签：`project` 层被限制为只能收紧（`layers.ts` 的 `tightenOnly`），
- * `session` 层由用户当场的审批决定合成（`grantsToRules`）。
- */
-export type RuleLayerId = 'builtin' | 'user' | 'project' | 'session';
-
-export interface RuleLayer {
-  readonly id: RuleLayerId;
-  readonly rules: PolicyRuleSet;
-}
+export type { RuleLayer, RuleLayerId } from './layer.js';
 
 export interface EvaluateInput {
   readonly request: PermissionRequest;
@@ -42,10 +34,17 @@ export interface EvaluateInput {
    * 知道平台的运行时显式告知，而不是内核猜。默认 false = POSIX 语义。
    */
   readonly pathCaseInsensitive?: boolean;
+  /**
+   * 本会话上下文被不可信内容污染的时刻（`SessionState.untrustedContext.since`，epoch ms）。
+   * `undefined` = 尚未污染。
+   *
+   * 只用于一件事：判断一条会话授权是在污染**之前**还是**之后**做出的
+   * （见 `isInformedGrant`）。不传等于"没有任何授权算知情"——**落在保守的那一侧**，
+   * 所以忘了传的后果是多问几次，不是少问几次。
+   */
+  readonly untrustedSince?: number;
 }
 
-/** 注入降级用的合成规则 ID。出现在 Verdict 里时，UI 要说明"因为上下文含不可信内容" */
-export const INJECTION_DOWNGRADE_RULE_ID = 'builtin.injection-downgrade';
 export const TIER_FALLBACK_RULE_ID = 'builtin.tier-fallback';
 /** 路径目标无法规范化时的合成规则 ID。见下方"失败关闭"。 */
 export const INVALID_TARGET_RULE_ID = 'builtin.invalid-target';
@@ -128,11 +127,19 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
   );
   if (immutableDeny !== undefined) return denyOf(immutableDeny);
 
-  // 2) 自最后一层向前：第一个有匹配的层定案，层内 deny > ask > allow
+  /*
+   * 2) 自最后一层向前：第一个有匹配的层定案，层内 deny > ask > allow
+   *
+   * 顺带记下**是哪一层的哪条规则定的案**（`winner`）。第 5 步要用它区分
+   * "用户当场针对这个目标点的允许"和"配置文件里一条泛化的允许"——两者都是 allow，
+   * 对注入防御的意义却完全相反（见 `isInformedGrant`）。
+   */
   let verdict: PolicyVerdict | undefined;
+  let winner: WinningRule | undefined;
   for (let i = matchedPerLayer.length - 1; i >= 0 && verdict === undefined; i--) {
     const matched = matchedPerLayer[i] ?? [];
     if (matched.length === 0) continue;
+    const layerId = layers[i]?.id ?? 'builtin';
 
     const deny = lastWhere(matched, (r) => r.effect === 'deny');
     // deny 直接定案：YOLO 与后续步骤都越不过它（用户自己写的 deny 同样算数，docs/09 C5）
@@ -141,11 +148,15 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
     const ask = lastWhere(matched, (r) => r.effect === 'ask');
     if (ask !== undefined) {
       verdict = { effect: 'ask', ruleId: ask.id, reason: ask.reason, risk: request.risk };
+      winner = { rule: ask, layerId };
       break;
     }
 
     const allow = lastWhere(matched, (r) => r.effect === 'allow');
-    if (allow !== undefined) verdict = { effect: 'allow', ruleId: allow.id, reason: allow.reason };
+    if (allow !== undefined) {
+      verdict = { effect: 'allow', ruleId: allow.id, reason: allow.reason };
+      winner = { rule: allow, layerId };
+    }
   }
 
   // 3) 档位兜底。YOLO 没有自己的兜底档，它借平衡档的结论再走第 4 步
@@ -172,9 +183,15 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
     };
   }
 
-  // 5) 注入降级。ask 也要过——默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
-  //    不在这里过一遍，注入降级就永远碰不到最该拦的那批操作
-  return downgradeIfUntrusted(verdict, request);
+  /*
+   * 5) 注入降级。ask 也要过——默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
+   *    不在这里过一遍，注入降级就永远碰不到最该拦的那批操作。
+   *
+   * 例外只有一个：**知情授权**（ADR-0034）。用户在污染之后、针对这个具体目标、
+   * 当场点过的允许不再被打回——否则同一个域名会被无限次重复询问，而重复的那几次
+   * 问的是同一个问题，不换来任何安全，只换来"顺手点允许"的肌肉记忆。
+   */
+  return downgradeIfUntrusted(verdict, request, isInformedGrant(winner, input.untrustedSince));
 }
 
 function tierFallback(tier: Exclude<PermissionTier, 'yolo'>, risk: RiskLevel): PolicyVerdict {
@@ -195,50 +212,6 @@ function tierFallback(tier: Exclude<PermissionTier, 'yolo'>, risk: RiskLevel): P
         reason: '平衡档：非无风险操作需要确认',
         risk,
       };
-}
-
-/**
- * 提示词注入降级（ADR-0003 / docs/06）。
- *
- * 只作用于**不可撤销**的能力子集：数据发出去、文件删掉、提交推上去之后，还原点救不回来。
- * 对其余能力做全局收紧会误触发到被用户整体关掉，等于这道防御不存在。
- */
-function downgradeIfUntrusted(verdict: PolicyVerdict, request: PermissionRequest): PolicyVerdict {
-  if (verdict.effect === 'deny') return verdict;
-  if (request.trustLevel !== 'untrusted') return verdict;
-  if (!isIrreversible(request.capability)) return verdict;
-
-  const why =
-    `本轮上下文包含不可信内容（网页 / MCP 返回 / 子 Agent 结果），` +
-    `而「${capabilityLabel(request.capability)}」不可撤销`;
-
-  // allow → ask
-  if (verdict.effect === 'allow') {
-    return {
-      effect: 'ask',
-      ruleId: INJECTION_DOWNGRADE_RULE_ID,
-      reason: `${why}，因此需要你确认。`,
-      risk: request.risk,
-    };
-  }
-
-  /*
-   * ask → deny。
-   *
-   * 这一半之前漏了，而它恰恰是拦住典型注入的那一半：注入攻击的形状是
-   * "读到外部内容 → 立刻做一次不可撤销的操作"，而那类操作在默认规则里本来就是 ask。
-   * 只做 allow→ask 的话，攻击路径上的判定压根没变过——弹一个和平时一模一样的确认框，
-   * 用户照点不误。docs/06 §9 的验收项"读过网页后要求 git push → 从 ask 变 deny"
-   * 说的就是这条。
-   *
-   * deny 不是死路：用户在 UI 上显式解除本轮的不可信标记后重试即可。区别在于
-   * **他必须先意识到"这轮读过不可信内容"**，而不是在一个日常弹窗上顺手点允许。
-   */
-  return {
-    effect: 'deny',
-    ruleId: INJECTION_DOWNGRADE_RULE_ID,
-    reason: `${why}，且该操作本就需要确认，因此本轮直接拒绝。若确属你的本意，请显式解除本轮的不可信标记后重试。`,
-  };
 }
 
 const denyOf = (r: PolicyRule): PolicyVerdict => ({
@@ -392,27 +365,3 @@ function globToRegExp(pattern: string, caseInsensitive: boolean, kind: TargetKin
   GLOB_CACHE.set(cacheKey, re);
   return re;
 }
-
-const CAPABILITY_LABELS: Readonly<Record<Capability, string>> = {
-  'fs.read': '读取文件',
-  'fs.write': '写入文件',
-  'fs.delete': '删除文件',
-  'shell.exec': '执行命令',
-  'shell.session': '打开交互式终端',
-  'process.spawn': '启动进程',
-  'net.fetch': '访问网络',
-  'net.listen': '监听端口',
-  'git.write': '修改 git 仓库',
-  'git.push': '推送到远端',
-  'env.read': '读取环境变量',
-  'secrets.read': '读取密钥',
-  'gui.capture': '截取屏幕',
-  'gui.input': '注入鼠标键盘',
-  'browser.control': '控制浏览器',
-  'package.install': '安装依赖包',
-  'system.settings': '修改系统设置',
-  'plugin.install': '安装插件',
-  'self.modify': '修改小明自身代码',
-};
-
-export const capabilityLabel = (c: Capability): string => CAPABILITY_LABELS[c];

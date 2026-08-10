@@ -38,6 +38,19 @@ export const PolicyRule = z.object({
   reason: z.string().min(1),
   /** 红线：任何档位、任何用户设置都不可覆盖 */
   immutable: z.boolean().default(false),
+  /**
+   * 这条规则背后那个决定是**什么时候由用户当场做出的**（epoch ms，ADR-0034）。
+   *
+   * **只由 `grantsToRules()` 合成，只在 `session` 层有意义。** 它存在的唯一用途是回答
+   * 一个时间先后问题：这次授权是在上下文被不可信内容污染**之后**做出的吗？是，才说明
+   * 用户是看着那条不可信横幅、针对这个具体目标点下去的——那样的决定可以穿透注入降级
+   * （否则同一个域名会被无限次重复询问）；不是，那条授权就没有回答过这个问题。
+   *
+   * 在配置文件里手写它没有任何效果：`evaluate()` 只在命中层是 `session` 时才读它，
+   * 而 `session` 层的唯一来源是 `SessionState.grants`，那又只来自 `permission.decision`
+   * 事件。用户级/项目级配置永远进不了那一层——这不是靠校验挡住的，是靠层的来源本身。
+   */
+  grantedAt: z.number().optional(),
 });
 export type PolicyRule = z.infer<typeof PolicyRule>;
 

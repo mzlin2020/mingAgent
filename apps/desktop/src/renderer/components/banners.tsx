@@ -168,7 +168,8 @@ export function UntrustedBanner(): ReactNode {
       <p className="mt-1 text-[var(--xm-fg-muted)]">
         {since} 由工具 <span className="font-mono">{ctx.toolName}</span>（
         <span className="font-mono">{ctx.viaCapability}</span>）引入。
-        在此之后，删除文件、推送代码、访问网络这类**不可撤销**的操作会被直接拒绝。
+        在此之后，删除文件、推送代码、访问网络这类<b>不可撤销</b>的操作会被直接拒绝——
+        你在这条横幅出现<b>之后</b>亲手允许过的那些具体目标除外（它们不会再反复问你）。
       </p>
       <Button
         className="mt-2"

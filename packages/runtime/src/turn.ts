@@ -497,6 +497,15 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
   const trustLevel = deps.runtime.state.untrustedContext === undefined ? 'model' : 'untrusted';
 
   /*
+   * 污染发生的时刻，和 `trustLevel` 出自同一个 `untrustedContext`——**必须同源**。
+   *
+   * `evaluate()` 拿它区分"用户看着不可信横幅、针对这个目标点的允许"与"污染之前
+   * 顺手点的一次允许"，只有前者能穿透注入降级（ADR-0034）。两个字段要是从两处取，
+   * 就又是 ADR-0012 ① 那个形状：判定用的事实和请求里的事实来自两个坐标系。
+   */
+  const untrustedSince = deps.runtime.state.untrustedContext?.since;
+
+  /*
    * 本会话的授权是**最后一层**，而且每次判定都现算。
    *
    * `SessionState.grants` 由 `reduce` 从 `permission.decision` 算出（scope 超过单次的
@@ -557,6 +566,7 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
       request,
       layers,
       tier: deps.tier,
+      ...(untrustedSince === undefined ? {} : { untrustedSince }),
       ...(deps.pathCaseInsensitive === undefined
         ? {}
         : { pathCaseInsensitive: deps.pathCaseInsensitive }),
