@@ -6,7 +6,6 @@ import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kern
 import type {
   ApprovalMode,
   ImageAttachment,
-  ListOrphanedSessionsResult,
   ListSessionsResult,
   PushedEvent,
   StatusResult,
@@ -14,6 +13,8 @@ import type {
 import type { z } from 'zod';
 import { api } from './bridge.js';
 import { classifyIpcError } from './ipc-error.js';
+import type { OrphanedSlice } from './orphaned-sessions.js';
+import { createOrphanedSlice } from './orphaned-sessions.js';
 
 type Status = z.infer<typeof StatusResult>;
 
@@ -42,7 +43,7 @@ type Status = z.infer<typeof StatusResult>;
 /** 壳层主区：Home 最近会话 vs 当前焦点会话（ADR-0037） */
 export type ShellView = 'home' | 'chat';
 
-interface UiState {
+interface UiState extends OrphanedSlice {
   sessions: ListSessionsResult;
   /**
    * 顶栏 tabs 的打开集合（ADR-0037）。纯 UI 态，不持久化、不进事件流。
@@ -82,12 +83,6 @@ interface UiState {
    */
   approvalMode: ApprovalMode;
   /**
-   * 崩溃恢复（M1-e，docs/04 §8）：启动时扫描出的、停在没收尾回合里的会话。
-   * 跟 `status` 一样不是任何一个会话状态的一部分——它是跨会话的一张列表，
-   * 所以横幅在渲染层里挂在顶层，不像 `TurnErrorBanner` 那样只在打开某个会话时才显示。
-   */
-  orphanedSessions: ListOrphanedSessionsResult;
-  /**
    * 会话冲突（M1-e 错误态呈现）：这个会话正被另一个写句柄占用（`WriteLeaseError`，
    * 典型场景是另一个窗口/另一个小明进程正开着同一个会话）。跟 `error` 一样是纯
    * UI 态，不进事件流；跟 `error` 不一样的地方是它有专门的呈现（`SessionConflictBanner`），
@@ -120,11 +115,6 @@ interface UiState {
   readonly refreshStatus: () => Promise<void>;
   readonly setApiKey: (providerId: string, key: string) => Promise<void>;
   readonly applyEvent: (event: PushedEvent) => void;
-  readonly refreshOrphanedSessions: () => Promise<void>;
-  /** 继续：从崩溃发生的那个迭代边界续跑。若那时正打开着这个会话，事件会经总线自然刷新界面 */
-  readonly resumeOrphaned: (sessionId: SessionId) => Promise<void>;
-  /** 放弃：写 turn.end(reason:'aborted')，语义与停止按钮相同 */
-  readonly abandonOrphaned: (sessionId: SessionId) => Promise<void>;
 }
 
 function withOpenId(openIds: readonly SessionId[], id: SessionId): readonly SessionId[] {
@@ -154,6 +144,9 @@ export const useUi = create<UiState>((set, get) => {
   };
 
   return {
+    // 崩溃恢复那一组（`orphanedSessions` 与三个动作）见 `orphaned-sessions.ts`
+    ...createOrphanedSlice(set, get, applyIpcError),
+
     sessions: [],
     openIds: [],
     shellView: 'home',
@@ -164,7 +157,6 @@ export const useUi = create<UiState>((set, get) => {
     error: undefined,
     status: undefined,
     approvalMode: 'ask',
-    orphanedSessions: [],
     sessionConflict: undefined,
 
     refreshSessions: async () => {
@@ -356,41 +348,6 @@ export const useUi = create<UiState>((set, get) => {
         await get().refreshStatus();
       } catch (e) {
         applyIpcError(e);
-      }
-    },
-
-    refreshOrphanedSessions: async () => {
-      try {
-        set({ orphanedSessions: await api.listOrphanedSessions() });
-      } catch (e) {
-        applyIpcError(e);
-      }
-    },
-
-    /**
-     * 继续/放弃都不乐观更新状态本身——与 `stop` 同一个姿态。
-     * 唯一在这里做的乐观更新是把这一条从列表里摘掉：`resolved: false` 说明
-     * 扫描时的旧缓存已经过期（多半是已经被处理过一次），显示一条僵尸行没有意义。
-     * 若这个会话此刻正打开着，真正的状态变化经总线推来的事件走 `applyEvent`，
-     * 跟"停止"按钮完全一样，不需要在这里另外拉一次。
-     */
-    resumeOrphaned: async (sessionId) => {
-      try {
-        await api.resumeOrphanedSession(sessionId);
-      } catch (e) {
-        applyIpcError(e, sessionId);
-      } finally {
-        set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
-      }
-    },
-
-    abandonOrphaned: async (sessionId) => {
-      try {
-        await api.abandonOrphanedSession(sessionId);
-      } catch (e) {
-        applyIpcError(e, sessionId);
-      } finally {
-        set({ orphanedSessions: get().orphanedSessions.filter((o) => o.sessionId !== sessionId) });
       }
     },
 
