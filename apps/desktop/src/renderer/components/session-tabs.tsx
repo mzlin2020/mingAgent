@@ -7,6 +7,15 @@ import { useUi } from '../store.js';
 /**
  * 顶栏会话 tabs + Home（ADR-0037）。
  * tabs = 打开集合；焦点仍是单一 `currentId`。新建在 Home，顶栏不放 `+`。
+ *
+ * ── 选中态为什么改成"浮在底色上的一片 surface" ──
+ *
+ * 上一版顶栏自己是 `--xm-surface`，而选中 tab 的底色**也是** `--xm-surface`——选中态只剩
+ * 一圈边框，几乎看不见。更糟的是未选中 tab 的 hover 底色是对比度更强的 `--xm-surface-2`，
+ * 于是鼠标扫过的那个看起来比真正选中的那个更"亮"，指示是反的。
+ *
+ * 现在顶栏落到页面底色（canvas）上，选中的 tab 是唯一一片 surface —— 就是浏览器标签页的
+ * 那个隐喻：选中的那张纸抬起来贴住内容区。
  */
 export function SessionTabs(): ReactNode {
   const sessions = useUi((s) => s.sessions);
@@ -21,12 +30,13 @@ export function SessionTabs(): ReactNode {
   const byId = new Map(sessions.map((s) => [s.sessionId, s]));
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-1">
+    <div className="flex min-w-0 flex-1 items-center gap-1.5">
       <Button
         variant="ghost"
+        size="icon"
         className={cn(
-          'h-8 shrink-0 gap-1 px-2',
-          shellView === 'home' && 'bg-[var(--xm-surface-2)] text-[var(--xm-fg)]',
+          'border border-transparent',
+          shellView === 'home' && 'border-border bg-surface text-fg',
         )}
         aria-label="最近会话"
         title="最近会话"
@@ -37,7 +47,7 @@ export function SessionTabs(): ReactNode {
         <HomeIcon />
       </Button>
 
-      <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
         {openIds.map((id) => {
           const summary = byId.get(id);
           const liveTitle =
@@ -50,17 +60,18 @@ export function SessionTabs(): ReactNode {
             <div
               key={id}
               className={cn(
-                'group flex max-w-[11rem] shrink-0 items-center rounded-md border border-transparent',
+                'group flex h-8 max-w-[12rem] shrink-0 items-center rounded-control',
+                'border transition-colors',
                 active
-                  ? 'border-[var(--xm-border)] bg-[var(--xm-surface)]'
-                  : 'hover:bg-[var(--xm-surface-2)]',
+                  ? 'border-border bg-surface'
+                  : 'border-transparent hover:bg-surface-2',
               )}
             >
               <button
                 type="button"
                 className={cn(
-                  'min-w-0 flex-1 truncate px-2 py-1.5 text-left text-xs',
-                  active ? 'font-medium text-[var(--xm-fg)]' : 'text-[var(--xm-fg-muted)]',
+                  'min-w-0 flex-1 truncate py-1 pl-2.5 text-left text-meta transition-colors',
+                  active ? 'font-medium text-fg' : 'text-muted',
                 )}
                 onClick={() => {
                   void openSession(id);
@@ -71,9 +82,16 @@ export function SessionTabs(): ReactNode {
                   {summary !== undefined && <SessionStatusBadge status={summary.status} />}
                 </span>
               </button>
+              {/*
+                关闭键的 hover 底色不能再用 surface-2 —— 那正好是未选中 tab 自己的 hover 底色，
+                两者同色时"鼠标已经落在关闭键上"这件事没有任何反馈
+              */}
               <button
                 type="button"
-                className="mr-0.5 rounded p-1 text-[var(--xm-fg-muted)] opacity-60 hover:bg-[var(--xm-surface-2)] hover:opacity-100 group-hover:opacity-100"
+                className={cn(
+                  'mx-1 shrink-0 rounded-chip p-1 text-faint opacity-0 transition',
+                  'hover:bg-border hover:text-fg focus-visible:opacity-100 group-hover:opacity-100',
+                )}
                 aria-label={`关闭 ${title}`}
                 title="关闭标签（不删除会话）"
                 onClick={(e: MouseEvent) => {

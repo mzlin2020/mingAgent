@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 import { Button } from './ui.js';
+import { cn } from '../lib/cn.js';
 import { useUi } from '../store.js';
 
 /**
@@ -11,6 +12,13 @@ import { useUi } from '../store.js';
  * 仓库里不带默认价格表（`contracts/model/price.ts` 说明了为什么：带一份就等于发布一个
  * 会过期的事实）。于是"$0.00"有两种可能：真没花钱，或者我们不知道花了多少。
  * 把后者显示成前者，用户就拿到了一个自信的错数字——比诚实地说"未计价"糟糕得多。
+ *
+ * ── `seq` 与原始 status 字符串从顶栏撤下来 ──
+ *
+ * 上一版这里直接打的是 `1,234 tok · $0.0021 · seq 42 · running`。后两项是调试信息：
+ * `seq` 是事件流游标，`status` 是内部枚举的英文原值——它们出现在产品 chrome 里，
+ * 是"这东西还没做完"的观感来源之一。`seq` 挪进悬浮提示（排查时仍然拿得到），
+ * `status` 直接去掉：tab 上的状态徽标已经在表达同一件事，而且是中文的。
  */
 export function UsageBadge(): ReactNode {
   const session = useUi((s) => s.session);
@@ -18,14 +26,21 @@ export function UsageBadge(): ReactNode {
 
   const { usage, costUsd, unpricedTurns } = session.usage;
   const tokens = usage.inputTokens + usage.outputTokens;
+  const cost =
+    unpricedTurns > 0
+      ? `≥ $${costUsd.toFixed(4)}（${String(unpricedTurns)} 次未计价）`
+      : costUsd > 0
+        ? `$${costUsd.toFixed(4)}`
+        : '';
+  const parts = [tokens > 0 ? `${tokens.toLocaleString()} tok` : '', cost].filter((p) => p !== '');
+  if (parts.length === 0) return null;
 
   return (
-    <span className="text-xs text-[var(--xm-fg-muted)]">
-      {tokens > 0 && `${tokens.toLocaleString()} tok · `}
-      {unpricedTurns > 0
-        ? `≥ $${costUsd.toFixed(4)}（${String(unpricedTurns)} 次未计价）`
-        : costUsd > 0 && `$${costUsd.toFixed(4)} · `}
-      {`seq ${String(session.lastSeq)} · ${session.status}`}
+    <span
+      className="text-micro tabular-nums text-faint"
+      title={`事件序号 seq ${String(session.lastSeq)} · ${session.status}`}
+    >
+      {parts.join(' · ')}
     </span>
   );
 }
@@ -49,29 +64,33 @@ export function SetupBanner(): ReactNode {
   const blocked = status.secretBackend === 'plaintext-unavailable';
 
   return (
-    <div className="rounded-md border border-[var(--xm-border)] bg-[var(--xm-surface-2)] px-3 py-2 text-xs">
-      <p className="font-medium">还没有配置模型</p>
-      <p className="mt-1 text-[var(--xm-fg-muted)]">
+    <div className="rounded-card border border-border bg-surface-2 px-4 py-3 text-meta">
+      <p className="text-body font-medium">还没有配置模型</p>
+      <p className="mt-1 text-muted">
         当前模型：<span className="font-mono">{status.providerId}</span> /{' '}
         <span className="font-mono">{status.model}</span>
         {status.hasApiKey && '（配置里有密钥引用，但取不到值）'}
       </p>
 
       {blocked ? (
-        <p className="mt-2 text-[var(--xm-fg-muted)]">
+        <p className="mt-2 text-muted">
           系统钥匙串不可用，因此**无法保存密钥**——不会退化成明文保存。
           在 Linux 上通常是缺少 gnome-keyring 或 kwallet，装好并启动后重开小明。
         </p>
       ) : (
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-3 flex items-center gap-2">
           <input
             type="password"
             value={key}
             placeholder={`${status.providerId} 的 API key`}
+            className={cn(
+              'h-9 min-w-0 flex-1 rounded-control border border-border bg-surface px-3',
+              'font-mono text-meta outline-none transition-colors',
+              'placeholder:font-sans placeholder:text-faint focus:border-accent',
+            )}
             onChange={(e) => {
               setKey(e.target.value);
             }}
-            className="min-w-0 flex-1 rounded border border-[var(--xm-border)] bg-[var(--xm-surface)] px-2 py-1 font-mono"
           />
           <Button
             disabled={key.trim() === ''}
@@ -112,12 +131,10 @@ export function TurnErrorBanner(): ReactNode {
   if (error === undefined) return null;
 
   return (
-    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
-      <p className="font-medium">上一轮出错了</p>
+    <div className="rounded-card border border-danger-border bg-danger-bg px-4 py-3 text-meta">
+      <p className="font-medium text-danger">上一轮出错了</p>
       <p className="mt-1">{error.message}</p>
-      {error.retryable && (
-        <p className="mt-1 text-[var(--xm-fg-muted)]">这类错误通常可以直接重试。</p>
-      )}
+      {error.retryable && <p className="mt-1 text-muted">这类错误通常可以直接重试。</p>}
     </div>
   );
 }
@@ -134,9 +151,9 @@ export function NoticeBanner(): ReactNode {
   if (notices.length === 0) return null;
 
   return (
-    <div className="rounded-md border border-[var(--xm-border)] bg-[var(--xm-surface-2)] px-3 py-2 text-xs">
+    <div className="rounded-card border border-border bg-surface-2 px-4 py-3 text-meta">
       {notices.map((n, i) => (
-        <p key={i} className={n.level === 'warn' ? '' : 'text-[var(--xm-fg-muted)]'}>
+        <p key={i} className={n.level === 'warn' ? '' : 'text-muted'}>
           {n.message}
         </p>
       ))}
@@ -179,11 +196,15 @@ export function InterruptedSessionBanner(): ReactNode {
   if (orphan === undefined) return null;
 
   return (
-    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
-      <p className="font-medium">这个会话在你不在时被中断了</p>
-      <p className="mt-1 text-[var(--xm-fg-muted)]">{ORPHAN_KIND_LABEL[orphan.kind]}——它不会自己消失，选一个处理方式：</p>
-      <div className="mt-2 flex items-center gap-2">
+    <div className="rounded-card border border-danger-border bg-danger-bg px-4 py-3 text-meta">
+      <p className="font-medium text-danger">这个会话在你不在时被中断了</p>
+      <p className="mt-1 text-muted">
+        {ORPHAN_KIND_LABEL[orphan.kind]}——它不会自己消失，选一个处理方式：
+      </p>
+      {/* "继续"是这里想让用户走的那条路；上一版两个按钮都是实心橙色，看不出主次 */}
+      <div className="mt-3 flex items-center gap-2">
         <Button
+          size="sm"
           disabled={busy}
           onClick={() => {
             setBusy(true);
@@ -195,6 +216,8 @@ export function InterruptedSessionBanner(): ReactNode {
           继续
         </Button>
         <Button
+          size="sm"
+          variant="secondary"
           disabled={busy}
           onClick={() => {
             setBusy(true);
@@ -226,14 +249,16 @@ export function SessionConflictBanner(): ReactNode {
   if (conflict === undefined) return null;
 
   return (
-    <div className="rounded-md border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-3 py-2 text-xs">
-      <p className="font-medium">这个会话正被另一个窗口占用</p>
-      <p className="mt-1 text-[var(--xm-fg-muted)]">
+    <div className="rounded-card border border-danger-border bg-danger-bg px-4 py-3 text-meta">
+      <p className="font-medium text-danger">这个会话正被另一个窗口占用</p>
+      <p className="mt-1 text-muted">
         通常是另一个小明窗口或进程正开着同一个会话。关掉那一边之后再重新打开这个会话。
       </p>
-      <p className="mt-1 font-mono text-[var(--xm-fg-muted)]">{conflict.message}</p>
+      <p className="mt-1 font-mono text-micro text-faint">{conflict.message}</p>
       <Button
-        className="mt-2"
+        size="sm"
+        variant="secondary"
+        className="mt-3"
         onClick={() => {
           void openSession(conflict.sessionId);
         }}

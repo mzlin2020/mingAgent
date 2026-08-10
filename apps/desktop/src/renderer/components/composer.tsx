@@ -4,6 +4,7 @@ import type { ImageAttachment } from '../../shared/ipc.js';
 import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_RAW_BYTES } from '../../shared/ipc.js';
 import { Button, Textarea } from './ui.js';
 import { cn } from '../lib/cn.js';
+import { COLUMN } from '../lib/layout.js';
 import { useUi } from '../store.js';
 
 /**
@@ -122,32 +123,41 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
   };
 
   return (
-    <div className="border-t border-[var(--xm-border)] p-3">
-      <div className="mx-auto max-w-3xl">
+    /*
+      不再画一条 `border-t`：输入区自己已经是一个有边框的盒子，再来一条横贯全宽的线等于
+      把界面切成两半。改用 `shadow-raise` —— 极淡的一层向上晕开，只在滚动内容顶到底部时
+      才隐约看得出来，是"下面这块浮在上面"而不是"这里有一道分界"。
+    */
+    <div className="shrink-0 bg-canvas pb-5 pt-1 shadow-raise">
+      <div className={COLUMN}>
         {attachError !== undefined && (
-          <p className="mb-1.5 text-xs text-[var(--xm-danger)]">{attachError}</p>
+          <p className="mb-1.5 text-meta text-danger">{attachError}</p>
         )}
         <div
           className={cn(
-            'rounded-lg border border-[var(--xm-border)] bg-[var(--xm-surface)]',
-            'focus-within:border-[var(--xm-accent)]',
+            'rounded-card border border-border bg-surface transition-colors',
+            'focus-within:border-accent',
           )}
         >
           {images.length > 0 && (
-            <div className="flex flex-wrap gap-2 px-3 pt-3">
+            <div className="flex flex-wrap gap-2 px-3.5 pt-3.5">
               {images.map((img, i) => (
                 <div key={i} className="relative">
                   <img
                     src={img.previewUrl}
                     alt={img.name ?? '待发送的图片'}
-                    className="h-14 w-14 rounded-md object-cover"
+                    className="h-14 w-14 rounded-control border border-border object-cover"
                   />
                   <button
                     type="button"
                     onClick={() => {
                       setImages((prev) => prev.filter((_, j) => j !== i));
                     }}
-                    className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-black/70 text-[10px] leading-none text-white"
+                    className={cn(
+                      'absolute -right-1.5 -top-1.5 flex h-4.5 w-4.5 items-center justify-center',
+                      'rounded-chip border border-border bg-surface text-micro leading-none',
+                      'text-muted transition-colors hover:bg-surface-2 hover:text-fg',
+                    )}
                     aria-label="移除这张图"
                   >
                     ×
@@ -175,30 +185,30 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
               }
             }}
             onPaste={onPaste}
-            className="rounded-none border-0 bg-transparent px-3.5 pb-1.5 pt-3 leading-relaxed focus:border-transparent"
+            className="rounded-none border-0 bg-transparent px-4 pb-1.5 pt-3.5 focus:border-transparent"
           />
-          <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">
-            <p className="select-none px-1 text-[11px] text-[var(--xm-fg-muted)]">
+          <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-0.5">
+            <p className="select-none px-1 text-micro text-faint">
               Enter 发送 · Shift+Enter 换行 · 可粘贴图片
             </p>
             {running ? (
               <Button
+                size="icon"
                 onClick={() => {
                   void stop();
                 }}
                 aria-label="停止"
                 title="停止"
-                className="h-8 w-8 shrink-0 px-0"
               >
                 <StopIcon />
               </Button>
             ) : (
               <Button
+                size="icon"
                 onClick={submit}
                 disabled={!canSend}
                 aria-label="发送"
                 title="发送"
-                className="h-8 w-8 shrink-0 px-0"
               >
                 <SendIcon />
               </Button>

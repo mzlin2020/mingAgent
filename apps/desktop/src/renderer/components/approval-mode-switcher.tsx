@@ -43,12 +43,14 @@ export function ApprovalModeSwitcher(): ReactNode {
 
   return (
     <div className="relative">
-      <div className="flex items-center gap-0.5 rounded-md border border-[var(--xm-border)] p-0.5">
+      {/* 分段控件：外框是槽，选中的那一段是滑块。三段等高，槽只有 2px 内边距 */}
+      <div className="flex items-center gap-0.5 rounded-control border border-border bg-surface-2 p-0.5">
         {options.map((o) => (
           <Button
             key={o.value}
-            variant={mode === o.value ? 'default' : 'ghost'}
-            className="px-2 py-1 text-xs"
+            size="sm"
+            variant={mode === o.value ? 'primary' : 'ghost'}
+            className="h-6 px-2 text-micro"
             onClick={() => {
               pick(o.value);
             }}
@@ -59,17 +61,18 @@ export function ApprovalModeSwitcher(): ReactNode {
       </div>
 
       {confirmingFull && (
-        <Card className="absolute right-0 z-10 mt-2 w-72 border-[var(--xm-danger)]">
+        <Card tone="danger" className="absolute right-0 z-10 mt-2 w-80 animate-pop-in shadow-pop">
           <p className="font-medium">确认开启完全访问权限？</p>
-          <p className="mt-1 text-xs text-[var(--xm-fg-muted)]">
+          <p className="mt-1.5 text-meta text-muted">
             开启后不会再向你确认任何操作，包括执行命令、删除文件、访问网络。
             <b>读过网页之后的提示词注入防御也会一并放宽</b>：网页里的内容说服小明去访问
             某个网址、删掉某个文件，都不会再弹框——只有推送到远端、安装依赖、修改系统设置
             这三类仍然会问你一次。 红线（如禁止删除主目录、禁止读取密钥、禁止修改小明自身
             判权逻辑）和你自己写的拒绝规则仍然生效，作为最后一道保险。
           </p>
-          <div className="mt-2 flex gap-2">
+          <div className="mt-3 flex gap-2">
             <Button
+              size="sm"
               onClick={() => {
                 setConfirmingFull(false);
                 void setMode('full');
@@ -78,6 +81,7 @@ export function ApprovalModeSwitcher(): ReactNode {
               确认开启
             </Button>
             <Button
+              size="sm"
               variant="ghost"
               onClick={() => {
                 setConfirmingFull(false);

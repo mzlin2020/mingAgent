@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
-import { Card } from './ui.js';
+import { Disclosure } from './disclosure.js';
+import { ASSISTANT_BODY, RoleLabel } from './message-stream.js';
 import { useUi } from '../store.js';
 
 /**
@@ -16,31 +17,36 @@ export function LiveMessage(): ReactNode {
   const message = useUi((s) => s.live.message);
   if (message === undefined || (message.text === '' && message.thinking === '')) return null;
 
+  /*
+    容器样式必须和 `MessageView` 的助手分支**逐字一致**（共用 `ASSISTANT_BODY` / `RoleLabel`）。
+    在途时套卡片、落库后变成无框正文的话，`message.end` 那一刻同一段文字会当着用户的面跳一下。
+  */
   return (
-    <Card>
-      <div className="mb-1 text-xs text-[var(--xm-fg-muted)]">小明</div>
-      <div className="flex flex-col gap-2">
+    <div>
+      <RoleLabel>小明</RoleLabel>
+      <div className={ASSISTANT_BODY}>
         {message.thinking !== '' && (
-          <details className="text-xs text-[var(--xm-fg-muted)]" open>
-            <summary className="cursor-pointer">思考中…</summary>
-            <p className="mt-1 whitespace-pre-wrap">{message.thinking}</p>
-          </details>
+          <Disclosure label="思考中…" defaultOpen summaryClassName="text-meta">
+            <p className="mt-1.5 whitespace-pre-wrap border-l-2 border-border pl-3 text-meta text-muted">
+              {message.thinking}
+            </p>
+          </Disclosure>
         )}
         {message.text !== '' && (
-          <p className="whitespace-pre-wrap">
+          <p className="whitespace-pre-wrap text-body">
             {/*
               在途文字**不过 Markdown**：半截的语法（一个还没闭合的 ``` 或 |）
               会让渲染结果在打字过程中反复跳变。落库之后的那一份才渲染。
             */}
             {message.text}
             {/* 光标：让"还在写"和"写完了但很短"这两种情况分得开 */}
-            <span className="ml-0.5 inline-block w-1.5 animate-pulse bg-[var(--xm-fg)] align-text-bottom">
+            <span className="ml-0.5 inline-block w-1.5 animate-pulse bg-accent align-text-bottom">
               &nbsp;
             </span>
           </p>
         )}
       </div>
-    </Card>
+    </div>
   );
 }
 
@@ -64,12 +70,13 @@ export function LiveCalls(): ReactNode {
       {[...running.values()].map((c) => (
         <div
           key={c.callId}
-          className="rounded-md border border-[var(--xm-border)] px-3 py-2 text-xs"
+          className="flex items-baseline gap-2.5 rounded-control border border-border px-3 py-1.5 text-meta"
         >
           <span className="font-mono font-medium">{c.name}</span>
-          <span className="ml-2 text-[var(--xm-fg-muted)]">
+          <span className="min-w-0 flex-1 truncate text-muted">
             {calls.get(c.callId)?.message ?? '运行中…'}
           </span>
+          <span className="shrink-0 animate-pulse text-faint">进行中</span>
         </div>
       ))}
     </div>

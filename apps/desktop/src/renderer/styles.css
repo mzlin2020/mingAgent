@@ -1,37 +1,140 @@
 @import 'tailwindcss';
 
 /**
- * 主题走 CSS 变量，贴近 Claude Code 桌面端的调性：暖白底、低饱和、橙色强调。
- * 变量而不是硬编码色值，是为了 M1 加深色模式时只改这一处（ADR-0004）。
+ * 渲染层唯一的样式来源：设计 token + 少量全局规则。
+ *
+ * ── 为什么要把 Tailwind 自带的命名空间清零 ──
+ *
+ * 上一版这里只有 12 个颜色变量，圆角/间距/字号/阴影/焦点环一个都没有登记，于是它们散在
+ * 13 个组件的内联类里各长各的：圆角同时存在 rounded / rounded-sm / rounded-md / rounded-lg
+ * 四档，字号有七档。这类不一致不是靠 review 能长期盯住的。
+ *
+ * `--color-*: initial` 之后，`bg-red-500` / `rounded-lg` / `text-4xl` **在编译期就不存在**，
+ * 想跑偏必须先回到这个文件登记一档。约束从"人的自觉"变成"构建期的事实"——
+ * 与 docs/01 原则七同一条思路："不能被 CI 或代码审查检验的原则等于没有"。
+ *
+ * 配色仍是 Claude Code 桌面端的调性：暖白底、低饱和、橙色强调（ADR-0004；ADR-0037
+ * 明确布局借鉴 openCode 但**不换成它的灰白调**）。深色模式只跟随系统，应用内不设开关——
+ * 设置页归 M3。
  */
-:root {
-  --xm-bg: #faf9f5;
-  --xm-surface: #ffffff;
-  --xm-surface-2: #f2f0e9;
-  --xm-border: #e3e0d6;
-  --xm-fg: #1f1e1b;
-  --xm-fg-muted: #78756c;
-  --xm-accent: #c96442;
-  --xm-danger: #c0392b;
-  --xm-danger-bg: #fdf0ee;
-  --xm-scrollbar-size: 6px;
-  --xm-scrollbar-thumb: color-mix(in srgb, var(--xm-fg-muted) 28%, transparent);
-  --xm-scrollbar-thumb-hover: color-mix(in srgb, var(--xm-fg-muted) 48%, transparent);
+
+@theme {
+  /* ── 命名空间清零 ── */
+  --color-*: initial;
+  --radius-*: initial;
+  --text-*: initial;
+  --shadow-*: initial;
+  /* 注意：字体**不清零**。`--font-weight-*`（font-medium / font-semibold）也以 `--font-` 开头，
+     一起清掉会把字重工具类连坐。下面直接覆盖 sans / mono 两项就够了。 */
+
+  /* 关键字不是配色，清零之后要补回来 */
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-inherit: inherit;
+
+  /* ── 表面与文字 ── */
+  /* 页面底色叫 canvas 而不是 bg：`bg-bg` 这种类名读不出来 */
+  --color-canvas: #faf9f5;
+  --color-surface: #ffffff;
+  --color-surface-2: #f2f0e9;
+  --color-border: #e5e2d8;
+  --color-border-strong: #d2cec1;
+
+  --color-fg: #1f1e1b;
+  --color-muted: #75726a;
+  /* 第三级文字：列表符号、快捷键提示这类"在场即可、不必被读"的信息 */
+  --color-faint: #a19d92;
+
+  /* ── 强调色 ── */
+  --color-accent: #c96442;
+  --color-accent-hover: #b5573a;
+  /* 选中态/气泡的极淡底，比 surface-2 更偏暖 */
+  --color-accent-weak: #f7ece7;
+  --color-on-accent: #ffffff;
+
+  /* ── 危险态 ── */
+  --color-danger: #b8402f;
+  --color-danger-bg: #fdf0ee;
+  --color-danger-border: #efcabf;
+
+  /* 终端两色在明暗下相同：里面跑的是真实 ANSI 输出，跟着主题变浅会毁掉配色 */
+  --color-terminal-bg: #1c1b18;
+  --color-terminal-fg: #e8e5dd;
+
+  /* ── 圆角只有三档 ── */
+  --radius-card: 10px;
+  --radius-control: 6px;
+  --radius-chip: 999px;
+
+  /* ── 字号只有四档（上一版是七档） ── */
+  --text-micro: 11px;
+  --text-micro--line-height: 1.45;
+  --text-meta: 12px;
+  --text-meta--line-height: 1.55;
+  --text-body: 14px;
+  --text-body--line-height: 1.7;
+  --text-title: 17px;
+  --text-title--line-height: 1.4;
+
+  /* ── 阴影只有两档 ── */
+  /* 悬浮层：汉堡菜单、"完全访问权限"确认气泡 */
+  --shadow-pop: 0 1px 2px rgb(31 30 27 / 0.06), 0 12px 28px -10px rgb(31 30 27 / 0.18);
+  /* 贴边浮起：输入区从消息流里抬起来一点 */
+  --shadow-raise: 0 -6px 20px -14px rgb(31 30 27 / 0.35);
+
+  /* ── 字体 ── */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  /* ── 动效：默认值调过，裸写 transition-colors 就会吃到这一套 ── */
+  --ease-out-soft: cubic-bezier(0.32, 0.72, 0, 1);
+  --default-transition-duration: 130ms;
+  --default-transition-timing-function: var(--ease-out-soft);
+
+  --animate-pop-in: pop-in 130ms var(--ease-out-soft);
+
+  @keyframes pop-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
+/**
+ * 深色覆盖。工具类编译成 `var(--color-*)`，所以在 `:root` 上重定义同一批变量即可生效，
+ * 组件里一个 `dark:` 变体都不需要。
+ */
 @media (prefers-color-scheme: dark) {
   :root {
-    --xm-bg: #1a1917;
-    --xm-surface: #23221f;
-    --xm-surface-2: #2c2b27;
-    --xm-border: #3a3833;
-    --xm-fg: #edeae2;
-    --xm-fg-muted: #9c988c;
-    --xm-accent: #d97757;
-    --xm-danger: #e06c5b;
-    --xm-danger-bg: #33211e;
-    --xm-scrollbar-thumb: color-mix(in srgb, var(--xm-fg-muted) 32%, transparent);
-    --xm-scrollbar-thumb-hover: color-mix(in srgb, var(--xm-fg-muted) 52%, transparent);
+    --color-canvas: #1a1917;
+    /* 卡片与底色刻意贴得很近：深色下大面积高对比的卡片会让界面显得碎 */
+    --color-surface: #211f1d;
+    --color-surface-2: #2a2825;
+    --color-border: #33312c;
+    --color-border-strong: #46433c;
+
+    --color-fg: #edeae2;
+    --color-muted: #9b978b;
+    --color-faint: #6d6a60;
+
+    --color-accent: #d97757;
+    --color-accent-hover: #e2896c;
+    --color-accent-weak: #2d2019;
+    /* 亮橙上压深色字：#d97757 配白字只有 3:1，达不到正文对比度要求 */
+    --color-on-accent: #1c1814;
+
+    --color-danger: #e06c5b;
+    --color-danger-bg: #33211e;
+    --color-danger-border: #543029;
+
+    --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 28px -10px rgb(0 0 0 / 0.6);
+    --shadow-raise: 0 -6px 20px -14px rgb(0 0 0 / 0.8);
   }
 }
 
@@ -43,8 +146,30 @@ body,
 
 body {
   margin: 0;
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.7;
+  color: var(--color-fg);
+  background: var(--color-canvas);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--color-accent-weak);
+}
+
+/**
+ * 全局焦点环。上一版整个应用没有任何 focus-visible 样式——键盘走查时焦点完全不可见。
+ * 用 outline 而不是 box-shadow：outline 不参与布局，也不会被 overflow 裁掉。
+ */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
 }
 
 /**
@@ -52,27 +177,75 @@ body {
  */
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--xm-scrollbar-thumb) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-muted) 28%, transparent) transparent;
 }
 
 *::-webkit-scrollbar {
-  width: var(--xm-scrollbar-size);
-  height: var(--xm-scrollbar-size);
+  width: 6px;
+  height: 6px;
 }
 
-*::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track,
+*::-webkit-scrollbar-corner {
   background: transparent;
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: var(--xm-scrollbar-thumb);
-  border-radius: 999px;
+  background-color: color-mix(in srgb, var(--color-muted) 28%, transparent);
+  border-radius: var(--radius-chip);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: var(--xm-scrollbar-thumb-hover);
+  background-color: color-mix(in srgb, var(--color-muted) 48%, transparent);
 }
 
-*::-webkit-scrollbar-corner {
-  background: transparent;
+/**
+ * 模型输出的正文排版（`markdown.tsx` 的 `.xm-md`）。
+ *
+ * 这个类名一直挂在 DOM 上但没有任何规则，正文靠 `flex flex-col gap-2` 给所有元素同样的
+ * 间距——标题不比段落多一点呼吸，读起来是一坨。这里换成真实的 margin 节奏：
+ * 用 `:where()` 保持零特异性，组件里的 Tailwind 工具类照样能覆盖。
+ */
+.xm-md > * {
+  margin-block: 0.7em;
+}
+
+.xm-md > :where(h1, h2, h3) {
+  margin-block: 1.5em 0.55em;
+}
+
+.xm-md > :first-child {
+  margin-top: 0;
+}
+
+.xm-md > :last-child {
+  margin-bottom: 0;
+}
+
+.xm-md :where(li) {
+  margin-block: 0.2em;
+}
+
+.xm-md :where(li)::marker {
+  color: var(--color-faint);
+}
+
+.xm-md :where(li > ul, li > ol) {
+  margin-block: 0.2em;
+}
+
+.xm-md :where(hr) {
+  height: 0;
+  margin-block: 1.4em;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.xm-md :where(tbody tr:nth-child(even)) {
+  background: color-mix(in srgb, var(--color-surface-2) 55%, transparent);
+}
+
+/* 最后一行的下边框与表格自身的外框重叠，会显出一道加粗的线 */
+.xm-md :where(tbody tr:last-child td) {
+  border-bottom: 0;
 }

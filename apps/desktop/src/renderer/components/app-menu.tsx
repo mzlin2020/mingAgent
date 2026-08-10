@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Button } from './ui.js';
+import { cn } from '../lib/cn.js';
 
 /**
  * 汉堡菜单（ADR-0037）：设置 / 帮助入口。
@@ -37,7 +38,8 @@ export function AppMenu(): ReactNode {
     <div ref={rootRef} className="relative shrink-0">
       <Button
         variant="ghost"
-        className="h-8 w-8 px-0"
+        size="icon"
+        className={cn(open && 'bg-surface-2 text-fg')}
         aria-label="菜单"
         aria-expanded={open}
         onClick={() => {
@@ -49,7 +51,10 @@ export function AppMenu(): ReactNode {
       {open && (
         <div
           role="menu"
-          className="absolute left-0 z-20 mt-1 w-52 rounded-md border border-[var(--xm-border)] bg-[var(--xm-surface)] py-1 shadow-sm"
+          className={cn(
+            'absolute left-0 z-20 mt-1.5 w-52 rounded-card border border-border bg-surface',
+            'animate-pop-in p-1 shadow-pop',
+          )}
         >
           <MenuItem label="设置" muted hint="M3" onClick={close} />
           <MenuItem label="帮助" muted onClick={close} />
@@ -75,12 +80,13 @@ function MenuItem({
       type="button"
       role="menuitem"
       onClick={onClick}
-      className="flex w-full items-center justify-between px-3 py-1.5 text-left text-sm text-[var(--xm-fg)] hover:bg-[var(--xm-surface-2)]"
-    >
-      <span className={muted === true ? 'text-[var(--xm-fg-muted)]' : undefined}>{label}</span>
-      {hint !== undefined && (
-        <span className="text-[10px] text-[var(--xm-fg-muted)]">{hint}</span>
+      className={cn(
+        'flex w-full items-center justify-between rounded-control px-2.5 py-1.5',
+        'text-left text-body text-fg transition-colors hover:bg-surface-2',
       )}
+    >
+      <span className={muted === true ? 'text-muted' : undefined}>{label}</span>
+      {hint !== undefined && <span className="text-micro text-faint">{hint}</span>}
     </button>
   );
 }

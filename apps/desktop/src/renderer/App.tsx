@@ -18,6 +18,8 @@ import { PermissionCard } from './components/permission-card.js';
 import { SessionTabs } from './components/session-tabs.js';
 import { TerminalPanel } from './components/terminal-panel.js';
 import { api } from './bridge.js';
+import { cn } from './lib/cn.js';
+import { COLUMN } from './lib/layout.js';
 import { useUi } from './store.js';
 
 /**
@@ -74,11 +76,16 @@ export function App(): ReactNode {
   const inChat = shellView === 'chat' && currentId !== undefined;
 
   return (
-    <div className="flex h-screen flex-col bg-[var(--xm-bg)] text-[var(--xm-fg)]">
-      <header className="flex shrink-0 items-center gap-2 border-b border-[var(--xm-border)] bg-[var(--xm-surface)] px-2 py-1.5">
+    <div className="flex h-screen flex-col bg-canvas text-fg">
+      {/*
+        顶栏坐在页面底色上，不再自己顶一层 surface —— 选中的 tab 才用 surface。
+        上一版两者同色，选中态在顶栏上等于看不见（见 `session-tabs.tsx`）。
+        定高 44px：汉堡 / Home / tabs / 审批档位 / 用量落在同一条基线上。
+      */}
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <AppMenu />
         <SessionTabs />
-        <div className="flex shrink-0 items-center gap-2 pr-1">
+        <div className="flex shrink-0 items-center gap-3">
           {inChat && (
             <>
               <ApprovalModeSwitcher />
@@ -89,16 +96,24 @@ export function App(): ReactNode {
       </header>
 
       {error !== undefined && (
-        <div className="shrink-0 border-b border-[var(--xm-border)] bg-[var(--xm-danger-bg)] px-4 py-2 text-xs">
+        <div className="shrink-0 border-b border-danger-border bg-danger-bg px-6 py-2 text-meta text-danger">
           {error}
         </div>
       )}
 
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      {/*
+        `scrollbar-gutter: stable both-edges` 不是可有可无的细节：滚动条只占滚动区的宽度，
+        而输入区在滚动区之外。不预留就会出现"有滚动条时消息栏比输入框往左偏 3px"——
+        肉眼说不出哪里不对，但两条本该对齐的竖线一直差着一点。两边都留，居中才与输入区一致。
+      */}
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
+      >
         {shellView === 'home' || currentId === undefined ? (
           <HomeView />
         ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-3">
+          <div className={cn(COLUMN, 'flex flex-col gap-6 py-6')}>
             <SetupBanner />
             <SessionConflictBanner />
             <NoticeBanner />
@@ -113,7 +128,7 @@ export function App(): ReactNode {
 
       {inChat && (
         <>
-          <div className="mx-auto flex w-full max-w-3xl shrink-0 flex-col gap-2 px-4 pb-2 empty:hidden">
+          <div className={cn(COLUMN, 'flex shrink-0 flex-col gap-2 pb-2 empty:hidden')}>
             <InterruptedSessionBanner />
             <TurnErrorBanner />
           </div>

@@ -39,11 +39,23 @@ function TerminalView({ terminal }: { readonly terminal: LiveTerminal }): ReactN
   useEffect(() => {
     const el = containerRef.current;
     if (el === null) return;
+    /*
+      配色从 token 读，不再写死。上一版是 `background: '#00000000'` + 外层 `bg-black/90`——
+      外层那个纯黑在浅色主题下是界面上唯一一块高对比的死黑，很扎眼；而前景色一直没设，
+      xterm 用的是它自己的默认白，与暖色调不搭。
+      终端底色本身在明暗下相同：里面跑的是真实 ANSI 输出，底色跟着主题变浅会毁掉配色。
+    */
+    const css = getComputedStyle(document.documentElement);
     const term = new Terminal({
       convertEol: true,
       disableStdin: true, // v1 只读，见组件顶部注释
       fontSize: 12,
-      theme: { background: '#00000000' }, // 透明背景，跟随卡片自己的底色
+      fontFamily: css.getPropertyValue('--font-mono').trim(),
+      theme: {
+        background: '#00000000', // 透明，底色由外层容器的 bg-terminal-bg 提供
+        foreground: css.getPropertyValue('--color-terminal-fg').trim(),
+        cursor: css.getPropertyValue('--color-accent').trim(),
+      },
     });
     term.open(el);
     termRef.current = term;
@@ -65,12 +77,21 @@ function TerminalView({ terminal }: { readonly terminal: LiveTerminal }): ReactN
   }, [terminal.text]);
 
   return (
-    <Card className={cn(terminal.closed && 'opacity-70')}>
-      <div className="mb-1 flex items-center justify-between text-xs text-[var(--xm-fg-muted)]">
-        <span className="font-mono">{terminal.cwd}</span>
-        <span>{terminal.closed ? '已结束' : '运行中'}</span>
+    <Card className={cn('p-2', terminal.closed && 'opacity-70')}>
+      <div className="mb-1.5 flex items-center justify-between px-1.5 pt-0.5 text-meta">
+        <span className="min-w-0 truncate font-mono text-muted">{terminal.cwd}</span>
+        <span className={cn('shrink-0', terminal.closed ? 'text-faint' : 'text-accent')}>
+          {terminal.closed ? '已结束' : '运行中'}
+        </span>
       </div>
-      <div ref={containerRef} className="h-64 overflow-hidden rounded-sm bg-black/90 p-1" />
+      {/*
+        深色主题下终端底色和卡片底色只差一点，不描边就看不出终端从哪里开始到哪里结束。
+        浅色下这条边框也让那块深色不至于像是"糊上去的"。
+      */}
+      <div
+        ref={containerRef}
+        className="h-64 overflow-hidden rounded-control border border-border bg-terminal-bg p-2"
+      />
     </Card>
   );
 }

@@ -49,23 +49,23 @@ export function PermissionCard(): ReactNode {
 
   return (
     <div ref={cardRef}>
-      <Card className="border-[var(--xm-accent)]">
+      <Card tone="accent" className="shadow-pop">
         <p className="font-medium">需要你的确认</p>
-        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-          <dt className="text-[var(--xm-fg-muted)]">操作</dt>
+        <dl className="mt-2.5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-meta">
+          <dt className="text-muted">操作</dt>
           <dd className="font-mono">{request.capability}</dd>
           {/*
             一次调用可能过好几道闸门（ADR-0026：一条 `rm foo` 同时主张"执行命令"
             与"删除某个文件"），卡片一次显示一道，逐个应答。目标这一栏的名字随之而变——
             命令类能力下它是一条命令，路径类下它是一个文件。
           */}
-          <dt className="text-[var(--xm-fg-muted)]">
+          <dt className="text-muted">
             {request.capability.startsWith('shell.') ? '命令' : '目标'}
           </dt>
           <dd className="break-all font-mono">{request.target === '' ? '（无）' : request.target}</dd>
-          <dt className="text-[var(--xm-fg-muted)]">风险</dt>
+          <dt className="text-muted">风险</dt>
           <dd>{request.risk}</dd>
-          <dt className="text-[var(--xm-fg-muted)]">原因</dt>
+          <dt className="text-muted">原因</dt>
           <dd>{request.reason}</dd>
         </dl>
 
@@ -81,10 +81,10 @@ export function PermissionCard(): ReactNode {
           模型碰不到——用户确认的是一件具体的事，不是一个措辞。
         */}
         {request.trustLevel === 'untrusted' && (
-          <div className="mt-2 rounded border border-[var(--xm-danger)] bg-[var(--xm-danger-bg)] px-2 py-1 text-xs">
-            <p className="font-medium">这是读过外部内容之后才出现的请求</p>
+          <div className="mt-3 rounded-control border border-danger bg-danger-bg px-3 py-2 text-meta">
+            <p className="font-medium text-danger">这是读过外部内容之后才出现的请求</p>
             {untrusted !== undefined && (
-              <p className="mt-0.5 text-[var(--xm-fg-muted)]">
+              <p className="mt-1 text-muted">
                 {new Date(untrusted.since).toLocaleTimeString()} 由工具{' '}
                 <span className="font-mono">{untrusted.toolName}</span>（
                 <span className="font-mono">{untrusted.viaCapability}</span>）引入。
@@ -94,23 +94,30 @@ export function PermissionCard(): ReactNode {
           </div>
         )}
 
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Button onClick={answer('allow', 'once')}>允许本次</Button>
-          <Button variant="ghost" onClick={answer('allow', 'session')}>
+        {/*
+          三层语义现在有三种视觉份量（上一版只有实心/幽灵两种，"拒绝"看起来像个次要链接，
+          而它其实是与"允许"对等的一个决定）：
+          允许=primary，会话级的两个=secondary，拒绝=danger。
+        */}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={answer('allow', 'once')}>
+            允许本次
+          </Button>
+          <Button size="sm" variant="secondary" onClick={answer('allow', 'session')}>
             本会话都允许
           </Button>
-          <Button variant="ghost" onClick={answer('deny', 'once')}>
+          <Button size="sm" variant="danger" onClick={answer('deny', 'once')}>
             拒绝
           </Button>
-          <Button variant="ghost" onClick={answer('deny', 'session')}>
+          <Button size="sm" variant="ghost" onClick={answer('deny', 'session')}>
             本会话都拒绝
           </Button>
         </div>
-        <div className="mt-2 flex items-center gap-2 border-t border-[var(--xm-border)] pt-2">
-          <Button variant="ghost" onClick={answer('allow', 'always')}>
+        <div className="mt-3 flex items-center gap-3 border-t border-border pt-3">
+          <Button size="sm" variant="secondary" onClick={answer('allow', 'always')}>
             永久允许这个目标
           </Button>
-          <span className="text-xs text-[var(--xm-fg-muted)]">
+          <span className="text-micro text-muted">
             会写进用户配置，重启后仍然生效。只针对上面那一个目标。
           </span>
         </div>
