@@ -5,9 +5,11 @@ import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
 import { coreTools, nodeToolGateway } from '@xm/tools-core';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { realpath as realpathCb } from 'node:fs';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import { z } from 'zod';
 import { defineTool } from '@xm/kernel';
 
@@ -70,7 +72,8 @@ const pushTool = () =>
  *   · 让 `turn.ts` 在放行时也记 request → 第一、二条用例当场红
  */
 
-const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: '/tmp/xm-no-approval' };
+/** Windows 的 %TEMP% 是 8.3 短名，macOS 的 /tmp 是符号链接 —— 两边都得先解析成真名 */
+const realNative = promisify(realpathCb.native);
 
 const callChunks = (name: string, argsJson: string) => {
   const id = newCallId();
@@ -85,7 +88,21 @@ const callChunks = (name: string, argsJson: string) => {
 const END = { chunks: [{ kind: 'stop' as const, reason: 'end_turn' as const }] as never };
 
 async function harness() {
-  const dir = await mkdtemp(join(tmpdir(), 'xm-no-approval-'));
+  const dir = await realNative(await mkdtemp(join(tmpdir(), 'xm-no-approval-')));
+  /*
+   * `appRoot` 必须是一个**真实的绝对路径**，不能写字面量 `/repo`。
+   *
+   * 自改红线的 glob 是拿 `appRoot` 拼出来的，而入参要先过网关（绝对化 + realpath.native）。
+   * POSIX 上这两条路碰巧对得上，Windows 上对不上：`\repo\...` 被 `path.resolve` 补成
+   * `C:\repo\...`，规范化成 `C:/repo/...`，而规则那边按 `/repo/...` 拼 —— 差一个盘符前缀，
+   * 27 条自改红线整体落空，判定放行、工具照跑。windows-latest 上真红过一次
+   * （这正是 ADR-0018「判定看到的路径必须就是工具打开的那个路径」的又一个马甲）。
+   *
+   * 放在 `dir` 里面而不是另开一个临时目录：`dir` 同时是会话 cwd，这样"改自己的代码"
+   * 与"在工作区里写文件"是同一件事，用例断的就只有红线这一个变量。
+   */
+  const appRoot = join(dir, 'repo');
+  const ENV: PolicyEnv = { home: '/home/ming', appRoot, dataDir: join(dir, '.xiaoming') };
   const store = new MemoryEventStore();
   const sessionId = newSessionId();
   const runtime = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });
@@ -128,7 +145,7 @@ async function harness() {
     return out;
   };
 
-  return { dir, runtime, turn, events };
+  return { dir, appRoot, runtime, turn, events };
 }
 
 const typesOf = (events: readonly PersistedEvent[], type: AnyEvent['type']) =>
@@ -218,7 +235,7 @@ describe('🔴 被污染之后：日常操作照旧零确认框，严重项被�
 describe('🔴 红线在没有任何人看着的情况下仍然拦得住', () => {
   it('改判权逻辑：被自改红线拒绝，且拒绝的是 fs.write 这条普通能力', async () => {
     const h = await harness();
-    const target = join('/repo', 'packages', 'kernel', 'src', 'policy', 'defaults.ts');
+    const target = join(h.appRoot, 'packages', 'kernel', 'src', 'policy', 'defaults.ts');
     await h.turn('改一下判权', callChunks('fs.write', JSON.stringify({ path: target, content: 'x' })));
 
     const events = await h.events();
@@ -231,7 +248,9 @@ describe('🔴 红线在没有任何人看着的情况下仍然拦得住', () =>
 
   it('改自己的业务代码：放行 —— 这正是"最终能改进自己"要的', async () => {
     const h = await harness();
-    const file = join(h.dir, 'app.tsx');
+    // 同一个 appRoot 底下，只是不在那 9 条受保护路径里 —— 自改红线是按路径划的，不是"整个仓库免谈"
+    const file = join(h.appRoot, 'apps', 'desktop', 'src', 'renderer', 'App.tsx');
+    await mkdir(dirname(file), { recursive: true });
     await writeFile(file, 'old');
     await h.turn('改一下界面', callChunks('fs.write', JSON.stringify({ path: file, content: 'new' })));
 
