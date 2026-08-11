@@ -40,7 +40,16 @@ export function App(): ReactNode {
     void refreshSessions();
     void refreshStatus();
     void refreshOrphanedSessions();
-    return api.onEvent(applyEvent);
+    return api.onEvent((event) => {
+      applyEvent(event);
+      /*
+       * 标题只被 `applyEvent` 里的 reduce 更新到**当前会话**那一份状态上。
+       * Home 列表与非焦点 tab 读的是 `listSessions()` 的摘要投影，它不过 reduce
+       * （见 store.ts 顶部注释），只能重拉一次——否则"发完第一条消息立刻回 Home
+       * 并停在那里"的用户会一直看着「新会话」（ADR-0038）。
+       */
+      if (event.type === 'session.renamed') void refreshSessions();
+    });
   }, [refreshSessions, refreshStatus, refreshOrphanedSessions, applyEvent]);
 
   useEffect(() => {

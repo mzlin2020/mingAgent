@@ -84,6 +84,11 @@ export class SessionRuntime {
   #lastSnapshotSeq: number;
   /** 防重入闸门，见 `#maybeSnapshot()` 顶部注释 */
   #snapshotting = false;
+  /**
+   * 写入串行链的队尾。**永不进入 rejected 状态**（挂上去时统一 `.catch`），
+   * 否则一次失败的写入会把后面排队的全部拖垮。见 `record()` 的注释。
+   */
+  #tail: Promise<unknown> = Promise.resolve();
 
   private constructor(
     sessionId: SessionId,
@@ -150,14 +155,51 @@ export class SessionRuntime {
    * 反过来（先广播再落库）在追加失败时会让订阅者看到一条并不存在的事件，
    * 而事件流是唯一真相——UI 上多出来一条永远回放不出来的消息，
    * 是那种用户报"它自己删了我的消息"、开发者查不出来的问题。
+   *
+   * ── 为什么要排队（ADR-0038 前置）──
+   *
+   * 真正的工作在 `#recordNow()` 里，这里只负责**把并发调用排成一队**。
+   *
+   * `#recordNow()` 在读 `#state.lastSeq` 与写 `#state` 之间隔着一次 `await append()`，
+   * 而两个存储实现的 `append` 都是"async 声明、体内全同步"——于是让出的那一拍里，
+   * 第二个写者读到的仍是陈旧的 `lastSeq`，算出**同一个 seq**，被存储的并发写检测器
+   * （不变量三）整条打回 `SeqConflictError`。`record()` 是全系统唯一分配 seq 的地方，
+   * 那它就必须是唯一的临界区。
+   *
+   * 补救只能发生在这一侧：不变量三写死了"冲突即抛，**不重试、不重新分配**"，
+   * 因为冲突的含义是"有第二个写者"，静默补救会把一次事故变成一段查不清的历史。
+   *
+   * 这不是为自动命名新造的需求——`services.ts` 的 PTY `emit` 早就在并发写
+   * `shell.session.opened`/`closed`（持久事件），撞上时被一句 `console.error` 吞掉。
+   * 自动命名只是让第二个写者从偶发变成常态。
+   *
+   * `#tail` 上挂的链**永不进入 rejected**：一次失败只属于发起它的调用方，
+   * 不该连累后面排队的写入（否则一条 `subagent.*` 闸门抛错就会毒死整个会话）。
    */
-  async record<T extends XmEventType>(input: {
+  record<T extends XmEventType>(input: {
     readonly type: T;
     readonly payload: EventOf<T>['payload'];
     readonly turnId?: TurnId;
   }): Promise<EventOf<T>> {
-    if (this.#closed) throw new Error(`会话 ${this.sessionId} 的运行时已关闭。`);
+    if (this.#closed) return Promise.reject(new Error(`会话 ${this.sessionId} 的运行时已关闭。`));
 
+    const run = this.#tail.then(
+      () => this.#recordNow(input),
+      () => this.#recordNow(input),
+    );
+    this.#tail = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * `record()` 的实际工作。**只能在写入链的临界区里调**——直接调它就是把
+   * 上面那道排队绕过去，seq 冲突会当场回来。
+   */
+  async #recordNow<T extends XmEventType>(input: {
+    readonly type: T;
+    readonly payload: EventOf<T>['payload'];
+    readonly turnId?: TurnId;
+  }): Promise<EventOf<T>> {
     // 子 Agent 污点传播闸门（ADR-0033 · G2）——挡在写入边界，reduce() 保持全
     if (input.type === 'subagent.start' || input.type === 'subagent.end') {
       throw new UnimplementedSubagentTaintPropagationError(input.type);
@@ -211,7 +253,11 @@ export class SessionRuntime {
         await this.#store.writeSnapshot(this.sessionId, { seq, state: serializeSessionState(this.#state) });
         this.#lastSnapshotSeq = seq;
       } catch (err) {
-        await this.record({
+        /*
+         * 走 `#recordNow` 而不是 `record`：此刻仍在写入链的临界区里（`#maybeSnapshot`
+         * 由 `#recordNow` 在末尾调用，槽位还没释放），排队等自己就是永久死锁。
+         */
+        await this.#recordNow({
           type: 'notice.posted',
           payload: {
             level: 'warn',
@@ -271,9 +317,17 @@ export class SessionRuntime {
     return true;
   }
 
+  /**
+   * 关闭。**先关门，后排干。**
+   *
+   * 关门（置 `#closed`）必须在前：否则排干期间新来的 `record()` 又会挂上链尾，
+   * 排不干净。排干必须在关句柄之前：已经排进链里的写入是既成事实，
+   * 丢掉它等于"应用退出时静默吃掉最后一条事件"——而事件流是唯一真相。
+   */
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    await this.#tail.catch(() => undefined);
     await this.#writer.close();
   }
 

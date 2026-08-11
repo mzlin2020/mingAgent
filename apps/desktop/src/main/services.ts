@@ -37,6 +37,7 @@ import {
   ScriptedProvider,
   SessionRuntime,
   abandonOrphanedTurn,
+  autoTitleSession,
   echoTool,
   fakeDeleteTool,
   resumeTurn,
@@ -201,6 +202,15 @@ export async function startServices(): Promise<Services> {
   const runtimes = new Map<SessionId, SessionRuntime>();
   /** 每会话一个 AbortController。它的存在期就是"这一轮正在跑" */
   const running = new Map<SessionId, AbortController>();
+  /**
+   * 后台任务（目前只有会话自动命名）的统一取消源。
+   *
+   * **刻意不进 `running`**：`running` 的语义是"这一轮正在跑"，`sendUserMessage`
+   * 见到它就返回 `'busy'`。把命名任务登记进去，用户的下一条消息就会被自己的
+   * 标题生成挡住——那是个纯粹自找的死锁。命名失败/被取消的正确表现是"标题没变"，
+   * 不该对主对话有任何影响。
+   */
+  const background = new AbortController();
 
   /**
    * 崩溃恢复的起始扫描（M1-e，docs/04 §8 步骤 1）。**只读**——`scanForOrphanedSessions`
@@ -272,7 +282,19 @@ export async function startServices(): Promise<Services> {
   });
   for (const t of shellSessionTools(ptySessions)) tools.register(t);
 
-  const modelRef = (): { provider: string; model: string } => parseModelRef(config.model.main);
+  /**
+   * 角色 → 模型引用（docs/08 M3 的"角色路由"在这里落下第一个真实消费者）。
+   *
+   * `summarize` 没配就**回落到 `main`**，而不是在 `DEFAULT_CONFIG` 里给它塞一个
+   * 默认小模型：默认值会绑死某一家，于是只配了另一家 key 的用户会
+   * `providerFor()` 返回 `undefined`——自动命名对他永远静默失效，而主对话完全正常。
+   * "对所有人都能用、对某些人略贵"是可接受的降级；"对一部分人更便宜、对另一部分人
+   * 静默失效"不是。`summarize` 保持纯 opt-in。
+   */
+  const modelRefFor = (role: 'main' | 'summarize'): { provider: string; model: string } =>
+    parseModelRef((role === 'summarize' ? config.model.summarize : undefined) ?? config.model.main);
+
+  const modelRef = (): { provider: string; model: string } => modelRefFor('main');
 
   /**
    * 按配置造 Provider。**每轮现造，不缓存。**
@@ -281,8 +303,8 @@ export async function startServices(): Promise<Services> {
    * 直到重启才生效——而"改了配置没反应"是最难自查的一类问题。
    * 造一个实例的成本只是几个字段赋值，没有连接池要复用。
    */
-  const providerFor = async (): Promise<ModelProvider | undefined> => {
-    const { provider: providerId, model } = modelRef();
+  const providerFor = async (ref = modelRef()): Promise<ModelProvider | undefined> => {
+    const { provider: providerId, model } = ref;
     const cfg = config.providers[providerId];
     if (cfg?.apiKey === undefined) return undefined;
 
@@ -308,6 +330,40 @@ export async function startServices(): Promise<Services> {
         void model;
         return undefined;
     }
+  };
+
+  /**
+   * 会话自动命名（ADR-0038）。**发出去就不管**——命名是后台任务，不该让用户
+   * 这一轮多等一次网络往返。
+   *
+   * ⚠️ **必须在 `runTurn()` 之前调用。** 判据是"messages 里还没有 user 消息"，
+   * 而 `runTurn` 记的第一条事件 `turn.start` 就会把用户输入并进 messages。
+   * `autoTitleSession` 在第一个 await 之前就求值判据，所以这里不 await 也没关系；
+   * 但把这行挪到 `runTurn` 之后，判据会当场失真。
+   *
+   * 判断都在 `@xm/runtime` 的 `session-title.ts` 里（那里有测试，本文件没有）——
+   * 这一层只做装配：挑模型、造 Provider、决定失败了怎么说。
+   */
+  const autoTitleInBackground = (runtime: SessionRuntime, text: string): void => {
+    const ref = modelRefFor('summarize');
+    void providerFor(ref)
+      .then(async (provider) => {
+        /*
+         * 没配 key 时 `buildTurnDeps` 会兜底成 `demoProvider` 的本地回显，但那段
+         * 回显拿来当标题只会写出"还没有配置模型 API key…"。宁可不改名——
+         * 命名失败的正确表现是标题保持原样。
+         */
+        if (provider === undefined) return;
+        await autoTitleSession(
+          { runtime, provider, model: ref.model, signal: background.signal },
+          text,
+        );
+      })
+      .catch((err: unknown) => {
+        // 正常退出时 close() 会 abort 掉它，那不是错误，不该在控制台刷一条吓人的报错
+        if (background.signal.aborted) return;
+        console.error('会话自动命名失败（不影响本轮对话）：', err);
+      });
   };
 
   /**
@@ -441,6 +497,9 @@ export async function startServices(): Promise<Services> {
 
       const controller = new AbortController();
       running.set(sessionId, controller);
+
+      // 必须在 runTurn 之前：turn.start 一落，"这是第一条用户消息"的判据就失真了
+      autoTitleInBackground(runtime, text);
 
       try {
         const deps = await buildTurnDeps(sessionId, runtime, controller, text);
@@ -602,6 +661,8 @@ export async function startServices(): Promise<Services> {
 
     async close(): Promise<void> {
       denyAllPending();
+      // 后台命名任务先停：它不在 running 里，没人替它 abort
+      background.abort();
       for (const controller of running.values()) controller.abort();
       running.clear();
       // 应用关闭前先收尾所有还开着的 PTY——不等它们的空闲超时，进程不该在小明退出后还挂着
