@@ -41,8 +41,16 @@ export const MAX_TITLE_CHARS = 24;
 /** 送进模型的用户文本上限（码点）。命名不需要读完一篇长文 */
 export const MAX_TITLE_INPUT_CHARS = 2000;
 
-/** 24 个中文字远在其下；给足冗余，同时保证跑飞的模型也只烧这么多 */
-export const TITLE_MAX_OUTPUT_TOKENS = 64;
+/**
+ * 24 个中文字远在其下；给足冗余，同时保证跑飞的模型也只烧这么多。
+ *
+ * **原本是 64，被真机打回。** 会思考的模型（DeepSeek 一系）先花 token 想、再说话，
+ * 而 `drainText` 只收 `text_delta`——预算全被推理烧光时，正文是空的，标题静默不改。
+ * 真正的修法是下面 `buildTitleRequest` 里那句显式关思考；这个数字只是它的**兜底**：
+ * 遇上不认关思考参数的端点时，256 至少还有赢的可能，64 是必输。
+ * 代价有界——按实际输出计费，起完标题就结束，不参与后续任何一轮。
+ */
+export const TITLE_MAX_OUTPUT_TOKENS = 256;
 
 /** 调命名文案只改这里 */
 export const TITLE_SYSTEM_PROMPT = [
@@ -167,9 +175,21 @@ export function buildTitleRequest(model: string, text: string): ModelRequest {
      * `tools` 整个字段省略，不是给一个空数组：适配器判的是"有没有且非空"，
      * 但各家兼容端点对空数组的行为并不一致，省略是唯一没有歧义的写法。
      *
-     * `thinking` 也必须不开：开了之后 Anthropic 要求 temperature 为 1
+     * `thinking: { enabled: false }` 是**显式关掉**，不是"不提"。两者的区别
+     * 一开始被我漏了，代价是这个功能在 DeepSeek 上从未成功过一次：
+     *
+     *   - 省略 `thinking` → 适配器无话可说 → 服务端按它自己的默认来。
+     *     而 DeepSeek 一系默认**开着思考**，于是 maxOutputTokens 先被推理烧光，
+     *     `drainText` 收到的正文是空串，`sanitizeTitle` 判空，一条事件都不发。
+     *   - 写成 `enabled: false` → OpenAI 兼容适配器把它翻成 `thinking: { type: 'disabled' }`
+     *     （只对能力表里会思考的模型发，见 `openai-request.ts` 的 `toWire`），
+     *     Anthropic 适配器则维持原状（它只认 `enabled === true`）。
+     *
+     * 反过来**开思考是不行的**：开了之后 Anthropic 要求 temperature 为 1
      * 且思考预算至少 1024，而那远大于这里的 maxOutputTokens，服务端直接 400。
+     * 起个标题也不需要想。
      */
+    thinking: { enabled: false },
     maxOutputTokens: TITLE_MAX_OUTPUT_TOKENS,
     // 同一句话应当得到同一个标题
     temperature: 0,
@@ -178,23 +198,45 @@ export function buildTitleRequest(model: string, text: string): ModelRequest {
 
 export interface AutoTitleDeps {
   readonly runtime: SessionRuntime;
-  readonly provider: ModelProvider;
+  /**
+   * **惰性**打开 Provider。是个工厂而不是一个现成实例，这是判据能活下来的唯一原因。
+   *
+   * 第一版把 `provider: ModelProvider` 收在这里，装配层于是只能写成
+   * `providerFor(ref).then((p) => autoTitleSession({ provider: p, ... }))`——
+   * 而 `providerFor` 要读一次钥匙串（异步）。那一拍里 `sendUserMessage` 已经跑进
+   * `runTurn`、`turn.start` 已经落库，等 Provider 造好再求判据时它**必然为假**。
+   * 结果是自动命名上线后一次都没成功过，而且完全静默：命名失败的正确表现就是
+   * "标题没变"，与"功能没生效"在界面上一模一样。
+   *
+   * 收成工厂之后，判据在本函数第一个 `await` 之前求值，造 Provider 排在它后面——
+   * 顺序由类型保证，装配层想写错也写不出来。
+   *
+   * 返回 `undefined` 表示没配这一家的 key。此时**一条事件都不发**：
+   * 装配层没配 key 时会兜底成本地回显 Provider，那段回显拿来当标题只会写出
+   * "还没有配置模型 API key…"，宁可不改名。
+   */
+  readonly openProvider: () => ModelProvider | undefined | Promise<ModelProvider | undefined>;
   readonly model: string;
   readonly signal?: AbortLike;
 }
 
 /**
- * 端到端：判据 → 调模型 → 净化 → 记 `session.renamed`。
+ * 端到端：判据 → 开 Provider → 调模型 → 净化 → 记 `session.renamed`。
  *
  * **必须在 `runTurn()` 之前调用**（判据在第一个 `await` 之前求值，见 `shouldAutoTitle`）。
  * 调用方通常不 await 它——命名是后台任务，不该让用户的这一轮多等一次网络往返。
+ * 「不 await」是安全的，「先 await 别的再调它」不是：见 `openProvider` 的注释。
  *
- * 返回最终标题；判据不成立、被取消、模型没说话、净化后为空，一律返回 `undefined`
- * 且**一条事件都不发**。命名失败的正确表现是"标题没变"，不是"标题变成空的"。
+ * 返回最终标题；判据不成立、没配 key、被取消、模型没说话、净化后为空，一律返回
+ * `undefined` 且**一条事件都不发**。命名失败的正确表现是"标题没变"，不是"标题变成空的"。
  */
 export async function autoTitleSession(deps: AutoTitleDeps, text: string): Promise<string | undefined> {
-  const { runtime, provider, model, signal } = deps;
+  const { runtime, openProvider, model, signal } = deps;
+  // ⚠️ 这一行必须留在第一个 await 之前。上面 openProvider 的注释写了代价
   if (!shouldAutoTitle(runtime.state, text)) return undefined;
+
+  const provider = await openProvider();
+  if (provider === undefined) return undefined;
 
   const drained = await drainText(provider, buildTitleRequest(model, text), signal);
   // 取消时端口约定不发 usage、以 aborted 收尾——靠这个判，不靠文本长度猜

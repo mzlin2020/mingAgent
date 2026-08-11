@@ -447,6 +447,128 @@ describe('OpenAI 兼容适配器', () => {
     });
   });
 
+  /**
+   * ── 空正文怎么写：`null` 还是 `""` ──
+   *
+   * 真实报错原文：`Invalid assistant message: content or tool_calls must be set`。
+   * 触发路径不是构造出来的：模型思考到把 `max_tokens` 用光、一个字的正文都没说完
+   * （`turn.end reason=max_tokens`），落库的 assistant 消息**只有 thinking 块**。
+   * 出站编码把它写成 `{ content: null, reasoning_content: "…" }` 且没有 `tool_calls`
+   * ——两个必备项一个都没给。脏历史留在会话里，之后每发一条都 400，会话彻底作废。
+   *
+   * 与上面那组是同一个教训的第二次出现：**空的表示要挑对**。
+   */
+  describe('空正文的 assistant 消息', () => {
+    const sendBody = async (
+      req: Partial<ModelRequest>,
+    ): Promise<{ messages: Record<string, unknown>[]; body: Record<string, unknown> }> => {
+      let sent: Record<string, unknown> = {};
+      const fetchImpl = ((_url: string, init?: RequestInit) => {
+        sent = JSON.parse(init?.body as string) as Record<string, unknown>;
+        return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      await drain(
+        new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl }).stream(
+          { ...REQUEST, ...req },
+          abortLike().signal,
+        ),
+      );
+      return { messages: (sent.messages ?? []) as Record<string, unknown>[], body: sent };
+    };
+
+    /** 思考烧完 max_tokens 那一轮落下来的形状：assistant 只剩一个 thinking 块 */
+    const thinkingOnlyHistory: Message[] = [
+      { id: newMessageId(), role: 'user', blocks: [{ type: 'text', text: '帮我算一下' }], ts: 0 },
+      {
+        id: newMessageId(),
+        role: 'assistant',
+        blocks: [{ type: 'thinking', text: '让我想想……（一直想到 max_tokens 用光）' }],
+        ts: 1,
+      },
+      { id: newMessageId(), role: 'user', blocks: [{ type: 'text', text: '所以结果是什么' }], ts: 2 },
+    ];
+
+    it('🔴 只有 thinking 的历史：content 必须是空串 —— `null` 且无 tool_calls 会被 400 拒', async () => {
+      const { messages } = await sendBody({ model: 'deepseek-v4-flash', messages: thinkingOnlyHistory });
+      const assistant = messages.find((m) => m.role === 'assistant');
+
+      expect(assistant, '这条消息本身要留在历史里（思考也是发生过的事实）').toBeDefined();
+      expect(assistant).not.toHaveProperty('tool_calls');
+      expect(assistant?.content, 'content 或 tool_calls 必须有一个 —— null 等于两个都没给').toBe('');
+      expect(assistant?.reasoning_content, '思考仍要回传').not.toBe('');
+    });
+
+    /**
+     * 另一半不能跟着改：有 `tool_calls` 时 `null` 是 OpenAI 的规范形状，
+     * 而且 `live.test.ts` 的对照组已经用真实服务端证过它收。
+     */
+    it('有 tool_calls 的空正文仍然是 null —— 那是有据可查的那一档', async () => {
+      const callId = newCallId();
+      const { messages } = await sendBody({
+        model: 'deepseek-v4-flash',
+        messages: [
+          { id: newMessageId(), role: 'user', blocks: [{ type: 'text', text: '读一下 /repo' }], ts: 0 },
+          {
+            id: newMessageId(),
+            role: 'assistant',
+            blocks: [{ type: 'tool_use', id: callId, name: 'fs.list', input: { path: '/repo' } }],
+            ts: 1,
+          },
+        ],
+      });
+      const assistant = messages.find((m) => m.role === 'assistant');
+
+      expect(assistant).toHaveProperty('tool_calls');
+      expect(assistant?.content).toBeNull();
+    });
+  });
+
+  /**
+   * ── 关思考 ──
+   *
+   * 会思考的模型默认开着，推理文本同样吃 `max_tokens`。对一次只要 24 个字的调用
+   * （ADR-0038 的会话自动命名）那意味着预算被推理吃光、正文空着回来，标题静默不改。
+   * 所以中立层的 `thinking.enabled === false` 必须真的翻译成一个出站参数。
+   */
+  describe('thinking.enabled === false 的出站翻译', () => {
+    const bodyOf = async (req: Partial<ModelRequest>): Promise<Record<string, unknown>> => {
+      let sent: Record<string, unknown> = {};
+      const fetchImpl = ((_url: string, init?: RequestInit) => {
+        sent = JSON.parse(init?.body as string) as Record<string, unknown>;
+        return Promise.resolve(new Response(streamOf(''), { status: 200 }));
+      }) as unknown as typeof fetch;
+
+      await drain(
+        new OpenAICompatibleProvider({ apiKey: 'k', fetchImpl }).stream(
+          { ...REQUEST, ...req },
+          abortLike().signal,
+        ),
+      );
+      return sent;
+    };
+
+    it('🔴 思考模型：关思考要发出去 —— 省略字段等于交给服务端默认（它默认开着）', async () => {
+      const body = await bodyOf({ model: 'deepseek-v4-flash', thinking: { enabled: false } });
+      expect(body.thinking).toEqual({ type: 'disabled' });
+    });
+
+    it('不思考的兼容端一个陌生字段都不多收 —— 多发一个能让整条请求 400', async () => {
+      const body = await bodyOf({ model: 'test-model', thinking: { enabled: false } });
+      expect(body).not.toHaveProperty('thinking');
+    });
+
+    it('不提 thinking 的调用方（回合主循环）行为不变', async () => {
+      const body = await bodyOf({ model: 'deepseek-v4-flash' });
+      expect(body).not.toHaveProperty('thinking');
+    });
+
+    it('enabled: true 这一侧刻意不接 —— 开思考是一整条链路，不在这里开半条', async () => {
+      const body = await bodyOf({ model: 'deepseek-v4-flash', thinking: { enabled: true } });
+      expect(body).not.toHaveProperty('thinking');
+    });
+  });
+
   it('图片块存在时 content 从字符串换成数组 —— 两种形状不能混用', async () => {
     const blobs = new MemoryBlobStore(sha256Hex);
     const bytes = new TextEncoder().encode('假装是一张图片');

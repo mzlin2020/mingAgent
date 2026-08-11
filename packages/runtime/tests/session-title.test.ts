@@ -104,8 +104,13 @@ describe('buildTitleRequest —— 请求参数', () => {
     expect(req.toolChoice).toBeUndefined();
   });
 
-  it('不开思考：开了之后 Anthropic 要求 temperature=1 且预算 >= 1024，服务端会 400', () => {
-    expect(req.thinking).toBeUndefined();
+  /**
+   * 「不提思考」与「显式关掉思考」的区别，是这个功能在 DeepSeek 上从未成功过的原因：
+   * 会思考的模型默认开着，推理文本吃 `max_tokens`，正文于是空着回来。
+   */
+  it('显式关思考 —— 不是省略字段，省略等于交给服务端默认（DeepSeek 默认开着）', () => {
+    expect(req.thinking, '要写出 enabled: false，适配器才有话可说').toEqual({ enabled: false });
+    expect(req.thinking?.budgetTokens, '关着就不该带预算').toBeUndefined();
     expect(req.temperature, '同一句话应当得到同一个标题').toBe(0);
     expect(req.maxOutputTokens).toBe(TITLE_MAX_OUTPUT_TOKENS);
   });
@@ -201,7 +206,7 @@ describe('净化护栏的反向演练', () => {
     for (const raw of MALICIOUS) {
       const { store, sessionId, runtime } = await openRuntime();
       const title = await autoTitleSession(
-        { runtime, provider: saying(raw), model: 'scripted-1' },
+        { runtime, openProvider: () => saying(raw), model: 'scripted-1' },
         '用户那一句话',
       );
 
@@ -227,7 +232,7 @@ describe('净化护栏的反向演练', () => {
   it('净化后为空 → 一条事件都不发（标题保持原样，不会变成"未命名"）', async () => {
     const { store, sessionId, runtime } = await openRuntime();
     const title = await autoTitleSession(
-      { runtime, provider: saying('---'), model: 'scripted-1' },
+      { runtime, openProvider: () => saying('---'), model: 'scripted-1' },
       '用户那一句话',
     );
 
@@ -266,7 +271,7 @@ describe('drainText —— 抽干流式', () => {
       turns: [{ chunks: [{ kind: 'text_delta', text: '读取目录' }, { kind: 'stop', reason: 'aborted' }] }],
     });
 
-    const title = await autoTitleSession({ runtime, provider, model: 'scripted-1' }, '读一下目录');
+    const title = await autoTitleSession({ runtime, openProvider: () => provider, model: 'scripted-1' }, '读一下目录');
     expect(title).toBeUndefined();
     expect(await renamedTitles(store, sessionId)).toEqual([]);
     await runtime.close();
@@ -283,7 +288,7 @@ describe('顺序即判据', () => {
     {
       const { store, sessionId, runtime } = await openRuntime();
       const pending = autoTitleSession(
-        { runtime, provider: saying('改 CI 三平台矩阵'), model: 'scripted-1' },
+        { runtime, openProvider: () => saying('改 CI 三平台矩阵'), model: 'scripted-1' },
         '帮我把 CI 改成三平台矩阵',
       );
       await runtime.record({
@@ -305,13 +310,92 @@ describe('顺序即判据', () => {
       } as never);
 
       const title = await autoTitleSession(
-        { runtime, provider: saying('改 CI 三平台矩阵'), model: 'scripted-1' },
+        { runtime, openProvider: () => saying('改 CI 三平台矩阵'), model: 'scripted-1' },
         '帮我把 CI 改成三平台矩阵',
       );
       expect(title, '判据已经失真，不该命名').toBeUndefined();
       expect(await renamedTitles(store, sessionId)).toEqual([]);
       await runtime.close();
     }
+  });
+
+  /**
+   * **真机打回来的那条。** 上面两条都用现成的 Provider，判据与调用点之间没有任何
+   * 异步间隙，于是它们对生产装配的真实形状完全免疫：`services.ts` 当时写的是
+   * 「先 `await providerFor(ref)` 读钥匙串，再调 `autoTitleSession`」——判据被推到
+   * `turn.start` 之后求值，恒为假，全库 `session.renamed` 数为 0。
+   *
+   * 所以这条照着生产的形状写：**开 Provider 是异步的，且这中间回合已经开跑**。
+   */
+  it('🔴 开 Provider 是异步的（要读钥匙串），期间 turn.start 已落库 —— 判据仍须成立', async () => {
+    const { store, sessionId, runtime } = await openRuntime();
+    let opened = false;
+
+    const pending = autoTitleSession(
+      {
+        runtime,
+        // 生产里这是 providerFor()：读一次钥匙串，必然跨若干个 tick
+        openProvider: async () => {
+          opened = true;
+          await new Promise((r) => setTimeout(r, 0));
+          return saying('改 CI 三平台矩阵');
+        },
+        model: 'scripted-1',
+      },
+      '帮我把 CI 改成三平台矩阵',
+    );
+
+    // 回合不等命名，该开就开——这正是原来那版输掉的那一拍
+    await runtime.record({
+      type: 'turn.start',
+      payload: { turnId: newTurnId(), input: [{ type: 'text', text: '帮我把 CI 改成三平台矩阵' }] },
+    } as never);
+
+    await expect(pending, '判据必须在开 Provider 之前就求完').resolves.toBe('改 CI 三平台矩阵');
+    expect(await renamedTitles(store, sessionId)).toEqual(['改 CI 三平台矩阵']);
+    expect(opened, '前提：Provider 确实被打开过，不是走了别的短路').toBe(true);
+    await runtime.close();
+  });
+
+  /**
+   * 反过来的一半：判据不成立时**连钥匙串都不该读**。
+   * 这比"没发事件"更严——它锁的是"判据在前、开 Provider 在后"这个顺序本身。
+   */
+  it('判据为假 → openProvider 一次都不会被调用', async () => {
+    const { runtime } = await openRuntime();
+    await runtime.record({
+      type: 'turn.start',
+      payload: { turnId: newTurnId(), input: [{ type: 'text', text: '第一条' }] },
+    } as never);
+
+    let opened = 0;
+    const title = await autoTitleSession(
+      {
+        runtime,
+        openProvider: () => {
+          opened += 1;
+          return saying('不该被叫到');
+        },
+        model: 'scripted-1',
+      },
+      '第二条',
+    );
+
+    expect(title).toBeUndefined();
+    expect(opened, '判据在前，开 Provider 在后').toBe(0);
+    await runtime.close();
+  });
+
+  it('没配 key（openProvider 给 undefined）→ 一条事件都不发', async () => {
+    const { store, sessionId, runtime } = await openRuntime();
+    const title = await autoTitleSession(
+      { runtime, openProvider: () => undefined, model: 'scripted-1' },
+      '帮我把 CI 改成三平台矩阵',
+    );
+
+    expect(title).toBeUndefined();
+    expect(await renamedTitles(store, sessionId), '宁可不改名，也不要拿兜底回显当标题').toEqual([]);
+    await runtime.close();
   });
 
   /**
@@ -322,7 +406,7 @@ describe('顺序即判据', () => {
     const { store, sessionId, runtime } = await openRuntime();
 
     const naming = autoTitleSession(
-      { runtime, provider: saying('并发命名'), model: 'scripted-1' },
+      { runtime, openProvider: () => saying('并发命名'), model: 'scripted-1' },
       '并发一下试试',
     );
     // 回合侧连写几条，不 await，制造真实的交叉写入

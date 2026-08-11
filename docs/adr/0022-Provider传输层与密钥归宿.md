@@ -425,3 +425,77 @@ Azure、各类网关在**每一轮工具调用**上都收到一个 `reasoning_co
 - `live.test.ts` 补上欠的那条多轮用例：历史里放一条"只有 tool_calls、没有思考"的
   assistant，真发一次。**带对照组**——把字段拿掉的同一份历史必须真被 400 拒，
   否则这条用例会在服务端哪天放宽规则后变成一条永远绿的空断言。已用真实 key 跑通。
+
+## 补记（2026-08-11）：同一个教训的第三次——空的表示要挑对，而且不止一处
+
+上一次补记的结论是"空的表示只有空串这一种是对的"，说的是 `reasoning_content`。
+这次真机撞上的是**紧挨着的另一个字段**，报错原文换了一句：
+
+```
+Invalid assistant message: content or tool_calls must be set
+```
+
+会话证据（`8305ce03-…`）：
+
+| seq | 事实 |
+|---:|---|
+| 151 | assistant **只有** thinking 块（约 16k），无 text、无 tool_use |
+| 152 | `turn.end reason=max_tokens` |
+| 153 | 用户："所以结果是什么" |
+| 155–156 | 空 `message.end` + 400 |
+
+模型**思考到把 `max_tokens` 用光，一句正文都没说完**。落库的 assistant 消息于是
+只有一个 thinking 块。`toWireMessages` 的 `reasoningText !== ''` 分支放它进 wire，
+写成 `{ role: 'assistant', content: null, reasoning_content: "…" }`——没有
+`tool_calls`，`content` 是 `null`，服务端要的两个**一个都没给**。
+
+脏历史留在会话里，之后每发一条都会重新拼出同样的请求，会话彻底作废。
+用户看到的是"上一轮出错了"，且怎么重发都一样。
+
+### 修法
+
+`content` 的空表示按有没有 `tool_calls` 分档：
+
+```ts
+const emptyContent = toolCalls.length > 0 ? null : '';
+```
+
+`null` 退回它唯一有据可查的位置——有 `tool_calls` 的那一档，`live.test.ts` 的对照组
+用真实服务端证过它收。没有 `tool_calls` 时一律空串。
+
+**不改 `turn.ts`**：thinking-only 消息落库是对的，思考确实发生过；根因在出站编码。
+也不做"打开旧会话时扫描修补脏历史"——修复在编码时生效、不落库，已经 400 过的会话
+下一次发送就自动好了，那份扫描代码永远不会被触发（与上次补记同一条理由）。
+
+### 顺带接上：`thinking.enabled === false` 的出站翻译
+
+ADR-0038 的会话自动命名在 DeepSeek 上从未成功过，第二个原因就在这一层：
+**会思考的模型默认开着思考**，推理文本吃 `max_tokens`，一次只要 24 个字的调用
+于是拿回一个空正文。中立层原本表达不出"这次别想"——`ModelRequest.thinking` 只接了
+Anthropic 一侧，OpenAI 兼容适配器完全无视它。
+
+现在 `toWire` 把 `thinking.enabled === false` 翻成 `thinking: { type: 'disabled' }`，
+两道闸门都必要：
+
+1. **`enabled === false` 才发。** 省略 `thinking` 的调用方（回合主循环）行为一字不变，
+   服务端默认原样保留。"省略"和"显式关掉"是两件事，这正是 ADR-0038 栽的那一跤。
+2. **`reasoningRequired` 才发**（与 `reasoning_content` 同一道闸门）。OpenAI 官方、
+   Azure、各类网关不认这个参数，多发一个陌生字段的下场是整条请求 400——而它们本来
+   也不会思考，关了没有意义。两个字段的前提是同一件事：**这条链路说不说思考这门语言。**
+
+`enabled === true` 这一侧**刻意不接**：开思考要配预算、要抬 temperature、要接签名
+回传，那是一整条链路，不该顺手在这里开半条。
+
+### 账
+
+`adapters.test.ts` 新增两组六条：空正文的 assistant（thinking-only → `''`；
+有 `tool_calls` → 仍是 `null`，不回归），以及关思考的四条正反（思考模型发得出去 /
+不思考的兼容端一个字段都不多收 / 不提 thinking 的调用方行为不变 /
+`enabled: true` 不接）。两条 🔴 在改代码前确认是红的。
+
+**欠一笔账**：`thinking: { type: 'disabled' }` 这个形状取自 DeepSeek 文档，
+**还没拿真实 key 打过探针**——上一次补记的教训是"先问服务端再改代码"，这次没做到。
+它落在一条失败即静默的路径上（关不掉最多是标题起不出来，与修复前一样），所以没有
+阻塞发布；但下次有真实 key 时应当补一条 `live.test.ts`：发一次 `thinking.disabled`
+的请求，断言响应里**没有** `reasoning_content`。带对照组——不带这个参数的同一份请求
+必须真的吐思考，否则那条用例证明不了任何事。

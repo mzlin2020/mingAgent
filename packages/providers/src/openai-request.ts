@@ -83,6 +83,28 @@ export async function toWire(
         : { type: 'function', function: { name: codec.encode(req.toolChoice.name) } };
   }
   if (req.temperature !== undefined) body.temperature = req.temperature;
+  /*
+   * ── 关思考。**只关，不开。** ──
+   *
+   * 中立表达 `thinking.enabled === false` 的意思是"这次调用不要想，直接说"。
+   * 会思考的模型（DeepSeek 一系）**默认开着**，而思考文本走 `reasoning_content`、
+   * 同样吃 `max_tokens`——对一次只要 24 个字的调用（ADR-0038 的会话自动命名）
+   * 那意味着预算全被推理吃掉、正文是空的。这不是省钱，是这类调用能不能出结果。
+   *
+   * 两道闸门都必要：
+   *   1. `enabled === false` 才发。省略 `thinking` 的调用方（回合主循环）一个字段
+   *      都不会多收，服务端默认行为原样保留。
+   *   2. `reasoningRequired` 才发（判定见上面）。OpenAI 官方、Azure、各类网关不认
+   *      这个参数，多发一个陌生字段的下场是整条请求 400——而它们本来也不会思考，
+   *      关了也没有意义。这与 `reasoning_content` 用的是同一道闸门，不是巧合：
+   *      两个字段的前提是同一件事——"这条链路说不说思考这门语言"。
+   *
+   * `enabled === true` 这一侧刻意不接：开思考要配预算、要抬 temperature、要接
+   * 签名回传，那是一整条链路，不该顺手在这里开半条（Anthropic 那侧见 `anthropic.ts`）。
+   */
+  if (req.thinking?.enabled === false && reasoningRequired) {
+    body.thinking = { type: 'disabled' };
+  }
   if (req.stopSequences !== undefined && req.stopSequences.length > 0) {
     body.stop = [...req.stopSequences];
   }
@@ -190,10 +212,28 @@ async function toWireMessages(
    */
   const includeReasoning = reasoningText !== '' || (reasoningRequired && toolCalls.length > 0);
 
+  /*
+   * ── 空正文怎么写：有 `tool_calls` 才可以是 `null` ──
+   *
+   * DeepSeek 的校验原文是 `Invalid assistant message: content or tool_calls must be set`：
+   * 两者得有一个。`null` 在有 `tool_calls` 时是 OpenAI 的规范形状（`live.test.ts`
+   * 那条对照组用的就是它，服务端收），没有 `tool_calls` 时却等于两个都没给 → 400。
+   *
+   * 这条真的会发生，不是理论形状：模型思考到把 `max_tokens` 用光，一句正文都没说完
+   * （`turn.end reason=max_tokens`），落库的 assistant 消息**只有 thinking 块**。
+   * 上面那个 `reasoningText !== ''` 分支放它进 wire，于是历史里留下一条
+   * `{ content: null, reasoning_content: "...", 没有 tool_calls }`——从此这个会话
+   * 每发一条都 400，用户只能弃用它。
+   *
+   * 所以空正文的默认写法是空串，`null` 退回它唯一有据可查的位置。
+   * 与上面 `reasoning_content` 那条是同一个教训的第二次出现：**空的表示要挑对**。
+   */
+  const emptyContent = toolCalls.length > 0 ? null : '';
+
   if (!contentIsEmpty || toolCalls.length > 0 || reasoningText !== '') {
     out.unshift({
       role: m.role,
-      content: typeof content === 'string' ? (content === '' ? null : content) : content,
+      content: typeof content === 'string' ? (content === '' ? emptyContent : content) : content,
       ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       ...(includeReasoning ? { reasoning_content: reasoningText } : {}),
     });

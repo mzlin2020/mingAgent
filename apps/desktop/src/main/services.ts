@@ -336,34 +336,33 @@ export async function startServices(): Promise<Services> {
    * 会话自动命名（ADR-0038）。**发出去就不管**——命名是后台任务，不该让用户
    * 这一轮多等一次网络往返。
    *
-   * ⚠️ **必须在 `runTurn()` 之前调用。** 判据是"messages 里还没有 user 消息"，
-   * 而 `runTurn` 记的第一条事件 `turn.start` 就会把用户输入并进 messages。
-   * `autoTitleSession` 在第一个 await 之前就求值判据，所以这里不 await 也没关系；
-   * 但把这行挪到 `runTurn` 之后，判据会当场失真。
+   * ⚠️ **必须在 `runTurn()` 之前调用，而且中间不能隔着 await。** 判据是"messages 里
+   * 还没有 user 消息"，而 `runTurn` 记的第一条事件 `turn.start` 就会把用户输入并进
+   * messages。`autoTitleSession` 在第一个 await 之前求值判据，所以这里不 await 它没关系。
+   *
+   * 第一版栽在这条上：先 `await providerFor(ref)`（要读钥匙串）再调命名，判据被推到
+   * `turn.start` 之后求值，于是**恒为假**——功能上线后一次都没成功过，全库
+   * `session.renamed` 事件数为 0，而且完全静默。所以 `openProvider` 现在是个**工厂**，
+   * 由 `session-title.ts` 在判过之后才调它：顺序改由类型保证，这里想写错也写不出来。
    *
    * 判断都在 `@xm/runtime` 的 `session-title.ts` 里（那里有测试，本文件没有）——
-   * 这一层只做装配：挑模型、造 Provider、决定失败了怎么说。
+   * 这一层只做装配：挑模型、给一把造 Provider 的钥匙、决定失败了怎么说。
    */
   const autoTitleInBackground = (runtime: SessionRuntime, text: string): void => {
     const ref = modelRefFor('summarize');
-    void providerFor(ref)
-      .then(async (provider) => {
-        /*
-         * 没配 key 时 `buildTurnDeps` 会兜底成 `demoProvider` 的本地回显，但那段
-         * 回显拿来当标题只会写出"还没有配置模型 API key…"。宁可不改名——
-         * 命名失败的正确表现是标题保持原样。
-         */
-        if (provider === undefined) return;
-        await autoTitleSession(
-          { runtime, provider, model: ref.model, signal: background.signal },
-          text,
-        );
-      })
-      .catch((err: unknown) => {
-        // 正常退出时 close() 会 abort 掉它，那不是错误，不该在控制台刷一条吓人的报错
-        if (background.signal.aborted) return;
-        console.error('会话自动命名失败（不影响本轮对话）：', err);
-      });
+    void autoTitleSession(
+      {
+        runtime,
+        openProvider: () => providerFor(ref),
+        model: ref.model,
+        signal: background.signal,
+      },
+      text,
+    ).catch((err: unknown) => {
+      // 正常退出时 close() 会 abort 掉它，那不是错误，不该在控制台刷一条吓人的报错
+      if (background.signal.aborted) return;
+      console.error('会话自动命名失败（不影响本轮对话）：', err);
+    });
   };
 
   /**
