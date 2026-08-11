@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Capability, PermissionRequest, PermissionTier } from '@xm/contracts';
+import type { Capability, PermissionRequest } from '@xm/contracts';
 import { newRequestId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv, XmPaths } from '@xm/kernel';
 import { builtinRules, evaluate, policyEnvFromPaths, xmDataLayout } from '@xm/kernel';
@@ -7,7 +7,7 @@ import { builtinRules, evaluate, policyEnvFromPaths, xmDataLayout } from '@xm/ke
 /**
  * 单层求值的便捷包装。
  *
- * 本文件里的用例考的是**层内**语义（deny > ask > allow、后定义者胜、匹配条件、红线），
+ * 本文件里的用例考的是**层内**语义（deny 胜 allow、后定义者胜、匹配条件、红线），
  * 那些在分层之后一个字都没变，所以把整份规则放进一层是忠实的翻译。
  * **层间**语义（后一层压过前一层、项目层只能收紧、会话授权）在
  * `policy-layers.test.ts` 里单独考，那里必须显式写出层。
@@ -44,8 +44,8 @@ const req = (capability: Capability, target: string): PermissionRequest => ({
   trustLevel: 'model',
 });
 
-const verdict = (capability: Capability, target: string, tier: PermissionTier = 'balanced') =>
-  judge({ request: req(capability, target), rules: RULES, tier });
+const verdict = (capability: Capability, target: string) =>
+  judge({ request: req(capability, target), rules: RULES });
 
 describe('审计日志红线', () => {
   it('🔴 写入与删除审计库都被红线拒绝', () => {
@@ -86,19 +86,19 @@ describe('审计日志红线', () => {
     expect(v.ruleId).toBe('builtin.invalid-target');
   });
 
-  it('🔴 YOLO 也拦得住 —— 红线不受档位影响', () => {
-    expect(verdict('fs.delete', `${DATA}/audit.db`, 'yolo').effect).toBe('deny');
+  it('🔴 兜底放行拦不住它 —— 红线跨层最先判（第 1 步）', () => {
+    expect(verdict('fs.delete', `${DATA}/audit.db`).effect).toBe('deny');
   });
 
-  it('事件库不在红线内，只需要确认 —— 红线只留"没有正当理由"的操作', () => {
+  it('事件库不在红线内 —— 红线只留"没有正当理由"的操作，清自己的会话数据是有的', () => {
     const v = verdict('fs.delete', `${DATA}/events.db`);
-    expect(v.effect).toBe('ask');
+    expect(v.effect).toBe('allow');
   });
 
   it('数据目录里的其它文件不受影响', () => {
-    expect(verdict('fs.write', `${DATA}/blobs/ab/cd`).effect).toBe('ask');
+    expect(verdict('fs.write', `${DATA}/blobs/ab/cd`).effect).toBe('allow');
     // `*` 不跨 `/`，所以红线不该顺手把整个目录盖住
-    expect(verdict('fs.write', `${DATA}/audit.db.d/x`).effect).toBe('ask');
+    expect(verdict('fs.write', `${DATA}/audit.db.d/x`).effect).toBe('allow');
   });
 
   /**
@@ -145,7 +145,6 @@ describe('paths → PolicyEnv 只有一条通路', () => {
     const v = judge({
       request: req('fs.delete', 'c:\\users\\ming\\appdata\\roaming\\xiaoming\\audit.db-wal'),
       rules,
-      tier: 'balanced',
       pathCaseInsensitive: true,
     });
     expect(v.effect).toBe('deny');

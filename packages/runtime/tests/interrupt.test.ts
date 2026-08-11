@@ -103,7 +103,6 @@ async function runAndInterrupt(afterMs = 0): Promise<Recorded> {
       ]),
       tools: new ToolRegistry(),
       layers: builtinLayers(ENV),
-      tier: 'balanced',
       model: 'x',
       signal: controller.signal,
     },

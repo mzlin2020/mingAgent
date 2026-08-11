@@ -1,9 +1,7 @@
 import type { PolicyRule, PolicyRuleSet } from '@xm/contracts';
-import type { PermissionGrant } from '../state/session-state.js';
-import { normalizeTarget } from './normalize.js';
 
 /**
- * 规则层的构造 —— 三件事：**项目层只能收紧**、**授权合成规则**、**字面路径要转义**。
+ * 规则层的构造 —— ADR-0039 之后只剩一件事：**项目层只能收紧**。
  *
  * `engine.ts` 只负责"给定若干层，判出结果"。层是怎么来的、哪一层可以放松哪一层不行，
  * 全在这个文件里。分开是因为前者是纯判定、要能被穷举测试，后者是一组安全取舍、
@@ -19,7 +17,7 @@ export interface TightenOutcome {
 }
 
 /**
- * 丢掉一层里所有**放松**权限的规则，只保留 deny / ask。
+ * 丢掉一层里所有**放松**权限的规则，只保留 deny。
  *
  * 用在**项目级** `.xiaoming/config.json` 上，理由具体到几乎是一条攻击路径：
  *
@@ -32,6 +30,11 @@ export interface TightenOutcome {
  * 是同一条纪律的同一个形状：**能被下游写出来的东西，只许收紧，不许放松。**
  *
  * 收紧方向留着是有用的：一个仓库说"这里别乱写"是合理且无害的表达。
+ *
+ * ⚠️ ADR-0039 之后这道闸门比原来更吃重。以前一条被放进来的 allow 顶多把 ask 变成
+ * 不问，现在判定只有 allow/deny 两个值，它顶掉的就是一条真实的拒绝——
+ * 而污染上下文下那三条 deny（`untrusted.*`）刻意不是 immutable，正好是它能顶的。
+ * 所以这里"只保留 deny"是唯一正确的方向，不要为了"项目也该能配点什么"而放宽。
  */
 export function tightenOnly(rules: PolicyRuleSet): TightenOutcome {
   const kept: PolicyRule[] = [];
@@ -43,87 +46,23 @@ export function tightenOnly(rules: PolicyRuleSet): TightenOutcome {
   return { rules: kept, dropped };
 }
 
-// ── 授权 → 规则 ────────────────────────────────────────────────
-
-/** 会话授权层的规则 id 前缀。UI 据此把 verdict 解释成"你在本会话授权过" */
-export const GRANT_RULE_PREFIX = 'grant.';
-
-/**
- * 把用户当场做出的、**范围超过单次**的决定（scope = session / always）变成规则。
- *
- * `SessionState.grants` 从 M0 起就在 `reduce` 里算着了，一直没有任何人读它——
- * 于是"本会话都允许"这个选项即便点了，下一次调用照样弹框。这个函数是它的读取端。
- *
- * 四个细节，每个都是错了就放大权限的那种：
- *
- * 〇、**先规范化，再转义。** 授权的 target 是从 `PermissionRequest` 里原样带出来的，
- *     而判定时 `evaluate()` 会把请求的 target 规范化之后再比。两边坐标系不一致，
- *     合成出来的规则就永远匹配不上——Windows 上尤其明显：授权存的是
- *     `C:\work\a.md`，判定比的是 `C:/work/a.md`，于是"本会话都允许"点了等于没点
- *     （三平台 CI 实测，M1-c 补记）。规范化失败的直接丢弃（**失败关闭**）：
- *     一条判定时必然 deny 的 target，合成出规则来只会让人以为授权生效了。
- * 一、**target 要转义。** 授权针对的是一个具体的目标（一个路径、一个 host），
- *     不是一个模式。见 `escapeGlobPattern`。
- * 二、**`always` 也进会话层。** 它同时会被写进用户级配置文件，但那要下次启动
- *     才读得到——不进会话层的话，用户点完"永久允许"，紧接着的下一次调用还会再问一遍。
- * 三、**deny 的授权照样合成。** 用户点"本会话都拒绝"和点"本会话都允许"一样是决定，
- *     只合成 allow 就等于回放出来的会话比当时更松。
- * 四、**授权的时刻要原样带上**（`grantedAt`，ADR-0034）。少了它，`evaluate()` 分不出
- *     "用户看着不可信横幅、针对这个域名点的允许"和"污染发生之前顺手点的一次允许"——
- *     而这两者对注入防御的意义完全相反：前者是对"读过不可信内容之后还要不要继续"
- *     的明确回答，后者压根没被问过这个问题。
- * 五、**授权所属的那次调用也要带上**（`grantedCallId`，ADR-0035）。它补的是第四条的
- *     一条缝：批准了污染本身的那次授权，时间戳反而早于污染时刻（污点标在 `tool.start`，
- *     授权记在更早的 `permission.decision`），于是用户刚点过的第一个域名下次还要再问。
- *
- * 规范化不了的直接跳过——**失败关闭**：那一条授权不生效，用户下次还会被问一遍，
- * 而不是拿到一条建立在判不了的 target 上的规则。
- */
-export const grantsToRules = (grants: readonly PermissionGrant[]): PolicyRuleSet =>
-  grants.flatMap((g) => {
-    const normalized = normalizeTarget(g.capability, g.target);
-    if (!normalized.ok) return [];
-    return [grantRule(g, normalized.value)];
-  });
-
-const grantRule = (g: PermissionGrant, target: string): PolicyRule => ({
-  id: `${GRANT_RULE_PREFIX}${g.scope}.${g.requestId}`,
-  effect: g.effect,
-  capability: g.capability,
-  match: { target: escapeGlobPattern(target) },
-  reason:
-    g.effect === 'allow'
-      ? `你在本会话${g.scope === 'always' ? '选择了永久允许' : '允许过这个操作'}`
-      : `你在本会话${g.scope === 'always' ? '选择了永久拒绝' : '拒绝过这个操作'}`,
-  immutable: false,
-  grantedAt: g.ts,
-  ...(g.callId === undefined ? {} : { grantedCallId: g.callId }),
-});
-
-/**
- * 把一个**字面**目标变成只匹配它自己的 glob。
- *
- * `PolicyRule.match.target` 是模式，而授权的 target 是从 `PermissionRequest` 里
- * 原样带出来的一个具体值。两者形状相同、含义不同，中间必须有这一步——
- * POSIX 上 `a*b`、`log?.txt` 都是合法文件名，不转义的话，
- * 一次"允许写 /work/a*b"的授权会连 `/work/aXb`、`/work/anything-b` 一起放行。
- *
- * 授权是会被写进用户配置、长期留着的，所以这个放大不是一次性的。
- */
-export const escapeGlobPattern = (literal: string): string =>
-  literal.replace(/[\\*?]/g, '\\$&');
-
 /*
- * ── 这里曾经有一个 `grantable()` ──
+ * ── 这里曾经有 `grantsToRules()` / `escapeGlobPattern()` / `GRANT_RULE_PREFIX` ──
  *
- * 它挡的是命令类能力：ADR-0020 决策三说命令行 target 没有规范化契约，
- * 于是这类操作的"本会话都允许"干脆不提供——宁可每次都问，也不要给一个错的承诺。
+ * 它们把用户在审批卡片上点的"本会话都允许"/"永久允许"合成成 `session` 层的规则。
+ * ADR-0039 删掉审批之后，那一层没有了唯一的来源（`SessionState.grants` 只能由
+ * `permission.decision` 事件产生），于是整组代码一起删除，`session` 层本身也随之消失。
  *
- * ADR-0026 把契约补上之后，它没有存在的理由了，所以整个删掉而不是留一个恒真的函数。
- * 留下来的那道防线是上面的**失败关闭**：规范化不了的授权一律丢弃。它比一份名单可靠——
- * 名单要有人记得维护，而失败关闭是规范化本身的副产品。
+ * 顺带记下那几条曾经付过学费的细节，将来若要重新引入"事中授权"，同样的坑还在原地：
  *
- * 顺带说清楚为什么 `opaque` 仍然可以授权（`git.push origin` 这类）：
- * opaque 上的**放松**方向失效时是"下次又问了一遍"，落在安全的那一侧。
- * 危险的是在 opaque 上写 deny 并以为它挡住了，而那件事由 `assertRules` 的红线闸门管。
+ *   〇 先规范化再转义，否则 Windows 上授权存 `C:\work\a.md`、判定比 `C:/work/a.md`，
+ *     "本会话都允许"点了等于没点（三平台 CI 实测，M1-c 补记）；
+ *   一 授权的 target 是**字面量**不是模式，`a*b` / `log?.txt` 都是合法文件名，
+ *     不转义会让一次针对单个文件的授权放行一批文件——而授权是会被持久化的；
+ *   二 `deny` 的授权也要合成，只合成 allow 等于回放出的会话比当时更松；
+ *   三 规范化失败的授权直接丢弃（**失败关闭**），不要留一条建立在判不了的 target
+ *     上的规则。
+ *
+ * 新模型里"我允许这个目标"的表达方式是人手写进 `config.json` 的一条持久规则，
+ * 它走的是用户层，不需要合成，也不需要转义（人写的本来就是模式）。
  */

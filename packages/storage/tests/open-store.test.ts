@@ -58,7 +58,6 @@ describe('平台路径 → 存储落盘位置 → 红线，是同一份定义', 
           trustLevel: 'model',
         },
         rules: builtinRules(policyEnvFromPaths(platform.paths())),
-        tier: 'yolo',
         pathCaseInsensitive: platform.os === 'windows',
       });
 

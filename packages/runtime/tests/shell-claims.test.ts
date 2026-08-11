@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PermissionRequest, PersistedEvent, PolicyRuleSet } from '@xm/contracts';
+import type { PersistedEvent, PolicyRuleSet } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
@@ -53,24 +53,15 @@ async function harness(userRules: PolicyRuleSet = []) {
   const tools = new ToolRegistry();
   for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
-  const asked: PermissionRequest[] = [];
-
   const exec = async (argv: string[]): Promise<PersistedEvent[]> => {
     await runTurn(
       {
         runtime,
         tools,
         layers: composeRules({ env: ENV, user: userRules }),
-        tier: 'balanced' as const,
         model: 'scripted-1',
         gateway: nodeToolGateway({ home }),
         provider: new ScriptedProvider({ turns: [call('shell.exec', { argv }), END] as never }),
-        // 永远点"允许"：于是任何一次放行都必须是 deny 没拦住，
-        // 不能是"这个用例恰好没人点允许"
-        decide: (request: PermissionRequest) => {
-          asked.push(request);
-          return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
-        },
       },
       textInput('跑一下'),
     );
@@ -79,7 +70,7 @@ async function harness(userRules: PolicyRuleSet = []) {
     return out;
   };
 
-  return { exec, asked };
+  return { exec };
 }
 
 const ended = (all: PersistedEvent[]) =>
@@ -88,6 +79,9 @@ const decisions = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'permission.decision' ? [e.payload] : []));
 const started = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'tool.start' ? [e.payload] : []));
+/** ADR-0039：`permission.request` 只在**拒绝**时产生，成对记在 decision 前面 */
+const requests = (all: PersistedEvent[]) =>
+  all.flatMap((e) => (e.type === 'permission.request' ? [e.payload] : []));
 
 beforeEach(async () => {
   const realNative = promisify(realpathCb.native);
@@ -115,14 +109,15 @@ describe('🔴 M1-d DoD：rm -rf ~ 被拦，而且四种写法判定一致', () 
     ['&& 后面藏一段', ['sh', '-c', 'echo ok && rm -rf ~']],
     ['管道后面藏一段', ['sh', '-c', 'echo ok | grep ok; rm -rf ~']],
   ])('%s → deny，且命中同一条红线', async (_label, argv) => {
-    const { exec, asked } = await harness();
+    const { exec } = await harness();
     const all = await exec(argv);
 
     expect(ended(all)[0]?.ok).toBe(false);
     const denied = decisions(all).filter((d) => d.effect === 'deny');
     expect(denied[0]?.ruleId).toBe('red.fs-delete-home-root');
-    // **一个确认框都没弹**：判完全部主张才问人，而这次判完就已经 deny 了
-    expect(asked).toHaveLength(0);
+    // 拒绝一次就结束这次调用：恰好一对审计记录，且是判定自己做的决定
+    expect(requests(all)).toHaveLength(1);
+    expect(denied[0]?.by).toBe('policy');
   });
 
   it('🔴 `rm -rf /` 同样被拦 —— 命中的是文件系统根那条', async () => {
@@ -216,8 +211,8 @@ describe('🔴 curl 不再绕过不可信标记', () => {
 });
 
 describe('放行的路径也要真的通', () => {
-  it('普通命令问一次就跑起来了', async () => {
-    const { exec, asked } = await harness();
+  it('普通命令零确认框跑起来', async () => {
+    const { exec } = await harness();
     /*
      * 不能用 `echo`：它是 shell 内建，不是 PATH 上的可执行文件。
      * `shell.exec` 的契约是 `spawn(..., { shell: false })`（ADR-0026），
@@ -227,62 +222,62 @@ describe('放行的路径也要真的通', () => {
     const all = await exec([process.execPath, '-e', "process.stdout.write('hello-xm')"]);
     expect(ended(all)[0]?.ok).toBe(true);
     expect(JSON.stringify(ended(all)[0]?.forModel)).toContain('hello-xm');
-    // 只有 shell.exec 一条主张要问
-    expect(asked.map((a) => a.capability)).toEqual(['shell.exec']);
+    // 一条 permission 事件都没有 —— 放行不留痕，与 `fs.read` 这类一直如此的能力一致
+    expect(requests(all)).toHaveLength(0);
+    expect(decisions(all)).toHaveLength(0);
   });
 
-  it('🔴 判不了的命令在网关就停了，不发权限事件 —— 确认框上写什么都是猜的', async () => {
-    const { exec, asked } = await harness();
+  it('🔴 判不了的命令在网关就停了，不发权限事件 —— 判不了不是"先放行再说"', async () => {
+    const { exec } = await harness();
     const all = await exec(['sh', '-c', 'rm -rf $(cat target)']);
     expect(ended(all)[0]?.ok).toBe(false);
     expect(decisions(all)).toHaveLength(0);
-    expect(asked).toHaveLength(0);
+    expect(requests(all)).toHaveLength(0);
   });
 });
 
 /**
- * 🔴 用户体验报告：一条调用有多条 ask 主张时，「点了没反应」。
+ * ── 一次调用的多条主张：全过则零事件，任一被拒则恰好一对（ADR-0039）──
  *
- * `mv a b` 拆出 `shell.exec`（ask）+ `fs.read(a)`（无条件 allow，不问）+
- * `fs.delete(a)`（ask）+ `fs.write(b)`（ask）——三条要问的主张。
+ * 这组用例的前身考的是一个具体的 bug（ADR-0026 补记）：`mv a b` 拆出
+ * `shell.exec` + `fs.read(a)` + `fs.delete(a)` + `fs.write(b)`，其中三条是 ask。
+ * 两段式循环会把三条 `permission.request` 连着发完才轮到第一条的 decision，
+ * 而 `pendingPermission` 是单槽位——UI 卡片和"谁在被等待"对不上，用户点了没反应。
  *
- * 修复前的两段式循环会把三条 `permission.request` 连着发完，才轮到第一条的
- * `permission.decision`：`SessionState.pendingPermission` 是单槽位，会被
- * 后一条的 requestId 覆盖，而主进程的 `decide()` 此刻其实还在等第一条——
- * UI 卡片和"谁在被等待"完全对不上，点确认按钮触发的 `respondPermission`
- * 找不到匹配的 waiter，返回 `accepted:false`，卡片纹丝不动。
- *
- * 断言不看"问了几次"（那是 M1-d 已经在验的），而是看**事件流的形状**：
- * 一条 request 后面必须紧跟它自己的 decision，不能有第二条 request 插进来。
+ * ADR-0039 之后没有 ask、没有单槽位、也没有卡片，那个 bug 的载体整个消失了。
+ * 留下来的是同一个位置上现在**应该**成立的形状，也是"零确认框"这句话在
+ * 多主张情况下的确切含义：**放行路径一条 permission 事件都不产生。**
  */
-describe('🔴 一次调用的多条 ask 主张：request 与 decision 必须严格配对，不能连续两条 request', () => {
-  it('mv 产出三条 ask 主张，事件流里 request/decision 逐对交替', async () => {
-    const { exec, asked } = await harness();
+describe('多主张调用的事件形状', () => {
+  it('mv 的四条主张全部放行 —— 事件流里没有任何 permission 事件', async () => {
+    const { exec } = await harness();
     await writeFile(join(dir, 'src.txt'), 'hi');
     const all = await exec(['mv', join(dir, 'src.txt'), join(dir, 'dst.txt')]);
 
+    expect(ended(all)[0]?.ok).toBe(true);
+    expect(requests(all)).toHaveLength(0);
+    expect(decisions(all)).toHaveLength(0);
+  });
+
+  it('🔴 其中一条主张撞上 deny：恰好一对 request/decision，然后这次调用结束', async () => {
+    const { exec } = await harness([
+      {
+        id: 'u.no-delete-here',
+        effect: 'deny',
+        capability: 'fs.delete',
+        match: { target: `${dir}/**` },
+        reason: '用户自己写的：这个目录里的东西不许删',
+        immutable: false,
+      },
+    ]);
+    await writeFile(join(dir, 'src.txt'), 'hi');
+    const all = await exec(['mv', join(dir, 'src.txt'), join(dir, 'dst.txt')]);
+
+    expect(ended(all)[0]?.ok).toBe(false);
     const sequence = all
       .map((e) => e.type)
       .filter((t) => t === 'permission.request' || t === 'permission.decision');
-
-    // 至少要有能触发"两条连续 request"这个 bug 的主张数量，用例本身才有意义
-    expect(asked.length).toBeGreaterThanOrEqual(2);
-    expect(sequence.length).toBeGreaterThanOrEqual(4);
-
-    for (let i = 0; i < sequence.length; i += 2) {
-      expect(sequence[i]).toBe('permission.request');
-      expect(sequence[i + 1]).toBe('permission.decision');
-    }
-
-    // 而且每一条 decision 确实答的是它前面那条 request——不是恰好数量对上
-    const requests = requestsOf(all);
-    const answered = decisions(all);
-    expect(answered.map((d) => d.requestId)).toEqual(requests.map((r) => r.requestId));
-
-    expect(ended(all)[0]?.ok).toBe(true);
+    expect(sequence).toEqual(['permission.request', 'permission.decision']);
+    expect(decisions(all)[0]).toMatchObject({ effect: 'deny', ruleId: 'u.no-delete-here' });
   });
 });
-
-function requestsOf(all: PersistedEvent[]) {
-  return all.flatMap((e) => (e.type === 'permission.request' ? [e.payload] : []));
-}

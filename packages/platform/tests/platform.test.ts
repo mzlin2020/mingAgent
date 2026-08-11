@@ -118,7 +118,6 @@ describe('平台路径 → 红线 的整段接线', () => {
         trustLevel: 'model',
       },
       rules,
-      tier: 'yolo',
       pathCaseInsensitive: platform.os === 'windows',
     });
 

@@ -62,7 +62,7 @@ describe('配置树与 SecretRef', () => {
       tools: {},
       logging: {},
     });
-    expect(cfg.permission.tier).toBe('balanced');
+    expect(cfg.permission.rules).toEqual([]);
     expect(cfg.logging.redact).toBe(true);
     expect(cfg.providers).toEqual({});
   });

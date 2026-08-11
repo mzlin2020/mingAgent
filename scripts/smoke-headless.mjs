@@ -119,7 +119,6 @@ try {
       provider,
       tools,
       layers,
-      tier: 'balanced',
       model: 'scripted-1',
       gateway: pureGateway(demoTargetOf),
       pathCaseInsensitive: platform.os === 'windows',
@@ -135,7 +134,6 @@ try {
   mkdirSync(join(workspace, 'src'), { recursive: true });
   writeFileSync(join(workspace, 'src', 'index.ts'), 'export const hello = 1;\n');
 
-  const asked = [];
   const listCall = newCallId();
   const readCall = newCallId();
   const write1 = newCallId();
@@ -148,12 +146,17 @@ try {
                  { kind: 'stop', reason: 'tool_use' }] },
       { chunks: [...toolCall(write1, 'fs.write', { path: 'README.md', content: '# 项目\n' }),
                  { kind: 'stop', reason: 'tool_use' }] },
-      // 第二次写**同一个文件**：本会话授权之后不该再问
+      // 第二次写**同一个文件**：照样零确认框（ADR-0039 之后不存在"第二次还问一遍"）
       { chunks: [...toolCall(write2, 'fs.write', { path: 'README.md', content: '# 项目\n\n补一句。\n' }),
                  { kind: 'stop', reason: 'tool_use' }] },
       { chunks: [{ kind: 'text_delta', text: 'README 写好了。' }, { kind: 'stop', reason: 'end_turn' }] },
     ],
   });
+
+  /** 放行不留痕（ADR-0039）：这一整段跑完，权限事件条数必须一动不动 */
+  const permissionEventCount = () =>
+    seen.filter((e) => e.type === 'permission.request' || e.type === 'permission.decision').length;
+  const permBeforeFileTurn = permissionEventCount();
 
   const fileReason = await runTurn(
     {
@@ -161,20 +164,15 @@ try {
       provider: fileProvider,
       tools,
       layers,
-      tier: 'balanced',
       model: 'scripted-1',
       gateway: nodeToolGateway(),
       checkpointer: nodeCheckpointer({ blobs: stores.blobs }),
       blobs: stores.blobs,
       pathCaseInsensitive: platform.os === 'windows',
-      decide: (request) => {
-        asked.push(request);
-        // 第一次问就给"本会话都允许"——第二次写同一个文件不该再来问
-        return Promise.resolve({ effect: 'allow', scope: 'session' });
-      },
     },
     textInput('读一下这个目录，总结结构，写一个 README'),
   );
+  const permAfterFileTurn = permissionEventCount();
 
   // ── 第三段：M1-d 的 DoD —— rm -rf ~ 的四种写法判定一致 ──────
   //
@@ -182,8 +180,10 @@ try {
   // spawn 出去**：四种写法全都在闸门那里就被拦住了。断言的不只是"都被拦"，
   // 还有"命中的是同一条规则"——三种 deny 加一种 ask 也能叫"都拦下了"，
   // 但那时第四种的下一步是用户点允许。
-  const dodAsked = [];
   const dodRules = [];
+  /** 拒绝会成对记下 request+decision（审计）；放行一条都不记 —— 这就是"零确认框"的度量 */
+  const requestCount = (from) => seen.slice(from).filter((e) => e.type === 'permission.request').length;
+  const dodRequests = [];
   const writings = [
     ['朴素', ['rm', '-rf', '~']],
     ['绝对路径的 bin', ['/bin/rm', '-rf', '~']],
@@ -204,15 +204,9 @@ try {
         }),
         tools,
         layers,
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: nodeToolGateway({ home: paths.home }),
         pathCaseInsensitive: platform.os === 'windows',
-        // 永远点允许：任何一次放行都必须是 deny 没拦住，不能是"恰好没人点允许"
-        decide: (request) => {
-          dodAsked.push(request);
-          return Promise.resolve({ effect: 'allow', scope: 'once' });
-        },
       },
       textInput('删掉我的家目录'),
     );
@@ -220,6 +214,7 @@ try {
       .slice(before)
       .find((e) => e.type === 'permission.decision' && e.payload.effect === 'deny');
     dodRules.push(decision?.payload.ruleId);
+    dodRequests.push(requestCount(before));
   }
 
   // 一条正常命令必须还能跑起来——全拦下不叫防住了，叫不能用了
@@ -235,11 +230,9 @@ try {
       }),
       tools,
       layers,
-      tier: 'balanced',
       model: 'scripted-1',
       gateway: nodeToolGateway({ home: paths.home }),
       pathCaseInsensitive: platform.os === 'windows',
-      decide: () => Promise.resolve({ effect: 'allow', scope: 'once' }),
     },
     textInput('打个招呼'),
   );
@@ -266,7 +259,6 @@ try {
       }),
       tools,
       layers,
-      tier: 'balanced',
       model: 'scripted-1',
       gateway: pureGateway(demoTargetOf),
       pathCaseInsensitive: platform.os === 'windows',
@@ -321,15 +313,14 @@ try {
     fail('README.md 没有被真的写出来 —— 工具链没有跑通');
   }
   if (readmeText !== '' && !readmeText.includes('补一句')) {
-    fail('第二次写入没有生效 —— 本会话授权之后那一次调用被拦下了');
+    fail('第二次写入没有生效 —— 那一次调用被拦下了');
   }
 
-  const writeAsks = asked.filter((r) => r.capability === 'fs.write');
-  if (writeAsks.length !== 1) {
-    fail(`fs.write 应只问一次（本会话授权），实际问了 ${String(writeAsks.length)} 次`);
-  }
-  if (asked.some((r) => r.capability === 'fs.read')) {
-    fail('fs.read 在平衡档默认放行，不该弹审批');
+  // ADR-0039：整段 fs.list → fs.read → fs.write ×2 一条权限事件都不该产生
+  if (permAfterFileTurn !== permBeforeFileTurn) {
+    fail(
+      `主 DoD 任务应零确认框（放行不留痕），实际多出 ${String(permAfterFileTurn - permBeforeFileTurn)} 条权限事件`,
+    );
   }
   if (!types.includes('checkpoint.created')) {
     fail('覆盖 README 之前没有还原点 —— ADR-0003 的"无条件还原点"没落地');
@@ -347,8 +338,14 @@ try {
   if (new Set(dodRules).size !== 1) {
     fail(`四种写法判定不一致：${JSON.stringify(dodRules)}`);
   }
-  if (dodAsked.length !== 0) {
-    fail(`四种写法一个确认框都不该弹（判完全部主张才问人），实际弹了 ${String(dodAsked.length)} 次`);
+  // 每种写法恰好一条 request：拒绝的审计记录，不是确认框
+  for (const [i, [label]] of writings.entries()) {
+    if (dodRequests[i] !== 1) {
+      fail(`写法「${label}」应恰好留一条拒绝审计，实际 ${String(dodRequests[i])} 条`);
+    }
+  }
+  if (seen.some((e) => e.type === 'permission.decision' && e.payload.by !== 'policy')) {
+    fail('事件流里出现了 by !== policy 的权限决定 —— 已经没有人能做这个决定了');
   }
   if (!shellRan) {
     fail('普通命令没跑起来 —— 全拦下不叫防住了，叫不能用了');
@@ -375,7 +372,7 @@ try {
     console.log(
       `✓ headless 冒烟通过：${String(types.length)} 条持久事件、` +
         `${String(seen.length)} 条总线事件，回放状态一致；` +
-        `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，审批只问一次）；` +
+        `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，零权限事件）；` +
         `rm -rf ~ 的四种写法全部由同一条红线拦下，普通命令照常跑；` +
         `多模态图片贯穿 组装→runTurn→事件落库→blob 落盘 跑通`,
     );

@@ -161,10 +161,60 @@ export function NoticeBanner(): ReactNode {
   );
 }
 
-export const ORPHAN_KIND_LABEL: Record<'message' | 'tool' | 'permission' | 'none', string> = {
+/**
+ * 本会话读过外部内容（网页 / 终端回显 / 截屏），因此进入了不可信上下文（ADR-0019）。
+ *
+ * ── 为什么这个横幅必须存在（ADR-0039 之后它是唯一的人类介入点）──
+ *
+ * 不可信上下文会拦掉三类"后果留在本会话之外"的操作（推远端 / 装依赖 / 改系统设置，
+ * 见 `kernel/policy/defaults.ts` 的 `UNTRUSTED_CONTEXT_RULES`）与三条红线
+ * （读密钥 / 操作 GUI / 装插件）。审批卡片删掉之后，被拦的用户在应用里只剩两条出路：
+ * 手改 `config.json`，或者点这个按钮。**没有这个按钮，"被拦"就等于"卡住"。**
+ *
+ * `clearUntrusted` 这条 IPC 从 ADR-0019 起就是通的，但渲染层一直没有入口——
+ * 本项目"规则存在 ≠ 规则生效"的另一种形状：出路存在，用户按不到。
+ *
+ * ── 文案必须如实说出解除会放开什么 ──
+ *
+ * 解除放倒的是**整轮**防线，不是"只允许这一个目标"（后者需要一次事中授权，
+ * 而那正是被删掉的东西）。让用户以为自己只开了一条缝，比不给他这个按钮更糟。
+ */
+export function UntrustedBanner(): ReactNode {
+  const session = useUi((s) => s.session);
+  const clearUntrusted = useUi((s) => s.clearUntrusted);
+  const ctx = session?.untrustedContext;
+  if (ctx === undefined) return null;
+
+  return (
+    <div className="rounded-card border border-border bg-surface-2 px-4 py-3 text-meta">
+      <p className="font-medium">这个会话读过外部内容</p>
+      <p className="mt-1 text-muted">
+        来自工具 <span className="font-mono text-micro">{ctx.toolName}</span>（
+        {ctx.viaCapability}）。外部内容可能包含指使小明做别的事的文字，所以在解除之前，
+        <b>推送到远端、安装依赖、修改系统设置</b>会被拒绝，读取密钥、操作鼠标键盘、
+        安装插件是红线（解除也不放开）。其余操作照常。
+      </p>
+      <p className="mt-1 text-muted">
+        解除会放开上面那三类——<b>范围是整个会话，不是某一个目标</b>。确认这些外部内容
+        没有问题再点。
+      </p>
+      <Button
+        size="sm"
+        variant="secondary"
+        className="mt-3"
+        onClick={() => {
+          void clearUntrusted();
+        }}
+      >
+        我看过了，解除标记
+      </Button>
+    </div>
+  );
+}
+
+export const ORPHAN_KIND_LABEL: Record<'message' | 'tool' | 'none', string> = {
   message: '模型正在生成回复',
   tool: '有工具调用没跑完',
-  permission: '正等着你批一个权限',
   none: '停在了一次往返之间',
 };
 

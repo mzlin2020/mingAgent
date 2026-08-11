@@ -32,85 +32,32 @@ export type Capability = z.infer<typeof Capability>;
 
 export const ALL_CAPABILITIES: readonly Capability[] = Capability.options;
 
-/**
- * 不可撤销的能力子集。
+/*
+ * ── 这里曾经有两张表：`IRREVERSIBLE_CAPABILITIES` 与 `CRITICAL_UNDER_UNTRUSTED` ──
  *
- * 提示词注入的权限降级（ADR-0003）**只**作用于这些能力：数据一旦发出去、文件一旦删掉、
- * 提交一旦推上去，还原点救不回来。对其余能力做全局收紧会误触发到被用户关掉，
- * 等于这道防御不存在。
+ * 两张都只为**注入降级**（`kernel/policy/untrusted-downgrade.ts`）服务，而注入降级的
+ * 全部输出是"把 allow 改成 ask、把 ask 改成 deny"。ADR-0039 把 `ask` 整个从判定结果里
+ * 去掉之后，这套"降一档再问一次"的机制没有了落点：能表达的只有 allow 与 deny。
+ *
+ * 它们要保护的东西**没有丢**，而是换成了声明式的规则——「后果留在本会话之外」那条判据
+ * （ADR-0035 论证过的 `git.push` / `package.install` / `system.settings`）现在写成
+ * `policy/defaults.ts` 里三条 `match: { trustLevel: ['untrusted'] }` 的 deny，
+ * 与早就存在的 `red.*-untrusted` 红线同一个形状。
+ *
+ * **一条规则只在一个地方表达**：判据留在规则表里，不再额外维护一份能力清单。
  */
-export const IRREVERSIBLE_CAPABILITIES: readonly Capability[] = [
-  'fs.delete',
-  'net.fetch',
-  'net.listen',
-  'git.push',
-  'gui.input',
-  'package.install',
-  'system.settings',
-  'plugin.install',
-  /*
-   * `shell.exec` 不在这张表里，因为它的内容会被 `analyzeArgv`（ADR-0026）拆成更细的
-   * claim（`fs.delete`/`net.fetch`/…），真正不可逆的部分由那些 claim 自己标记。
-   * `shell.session`（ADR-0031）刻意**不**做这种拆解——打开会话时的粗粒度 ask 是唯一
-   * 判断点，write/resize/close 声明空能力集，此后完全不再判权。如果不把它算进这张表，
-   * 提示词注入降级（ADR-0003/0017）在 PTY 这条路径上就形同虚设：会话被读入过不可信
-   * 内容后，"打开一个能做任何事的终端"这个操作反而不会被降级。
-   */
-  'shell.session',
-];
-
-export const isIrreversible = (c: Capability): boolean => IRREVERSIBLE_CAPABILITIES.includes(c);
-
-/**
- * 不可信上下文下的**严重项** —— 注入降级里"哪怕用户已经说了别问我，也还是要问"的那一小撮
- * （ADR-0035）。
- *
- * ── 这张表存在的理由 ──
- *
- * 注入降级排在 `evaluate()` 的最后一步，在 YOLO 之后。后果是用户开了「帮我批准」/
- * 「完全访问权限」，第一次 `web.fetch` 把会话污染掉之后，**每一个新域名仍然弹一个框**——
- * 一次新闻搜索就是十几次"允许"。这是用户第三次报同一个形状的反馈，
- * 而这种噪音不换来安全：它只训练人闭着眼点允许（`turn.ts` 自己写着这句话）。
- *
- * 修法不是把整道防御关掉，而是承认"别问我"这个开关对**绝大多数**不可撤销操作是
- * 一次有效的预先回答，只对那些"一旦发生就跨出本机、超出本会话"的少数几件事保留提问。
- *
- * ── 为什么恰好是这三个，不多也不少 ──
- *
- * 少了不行：这三件事的共同点是**后果留在本会话之外**——推上去的提交撤不回、
- * 装上的包会一直执行、改掉的系统设置关掉小明也还在。一个网页说服模型做了它们，
- * 用户回过神来时已经没有现场可以恢复。
- *
- * 多了也不行：`IRREVERSIBLE_CAPABILITIES` 里的其余成员分两类，都不该进来——
- *
- *   · `net.fetch` / `fs.delete` / `shell.session` / `net.listen`
- *     正是用户开 YOLO 时明确表示"这一段时间别问我"的日常操作。把它们留在表里，
- *     等于这个开关照旧不生效，也就是这张表要解决的那个问题原样还在。
- *   · `gui.input` / `plugin.install`（以及不在不可撤销表里的 `secrets.read`）
- *     在不可信上下文下**已经是红线硬拒绝**（`red.*-untrusted`，见 policy/defaults.ts），
- *     红线在第 1 步就定案，根本走不到注入降级那一步。把它们写进来只会造成
- *     "这里也管着"的错觉，而两处表达同一条规则迟早会分叉。
- *
- * 同一张表还有第二个用法：`ask → deny` 那一半（ADR-0017）**只对这三项保留**。
- * 其余能力在默认档下从硬 `deny` 放宽成一个指名污染源的高警示 `ask`，
- * 好让用户能当场只授权一个域名，而不是被迫去解除整轮的不可信标记那个大得多的锤子。
- */
-export const CRITICAL_UNDER_UNTRUSTED: readonly Capability[] = [
-  'git.push',
-  'package.install',
-  'system.settings',
-];
-
-export const isCriticalUnderUntrusted = (c: Capability): boolean =>
-  CRITICAL_UNDER_UNTRUSTED.includes(c);
 
 /**
  * **把外部内容带进上下文**的能力子集 —— 提示词注入的入口。
  *
  * 这个子集存在的理由，是 M0-b 复审时实测出来的一个洞：`PermissionRequest.trustLevel`
  * 在整个代码库里只被硬编码成过 `'model'`，没有任何一条路径会产出 `'untrusted'`。
- * 于是三条 `red.*-untrusted` 红线与整套注入降级（allow→ask、ask→deny）**一次也不会触发**。
+ * 于是所有 `match: { trustLevel: ['untrusted'] }` 的规则（当时是三条 `red.*-untrusted`
+ * 红线，ADR-0039 之后又多了三条污染上下文 deny）**一次也不会触发**。
  * 判定逻辑是对的、测试是绿的、防御是不存在的——本项目第七次「规则存在 ≠ 规则生效」。
+ *
+ * 这个子集因此比它看上去重要得多：**它是整条不可信链路唯一的起点。**
+ * 它算不出 `'untrusted'`，下游六条规则就全是死规则。
  *
  * 修法的关键是**别让人去记**。`trustLevel` 不该由调用方填，而应该从事件流里**算**出来：
  * 一旦本会话执行过带这些能力的工具，上下文里就有了外部内容，此后一律按不可信处理

@@ -340,15 +340,16 @@ async function resolveHost(
     const ipUrl = `${scheme}://${ipLiteral}${port === undefined ? '' : `:${port}`}/`;
 
     for (const capability of hostCapabilities) {
-      claims.push({ capability, target: raw }); // claim A：可读域名，命中默认 ask
+      claims.push({ capability, target: raw }); // claim A：可读域名，命中按域名写的规则
       /*
-       * claim B：解析出的 IP，命中 IP 段 deny。
+       * claim B：解析出的 IP，命中 IP 段 deny（ADR-0028）。判定与建连必须看同一个
+       * 地址，否则中间那段就是 DNS 重绑定的窗口。
        *
-       * `checkOnly` 是必需的，不是优化（ADR-0036）：不标的话它也匹配 `def.net-fetch`
-       * 的 ask，于是每次 `web.fetch` 弹两个框——一个域名，一个用户无从判断的裸 IP。
-       * 这条主张的用途从来只是"让 SSRF 规则有东西可匹配"，不是征求同意。
+       * 这条主张过去要标 `checkOnly`（ADR-0036），因为它也命中 `def.net-fetch` 的 ask，
+       * 于是每次联网弹两个框——一个域名，一个用户无从判断的裸 IP。ADR-0039 删掉 ask
+       * 之后两条主张的待遇本来就一样了（都只查 deny），标记随之删除。
        */
-      claims.push({ capability, target: ipUrl, checkOnly: true });
+      claims.push({ capability, target: ipUrl });
     }
   }
 

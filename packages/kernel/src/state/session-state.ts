@@ -7,9 +7,7 @@ import type {
   ConfigPatch,
   Message,
   MessageId,
-  PermissionRequest,
   PtySessionId,
-  RequestId,
   SessionId,
   Todo,
   TurnId,
@@ -38,17 +36,6 @@ export interface SessionState {
 
   readonly activeTurn: { readonly turnId: TurnId; readonly startedAt: number } | undefined;
   readonly activeMessage: ActiveMessage | undefined;
-  readonly pendingPermission: PermissionRequest | undefined;
-
-  /**
-   * 用户在本会话里给出的、**范围超过单次**的授权（scope = session / always）。
-   *
-   * 之前 `permission.decision` 事件只用来清空 `pendingPermission`，决定本身不落进状态——
-   * 于是"回放事件流得到的状态"和"当时真实的状态"不一致：一个授权过 `shell.exec` 的会话，
-   * 回放出来看不出授权过。这在事件溯源系统里是个硬伤：状态必须完全由事件决定，
-   * 而**安全决定恰恰是最不该丢的那部分**（审计要查、崩溃恢复要续、评测回放要复现）。
-   */
-  readonly grants: readonly PermissionGrant[];
 
   /**
    * 本会话的上下文是否已被外部内容污染，以及是被什么污染的。
@@ -84,31 +71,27 @@ export interface SessionState {
   readonly lastSeq: number;
 }
 
-export type SessionStatus = 'idle' | 'running' | 'waiting_permission' | 'error';
-
 /**
- * 一条超出单次范围的权限决定。
+ * 会话状态机。
  *
- * 刻意保留 `effect: 'deny'`：用户点"本会话都拒绝"和点"本会话都允许"一样是决定，
- * 只记允许不记拒绝，回放出来的状态就是偏松的那一侧。
+ * 这里曾经有第四个取值 `'waiting_permission'`（会话挂在一个待批的权限请求上）。
+ * ADR-0039 之后判定不会挂起——`evaluate()` 要么放行要么拒绝，拒绝立刻变成一条
+ * 工具错误——于是没有任何事件能把会话推到那个状态。
  */
-export interface PermissionGrant {
-  readonly requestId: RequestId;
-  readonly capability: Capability;
-  /** 授权针对的目标（路径 / host / 命令行），取自对应的 permission.request */
-  readonly target: string;
-  readonly effect: 'allow' | 'deny';
-  readonly scope: 'session' | 'always';
-  readonly ts: number;
-  /**
-   * 做出这个决定时正在判的那次工具调用（取自对应的 `permission.request`）。
-   *
-   * 用途只有一个：判断这条授权批准的是不是**造成本会话污染的那次调用**——
-   * 是的话它就算知情授权，不该再被注入降级打回（`isInformedGrant` 条件 ④，ADR-0035）。
-   * 缺省是可以的：老事件流回放出来没有它，退化成只看 `ts`，也就是 ADR-0034 的行为。
-   */
-  readonly callId?: CallId;
-}
+export type SessionStatus = 'idle' | 'running' | 'error';
+
+/*
+ * ── 这里曾经有 `pendingPermission` 与 `grants` / `PermissionGrant` ──
+ *
+ * 前者是"当前挂着的那个确认框"（由 `permission.request` 事件写入、`permission.decision`
+ * 清空），后者是用户点过的"本会话都允许"/"永久允许"，由 `grantsToRules()` 读回去当
+ * `session` 规则层。ADR-0039 删掉审批之后两者都没有了写入源。
+ *
+ * 两个 `permission.*` 事件本身**保留**：deny 仍然成对记录（`by: 'policy'`），
+ * 它是"为什么这次被拦"的审计依据，也是老会话仍然能回放的前提（ADR-0008）。
+ * 区别只是 `reduce()` 不再从它们派生状态——**审计记录与会话状态是两件事**，
+ * 以前混在一起是因为要驱动那张卡片。
+ */
 
 /** 上下文被外部内容污染的出处。留够信息让 UI 能说清"因为哪一次调用" */
 export interface UntrustedContext {
@@ -207,8 +190,6 @@ export const emptySessionState = (id: SessionId): SessionState => ({
   messages: [],
   activeTurn: undefined,
   activeMessage: undefined,
-  pendingPermission: undefined,
-  grants: [],
   untrustedContext: undefined,
   todos: [],
   runningCalls: new Map(),

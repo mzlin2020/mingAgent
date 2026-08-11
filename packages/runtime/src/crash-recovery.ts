@@ -70,11 +70,16 @@ async function synthesizeDangling(runtime: SessionRuntime, turnId: OrphanedTurn[
 
 /**
  * 按 `orphan.kind` 补发缺失的收尾事件，让会话回到"每个 tool_use 都有 tool_result、
- * 没有悬空 pendingPermission/activeMessage"的合法状态——`turn.end` 不清这两个字段
+ * 没有悬空 activeMessage"的合法状态——`turn.end` 不清 `activeMessage`
  * （见 orphan.ts 顶部注释），不先补发就直接写 `turn.end` 会让此后任何一轮的
- * `messages`/`pendingPermission` 都是畸形的。
+ * `messages` 都是畸形的。
  *
  * `'none'` 什么都不用做：崩在了迭代边界上，状态本来就合法。
+ *
+ * 这里曾经还有一个 `'permission'` 分支：进程死在一个待批的审批上，恢复时补一条
+ * `effect: 'deny'` 的 decision（**中断按拒绝处理**）再给那次调用补 `tool_result`。
+ * ADR-0039 之后判定不会挂起，那种孤儿在结构上不可能产生，分支随 `OrphanedTurn`
+ * 的那个变体一起删除。
  */
 export async function synthesizeInterruption(runtime: SessionRuntime, orphan: OrphanedTurn): Promise<void> {
   switch (orphan.kind) {
@@ -88,25 +93,6 @@ export async function synthesizeInterruption(runtime: SessionRuntime, orphan: Or
 
     case 'tool':
       for (const call of orphan.calls) await synthesizeRunningCall(runtime, orphan.turnId, call);
-      for (const call of orphan.danglingToolUses) await synthesizeDangling(runtime, orphan.turnId, call);
-      return;
-
-    case 'permission':
-      await runtime.record({
-        type: 'permission.decision',
-        turnId: orphan.turnId,
-        payload: { requestId: orphan.requestId, effect: 'deny', scope: 'once', by: 'policy' },
-      });
-      // 这次调用等到权限审批的时候进程就死了，从没到 tool.start——但它的 tool_use
-      // 块已经在上一条 assistant 消息里，同样需要一个 tool_result
-      if (orphan.callId !== undefined) {
-        await synthesizeToolEnd(
-          runtime,
-          orphan.turnId,
-          orphan.callId,
-          '这次调用在等待权限审批时，进程意外退出，因此按拒绝处理（崩溃恢复补发）。',
-        );
-      }
       for (const call of orphan.danglingToolUses) await synthesizeDangling(runtime, orphan.turnId, call);
       return;
 

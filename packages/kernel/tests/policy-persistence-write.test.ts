@@ -30,15 +30,10 @@ const ask = (capability: Capability, target: string): PermissionRequest => ({
   trustLevel: 'model',
 });
 
-const judge = (
-  capability: Capability,
-  target: string,
-  options: { user?: PolicyRuleSet; yolo?: boolean } = {},
-) =>
+const judge = (capability: Capability, target: string, options: { user?: PolicyRuleSet } = {}) =>
   evaluate({
     request: ask(capability, target),
     layers: composeRules({ env: ENV, ...(options.user === undefined ? {} : { user: options.user }) }),
-    tier: options.yolo === true ? 'yolo' : 'balanced',
   });
 
 describe('🔴 开机 / 开终端就会执行的那批', () => {
@@ -88,7 +83,6 @@ describe('层序里的位置', () => {
     const v = evaluate({
       request: ask('fs.write', `${HOME}/.bashrc`),
       layers: builtinLayers(ENV),
-      tier: 'balanced',
     });
     expect(v.effect).toBe('deny');
     expect(v.ruleId).toBe('def.no-write-bashrc');
@@ -111,8 +105,10 @@ describe('层序里的位置', () => {
     expect(judge('fs.write', `${HOME}/.ssh/authorized_keys`, { user }).effect).toBe('deny');
   });
 
-  it('🔴 YOLO 跳不过它', () => {
-    expect(judge('fs.write', `${HOME}/.ssh/authorized_keys`, { yolo: true }).effect).toBe('deny');
+  /* 同 policy-sensitive-read：档位没了，但"兜底放行不会放开一条 deny"这条要留着 */
+  it('🔴 兜底放行跳不过它', () => {
+    expect(judge('fs.write', `${HOME}/.ssh/authorized_keys`).effect).toBe('deny');
+    expect(judge('fs.write', `${HOME}/notes.md`).effect).toBe('allow');
   });
 
   it('不是红线：可覆盖', () => {

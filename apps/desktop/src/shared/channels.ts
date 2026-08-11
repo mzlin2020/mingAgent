@@ -30,19 +30,6 @@ export const CH = {
   /** 停止本会话正在跑的这一轮。ADR-0021 遗留的那个"没人发 message.interrupted"由它闭合 */
   interrupt: 'xm:interrupt',
   /**
-   * 应答一次权限审批（本次 / 本会话 / 永久 / 拒绝）。
-   *
-   * 与 `clearUntrusted` 同一条纪律：载荷里**没有**"谁答的"字段。
-   * 应答者永远是人，这条 IPC 的到达本身就是全部含义。
-   */
-  respondPermission: 'xm:respond-permission',
-  /**
-   * 读取/切换本会话的审批模式（请求批准 / 帮我批准 / 完全访问权限，docs/09 C6）。
-   * 会话级、不持久化——重启应用后所有会话回到默认的"请求批准"。
-   */
-  getApprovalMode: 'xm:get-approval-mode',
-  setApprovalMode: 'xm:set-approval-mode',
-  /**
    * 选一个工作目录。**路径由主进程的原生对话框产生**，不是渲染层拼一个字符串送上来——
    * 后者不算提权（判定用的是绝对路径、红线照样生效），但"这个目录是用户自己选的"
    * 这件事只有原生对话框能保证。

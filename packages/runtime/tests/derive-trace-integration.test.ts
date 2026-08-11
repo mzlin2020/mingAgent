@@ -79,11 +79,9 @@ describe('deriveTraces 反映一次真实 runTurn 的执行路径', () => {
         provider,
         tools,
         layers,
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: pureGateway(demoTargetOf),
         pathCaseInsensitive: platform.os === 'windows',
-        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       textInput('跑一下 echo'),
     );

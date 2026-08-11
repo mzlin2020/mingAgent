@@ -65,7 +65,13 @@ export interface TraceOutcome {
 export interface TraceFeedback {
   /** 本 turn 内是否出现过至少一条 `message.interrupted` */
   readonly interrupted: boolean;
-  /** 本 turn 内 `permission.decision` 里 `effect === 'deny'` 的次数 */
+  /**
+   * 本 turn 内 `permission.decision` 里 `effect === 'deny'` 的次数。
+   *
+   * ADR-0039 之前这个数字混着两种事：用户点了"拒绝"，与判定直接 deny。
+   * 现在只剩后一种（`by` 恒为 `'policy'`）——**它是"小明撞了几次拒绝清单"的计数**，
+   * 也是自我迭代时最值得看的一个信号：某条规则天天被撞，要么该改规则，要么该改行为。
+   */
   readonly rejectedPermissions: number;
 }
 

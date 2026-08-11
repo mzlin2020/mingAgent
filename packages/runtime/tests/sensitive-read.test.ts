@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PermissionRequest, PersistedEvent, PolicyRuleSet } from '@xm/contracts';
+import type { PersistedEvent, PolicyRuleSet } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
@@ -55,24 +55,15 @@ async function harness(userRules: PolicyRuleSet = []) {
   const tools = new ToolRegistry();
   for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
-  const asked: PermissionRequest[] = [];
-
   const read = async (path: string): Promise<PersistedEvent[]> => {
     await runTurn(
       {
         runtime,
         tools,
         layers: composeRules({ env: ENV, user: userRules }),
-        tier: 'balanced' as const,
         model: 'scripted-1',
         gateway: nodeToolGateway(),
         provider: new ScriptedProvider({ turns: [call('fs.read', { path }), END] as never }),
-        // 有人应答，而且永远点"允许" —— 于是任何一次放行都必须是 deny 没拦住，
-        // 不能是"这个用例恰好没人点允许"
-        decide: (request: PermissionRequest) => {
-          asked.push(request);
-          return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
-        },
       },
       textInput('读一下'),
     );
@@ -81,7 +72,7 @@ async function harness(userRules: PolicyRuleSet = []) {
     return out;
   };
 
-  return { read, asked };
+  return { read };
 }
 
 const ended = (all: PersistedEvent[]) =>
@@ -117,8 +108,8 @@ describe('🔴 私钥读不出来', () => {
     expect(decisions(all)[0]?.ruleId).toMatch(/^def\.no-read-/);
     expect(ended(all)[0]?.ok).toBe(false);
     expect(leaked(all)).toBe(false);
-    // deny 不是一个可以点"允许"的确认框 —— 用户根本没被问
-    expect(h.asked).toHaveLength(0);
+    // 拒绝是判定当场做出的，不经过任何人（ADR-0039 之后 `by` 恒为 policy）
+    expect(decisions(all)[0]?.by).toBe('policy');
   });
 
   /**
@@ -152,13 +143,11 @@ describe('🔴 私钥读不出来', () => {
         runtime,
         tools,
         layers: composeRules({ env: ENV }),
-        tier: 'balanced' as const,
         model: 'scripted-1',
         gateway: nodeToolGateway(),
         provider: new ScriptedProvider({
           turns: [call('fs.list', { path: join(dir, '.ssh') }), END] as never,
         }),
-        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       textInput('看看这个目录'),
     );

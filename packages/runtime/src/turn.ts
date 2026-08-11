@@ -6,8 +6,6 @@ import type {
   MessageId,
   ModelRequest,
   PermissionRequest,
-  PermissionTier,
-  PolicyRule,
   PolicyVerdict,
   PriceTable,
   ResultBlock,
@@ -33,7 +31,6 @@ import {
   claimsOfCapabilities,
   costOf,
   evaluate,
-  grantsToRules,
   lookupPrice,
   truncateResult,
 } from '@xm/kernel';
@@ -61,31 +58,17 @@ export interface TurnDeps {
   readonly provider: ModelProvider;
   readonly tools: ToolRegistry;
   /**
-   * 规则层。顺序即优先级，后面的层胜（engine.ts）。
+   * 规则层。顺序即优先级，后面的层胜（engine.ts）：内置 → 用户级 → 项目级。
    *
-   * **本会话的授权不在这里**——它每次判定前由 `grantsToRules(state.grants)` 现算并
-   * 追加成最后一层。授权是随对话增长的，放进这份静态配置里就意味着某处要维护
-   * 一份会和事件流分叉的副本。
+   * ADR-0039 之前这里还会在判定前追加一层"本会话的授权"（`grantsToRules(state.grants)`
+   * 现算）。审批删掉之后没有会话层了，这份配置就是判定看到的全部规则——
+   * 它现在是静态的，装配一次即可。
    */
   readonly layers: readonly RuleLayer[];
-  readonly tier: PermissionTier;
   readonly model: string;
   readonly signal?: AbortLike;
   /** Windows 必须为 true，否则改个大小写就绕过红线（见 PolicyEngine 注释） */
   readonly pathCaseInsensitive?: boolean;
-  /**
-   * `ask` 的应答者。headless 下由调用方注入（冒烟里是一个固定答案的函数），
-   * 桌面端是审批 UI。**不提供默认值**：默认放行等于没有闸门，默认拒绝会让人以为闸门坏了。
-   */
-  readonly decide?: (request: PermissionRequest) => Promise<PermissionAnswer>;
-  /**
-   * 把 `scope: 'always'` 的授权写进用户级配置。
-   *
-   * **不提供也照样能用**：那时"永久"退化成"本会话"，并落一条 notice 说清楚。
-   * 退化必须是用户看得见的——点了"永久允许"，重启后又被问一遍，
-   * 而没有任何地方解释为什么，是最败坏信任的那种行为。
-   */
-  readonly persistGrant?: (rule: PolicyRule) => Promise<void>;
   /**
    * 能力网关：把已校验的入参解析成"判定与执行共用的那一个值"（ADR-0024）。
    *
@@ -112,17 +95,14 @@ export interface TurnDeps {
   readonly maxIterations?: number;
 }
 
-/**
- * 用户对一次 `ask` 的答复。
+/*
+ * ── 这里曾经有 `PermissionAnswer`（用户对一次 ask 的答复：effect × scope）──
  *
- * `scope` 与 `effect` 是**两个独立的问题**——"这次允不允许"和"下次还问不问"。
- * 合并成一个五取一的枚举（allow-once / allow-session / …）看起来更省事，
- * 但那样"本会话都拒绝"就很容易被漏掉，而它和"本会话都允许"一样是用户的决定。
+ * 连同 `TurnDeps.decide`（应答者）与 `TurnDeps.persistGrant`（把"永久允许"写回配置）
+ * 一起删除（ADR-0039）。**注入一个应答者曾经是"这个闸门有没有出口"的开关**：
+ * 不注入等于全部拒绝，注入一个恒 allow 的函数等于全部放行——headless 冒烟一直用的
+ * 就是后者。现在没有出口这个概念了：判定的两个答案各自直接落地，不经过任何回调。
  */
-export interface PermissionAnswer {
-  readonly effect: 'allow' | 'deny';
-  readonly scope: 'once' | 'session' | 'always';
-}
 
 interface PendingCall {
   readonly callId: CallId;
@@ -497,33 +477,14 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
   const trustLevel = deps.runtime.state.untrustedContext === undefined ? 'model' : 'untrusted';
 
   /*
-   * 污染发生的时刻，和 `trustLevel` 出自同一个 `untrustedContext`——**必须同源**。
+   * `trustLevel` 是判定需要从 `untrustedContext` 里知道的**全部**信息。
    *
-   * `evaluate()` 拿它区分"用户看着不可信横幅、针对这个目标点的允许"与"污染之前
-   * 顺手点的一次允许"，只有前者能穿透注入降级（ADR-0034）。两个字段要是从两处取，
-   * 就又是 ADR-0012 ① 那个形状：判定用的事实和请求里的事实来自两个坐标系。
+   * 这里曾经还取两个字段传给 `evaluate()`：`untrustedSince` 与 `untrustedCallId`，
+   * 用来判断一条会话授权是不是"用户看着不可信横幅、针对这个目标当场点的"
+   * （ADR-0034/0035 的知情授权）。没有会话授权之后它们没有了消费者——
+   * 污染的时刻与出处仍然留在 `SessionState.untrustedContext` 里给 UI 说人话用，
+   * 只是不再参与判定。
    */
-  const untrustedSince = deps.runtime.state.untrustedContext?.since;
-  /*
-   * 同一个 `untrustedContext`，第三个字段。`evaluate()` 拿它补上 `untrustedSince`
-   * 的一条缝：批准了污染本身的那次授权，时间戳早于污染时刻（污点标在 `tool.start`，
-   * 授权记在更早的 `permission.decision`）——不给它 callId，用户刚点过"本会话都允许"
-   * 的第一个域名下一次还会再被问一遍（ADR-0035 条件 ④）。
-   */
-  const untrustedCallId = deps.runtime.state.untrustedContext?.callId;
-
-  /*
-   * 本会话的授权是**最后一层**，而且每次判定都现算。
-   *
-   * `SessionState.grants` 由 `reduce` 从 `permission.decision` 算出（scope 超过单次的
-   * 才进去）。在这之前它一直没有任何读取端——于是"本会话都允许"这个选项即便实现了，
-   * 下一次调用还是会弹框。这一行是它的读取端，而且它让授权走的仍然是**同一个纯函数**：
-   * 没有第二条"先查一下授权表"的判定路径，也就没有两条路径慢慢分叉的可能。
-   */
-  const layers = [
-    ...deps.layers,
-    { id: 'session' as const, rules: grantsToRules(deps.runtime.state.grants) },
-  ];
 
   /*
    * 权限闸门。**必须在执行之前，且没有旁路。**
@@ -571,94 +532,31 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
   const judge = (request: PermissionRequest): PolicyVerdict =>
     evaluate({
       request,
-      layers,
-      tier: deps.tier,
-      ...(untrustedSince === undefined ? {} : { untrustedSince }),
-      ...(untrustedCallId === undefined ? {} : { untrustedCallId }),
+      layers: deps.layers,
       ...(deps.pathCaseInsensitive === undefined
         ? {}
         : { pathCaseInsensitive: deps.pathCaseInsensitive }),
     });
 
   /*
-   * ── 先把全部主张判完，再问 ──
+   * ── 判完全部主张，任一 deny 即整体拒绝 ──
    *
-   * 边判边问是可达的一种糟糕体验：第 1 条主张弹框、用户点了允许、第 2 条主张 deny。
-   * 用户为一次注定失败的调用做了一次决定——而**审批噪音会直接转化成"下次顺手点允许"**，
-   * 这条理由本文件上面为 `parseInput` 的顺序已经写过一遍，这里是它的第二个实例。
+   * ADR-0039 之前这里是两个循环：先把全部主张判一遍，再回头逐条去问用户。
+   * 分成两趟是为了避免"第 1 条弹框、用户点了允许、第 2 条 deny"这种为一次注定失败的
+   * 调用做决定的体验，而且第二趟里 request 事件必须紧挨着自己的 decision 发出，
+   * 否则 `pendingPermission` 那个单槽位会被下一条 request 顶掉，用户点了没反应。
    *
-   * 但"判完"只到 policy 层的裁决为止——**不**包括发 `permission.request` 事件。
-   * 这条事件是 `SessionState.pendingPermission`（单槽位，见 reduce.ts）唯一的写入源，
-   * 一条调用若有两条 ask 主张，在这里连着发两条 request 会让 pendingPermission
-   * 直接跳到第二条；而下面第二个循环里 `decide()` 还在等第一条的应答，
-   * UI 卡片却已经换成了第二条的 requestId——用户点"允许"，
-   * respondPermission 用第二条的 id 去找 waiter，主进程的 pending Map 里
-   * 挂的是第一条，找不到人接，返回 accepted:false，卡片纹丝不动。
-   * 这就是"点了没反应"的完整机制。
+   * 现在只剩一趟：没有人要问，deny 直接结束这次调用。
    *
-   * 修法：request 事件只在真正要去问（即将调用 decide()）的那一刻发出，
-   * 紧挨着它自己的 decision——事件流里永远是 request→decision→request→decision，
-   * 不允许出现两条连续的 request。
+   * 每条 deny 仍然成对记下 `permission.request` + `permission.decision`
+   * （`by: 'policy'`）——它不再驱动任何 UI，纯粹是审计：用户问"为什么拦我"，
+   * 答案要能精确到 ruleId。事件流里从此不会出现 `by: 'user'` 的 decision。
    */
-  const pending: PermissionRequest[] = [];
   for (const claim of claims) {
     const request = requestOf(claim);
     const verdict = judge(request);
     if (verdict.effect === 'allow') continue;
 
-    if (verdict.effect === 'deny') {
-      // deny 不需要问人，request/decision 一次性配对发出、立刻结束——中间没有缺口
-      await runtime.record({
-        type: 'permission.request',
-        turnId,
-        payload: {
-          requestId: request.requestId,
-          callId: call.callId,
-          capability: request.capability,
-          target: request.target,
-          risk: request.risk,
-          reason: verdict.reason,
-          trustLevel,
-        },
-      });
-      await runtime.record({
-        type: 'permission.decision',
-        turnId,
-        payload: {
-          requestId: request.requestId,
-          effect: 'deny',
-          scope: 'once',
-          by: 'policy',
-          ruleId: verdict.ruleId,
-        },
-      });
-      await failCall(deps, turnId, call, xmError('policy_denied', verdict.reason));
-      return;
-    }
-
-    /*
-     * `ask` + 只检查的主张 → 视为已满足，不进待问队列（ADR-0036）。
-     *
-     * 走到这里说明没有任何 deny 匹配上它，而这条主张存在的全部意义就是"让 deny 有
-     * 东西可匹配"（网关解析出的 IP，用于 SSRF 判定）。再拿它去问用户，问的是一个
-     * 裸 IP 该不该访问——用户能做的判断全在同一次调用的域名那条主张上，
-     * 这一问只是把每次联网的确认框数量翻倍。**deny 的那一半在上面，一个字没动。**
-     */
-    if (claim.checkOnly === true) continue;
-
-    pending.push(request);
-  }
-
-  for (const request of pending) {
-    /*
-     * 重判一次：上一条主张的授权可能已经把这一条也覆盖了（同一个路径的读与写、
-     * 或者用户点的"本会话允许"）。不重判就会为同一件事问第二遍。
-     */
-    const verdict = judge(request);
-    if (verdict.effect === 'allow') continue;
-
-    // 真的要问人了——这时才发 request 事件，紧挨着下面的 decide()，
-    // 中间不会再插进另一条 request
     await runtime.record({
       type: 'permission.request',
       turnId,
@@ -672,157 +570,40 @@ async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: PendingCall): 
         trustLevel,
       },
     });
-
-    // ask：交给注入的应答者。没有应答者就等同于拒绝——headless 下没人能点"允许"，
-    // 默认放行会把整条闸门变成摆设
-    const answer: PermissionAnswer =
-      deps.decide === undefined
-        ? { effect: 'deny', scope: 'once' }
-        : await decideOrAbort(deps.decide, request, deps.signal ?? NEVER_ABORTS);
-
-    /*
-     * scope 记**用户真正选的那个**，不是恒定的 'once'。
-     *
-     * 这条事件是 `SessionState.grants` 唯一的来源（reduce.ts 只收 scope !== 'once' 的），
-     * 而 grants 又是下一次判定的会话层。写死 'once' 的后果是"本会话都允许"
-     * 点了等于没点——而且是**在事件流里也看不出**用户曾经授权过，回放出的会话比当时更严。
-     */
     await runtime.record({
       type: 'permission.decision',
       turnId,
       payload: {
         requestId: request.requestId,
-        effect: answer.effect,
-        scope: answer.scope,
-        by: 'user',
+        effect: 'deny',
+        scope: 'once',
+        by: 'policy',
+        ruleId: verdict.ruleId,
       },
     });
-
-    if (answer.effect === 'deny') {
-      await failCall(deps, turnId, call, xmError('user_rejected', '用户拒绝了这次操作。'));
-      return;
-    }
-
-    if (answer.scope === 'always') {
-      await persistAlways(deps, turnId, request, answer.effect);
-    }
-
-    /*
-     * 授权立刻生效于**本次调用里剩下的主张**。
-     *
-     * `layers` 是循环开始前算好的——不在这里刷新，用户对第一条主张点了"本会话允许"
-     * 之后，同一次调用里剩下的主张判定用的还是旧的一份。这不影响正确性
-     * （那是另一条主张），但下一次调用会因为 state 已更新而行为不同，
-     * 两次之间不一致最难排查。
-     */
-    if (answer.scope !== 'once') {
-      layers[layers.length - 1] = {
-        id: 'session',
-        rules: grantsToRules(deps.runtime.state.grants),
-      };
-    }
+    await failCall(deps, turnId, call, xmError('policy_denied', verdict.reason));
+    return;
   }
 
   await executeCall(deps, turnId, call, tool, input, ctx, claims);
 }
 
-/**
- * 等用户应答，**同时盯着取消信号**。
+/*
+ * ── 这里曾经有 `decideOrAbort()` 与 `persistAlways()` ──
  *
- * ── 为什么这道保险必须在这里，而不是"应答者自己记得处理" ──
+ * 前者等用户应答、同时盯着取消信号：一个挂起的审批就是一个挂起的 promise，
+ * `AbortController` 唤不醒它，于是"点了停止但界面一直在转"的完整条件是某个应答者
+ * 忘了在中断时兑现。那道保险必须长在这里而不是写成对每个应答者的要求——
+ * 桌面 UI、headless 注入的函数、将来的 CLI、M3 的插件宿主，每一个都记得处理取消
+ * 是一条迟早会被漏掉的约定。
  *
- * 一个挂起的审批就是一个挂起的 promise。`AbortController` 唤不醒它——
- * 于是"点了停止但界面一直在转"这个 bug 的完整条件是：某个应答者忘了在中断时兑现。
- * 而应答者不止一个：桌面 UI、headless 注入的函数、将来的 CLI、M3 的插件宿主。
- * 让每一个都记得处理取消，是一条迟早会被漏掉的约定。
+ * 后者把「永久允许」写回用户级配置，并在写不成时降级成"只在本会话生效"并落一条
+ * notice——**退化必须是用户看得见的**。
  *
- * 这与 M1-b 那道兜底（Provider 没守"取消时正常结束迭代"的约定时，turn.ts 也要判对）
- * 是同一个形状、同一个理由：**能在这里结构性地保证的事，不要写成对调用方的要求。**
- *
- * 中断时算 deny 而不是 allow，理由不必多说。
+ * ADR-0039 之后，"挂起等人"这件事在结构上不存在了，两个函数与它们各自防的那个坑
+ * 一起消失。取消路径因此简单了一截：runTurn 里唯一还会长时间挂着的是模型流与工具执行，
+ * 两者都有自己的 abort 处理。
  */
-function decideOrAbort(
-  decide: (request: PermissionRequest) => Promise<PermissionAnswer>,
-  request: PermissionRequest,
-  signal: AbortLike,
-): Promise<PermissionAnswer> {
-  const denied: PermissionAnswer = { effect: 'deny', scope: 'once' };
-  if (signal.aborted) return Promise.resolve(denied);
-
-  return new Promise<PermissionAnswer>((resolve) => {
-    let settled = false;
-    const finish = (answer: PermissionAnswer): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      resolve(answer);
-    };
-    function onAbort(): void {
-      finish(denied);
-    }
-
-    signal.addEventListener('abort', onAbort);
-    decide(request).then(finish, () => {
-      // 应答者自己抛了：按拒绝处理。"审批出错"绝不能变成"于是就放行了"
-      finish(denied);
-    });
-  });
-}
-
-/**
- * 把「永久允许 / 永久拒绝」写进用户级配置。
- *
- * 三件事按顺序：合成规则 → 交给持久化 → **失败就降级并说出来**。
- *
- * 合成用的是与会话层完全相同的 `grantsToRules`，所以"重启前"和"重启后"的规则
- * 逐字相同。分别写两处的话，两者迟早在 target 转义之类的细节上分叉，
- * 而那种分叉的表现是"永久授权重启后范围变了"——几乎不可能被人发现。
- */
-async function persistAlways(
-  deps: TurnDeps,
-  turnId: TurnId,
-  request: PermissionRequest,
-  effect: 'allow' | 'deny',
-): Promise<void> {
-  const [rule] = grantsToRules([
-    {
-      requestId: request.requestId,
-      capability: request.capability,
-      target: request.target,
-      effect,
-      scope: 'always',
-      ts: Date.now(),
-    },
-  ]);
-
-  const degrade = async (why: string): Promise<void> => {
-    await deps.runtime.record({
-      type: 'notice.posted',
-      turnId,
-      payload: {
-        level: 'warn',
-        code: 'permission.grant_not_persisted',
-        message: `「永久」这次只在本会话生效：${why}`,
-      },
-    });
-  };
-
-  // 命令类能力的授权合成不出来（`grantable`）——那不是错误，是契约还没落地
-  if (rule === undefined) {
-    await degrade(`「${request.capability}」的目标还没有规范化契约，无法写成一条可靠的规则。`);
-    return;
-  }
-  if (deps.persistGrant === undefined) {
-    await degrade('当前形态没有配置文件可写（headless / 测试）。');
-    return;
-  }
-
-  try {
-    await deps.persistGrant(rule);
-  } catch (e) {
-    await degrade(e instanceof Error ? e.message : String(e));
-  }
-}
 
 async function executeCall(
   deps: TurnDeps,

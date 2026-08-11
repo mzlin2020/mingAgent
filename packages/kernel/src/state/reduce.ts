@@ -1,6 +1,6 @@
 import type { ContentBlock, Message, MessageId, XmEvent } from '@xm/contracts';
 import { addUsage, mergeConfig, restrictSessionPatch } from '@xm/contracts';
-import type { PermissionGrant, SessionState } from './session-state.js';
+import type { SessionState } from './session-state.js';
 import { taintOf } from './taint.js';
 
 /**
@@ -166,51 +166,21 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       return { ...state, ptySessions: sessions, lastSeq: e.seq };
     }
 
-    // ── 权限 ────────────────────────────────────────────────
+    /*
+     * ── 权限：只推进 seq，**不派生任何状态**（ADR-0039）──
+     *
+     * 这两条事件现在只在一种情况下出现：判定拒绝了一次调用，成对记下
+     * request + decision（`by: 'policy'`, `effect: 'deny'`）作为审计依据。
+     * 拒绝的后果由紧随其后的 `tool.error` 表达，会话状态不需要为此变化。
+     *
+     * 它们曾经驱动 `status: 'waiting_permission'` + `pendingPermission`（那张确认卡片）
+     * 与 `grants`（"本会话都允许"）。三样东西都随审批一起删了，但**事件保留**：
+     * 老会话的事件流里还有它们，`reduce()` 必须仍然认得（ADR-0008 的向后兼容），
+     * 只是不再从中派生状态——把老事件解释成新状态会得到一个当时并不存在的会话。
+     */
     case 'permission.request':
-      return {
-        ...state,
-        status: 'waiting_permission',
-        pendingPermission: {
-          requestId: e.payload.requestId,
-          sessionId: state.id,
-          capability: e.payload.capability,
-          target: e.payload.target,
-          risk: e.payload.risk,
-          reason: e.payload.reason,
-          trustLevel: e.payload.trustLevel,
-          ...(e.payload.callId === undefined ? {} : { callId: e.payload.callId }),
-          ...(e.payload.preview === undefined ? {} : { preview: e.payload.preview }),
-        },
-        lastSeq: e.seq,
-      };
-
-    case 'permission.decision': {
-      // scope=once 不留痕（它只对当前这一次调用有效）；session/always 必须进状态，
-      // 否则回放出的会话看不出"用户已经授权过"——见 session-state.ts 的 grants 注释。
-      const { scope, requestId, effect } = e.payload;
-      const pending = state.pendingPermission;
-      const grant: PermissionGrant | undefined =
-        scope !== 'once' && pending?.requestId === requestId
-          ? {
-              requestId,
-              capability: pending.capability,
-              target: pending.target,
-              effect,
-              scope,
-              ts: e.ts,
-              // 授权是在哪次调用里做出的（ADR-0035 条件 ④）。请求上没有就不带
-              ...(pending.callId === undefined ? {} : { callId: pending.callId }),
-            }
-          : undefined;
-      return {
-        ...state,
-        status: state.activeTurn === undefined ? 'idle' : 'running',
-        pendingPermission: undefined,
-        grants: grant === undefined ? state.grants : [...state.grants, grant],
-        lastSeq: e.seq,
-      };
-    }
+    case 'permission.decision':
+      return { ...state, lastSeq: e.seq };
 
     /*
      * 用户显式解除不可信标记。

@@ -1,30 +1,40 @@
 import type {
   PermissionRequest,
-  PermissionTier,
   PolicyRule,
+  PolicyRuleSet,
   PolicyVerdict,
-  RiskLevel,
   TargetKind,
 } from '@xm/contracts';
 import { targetKindOf } from '@xm/contracts';
 import { isPrivateOrReservedIp } from './ip-range.js';
 import { normalizeTarget } from './normalize.js';
 import { normalizePathPattern } from './target.js';
-import type { RuleLayer } from './layer.js';
-import type { WinningRule } from './untrusted-downgrade.js';
-import { downgradeIfUntrusted, isInformedGrant } from './untrusted-downgrade.js';
-
-export { INJECTION_DOWNGRADE_RULE_ID, capabilityLabel } from './untrusted-downgrade.js';
 
 export type Executor = 'local' | 'container' | 'remote';
 
-export type { RuleLayer, RuleLayerId } from './layer.js';
+/**
+ * 规则的来源层。**顺序即优先级**，见 `evaluate()` 的求值顺序说明。
+ *
+ * 层名不只是标签：`project` 层被限制为只能收紧（`layers.ts` 的 `tightenOnly`），
+ * 因为那个文件躺在别人写的仓库里。
+ *
+ * 这两个类型曾经单独住在 `layer.ts`，为的是拆开 `engine.ts` 与 `untrusted-downgrade.ts`
+ * 之间一个真实的循环依赖（后者要判断定案规则来自哪一层，只有 `session` 层的授权算
+ * "知情"，ADR-0034）。ADR-0039 删掉注入降级与 `session` 层之后环没有了，
+ * 类型跟着搬回它唯一的使用者身边——一个只为绕开已经不存在的环而存在的文件，
+ * 留着只会让下一个人以为那个环还在。
+ */
+export type RuleLayerId = 'builtin' | 'user' | 'project';
+
+export interface RuleLayer {
+  readonly id: RuleLayerId;
+  readonly rules: PolicyRuleSet;
+}
 
 export interface EvaluateInput {
   readonly request: PermissionRequest;
-  /** 自底向上排列：内置 → 用户级 → 项目级 → 会话授权。**后一层胜** */
+  /** 自底向上排列：内置 → 用户级 → 项目级。**后一层胜** */
   readonly layers: readonly RuleLayer[];
-  readonly tier: PermissionTier;
   readonly executor?: Executor;
   /**
    * 路径匹配是否忽略大小写。**Windows 必须传 true**：那里 `C:/Windows` 与 `c:/windows`
@@ -34,63 +44,45 @@ export interface EvaluateInput {
    * 知道平台的运行时显式告知，而不是内核猜。默认 false = POSIX 语义。
    */
   readonly pathCaseInsensitive?: boolean;
-  /**
-   * 本会话上下文被不可信内容污染的时刻（`SessionState.untrustedContext.since`，epoch ms）。
-   * `undefined` = 尚未污染。
-   *
-   * 只用于一件事：判断一条会话授权是在污染**之前**还是**之后**做出的
-   * （见 `isInformedGrant`）。不传等于"没有任何授权算知情"——**落在保守的那一侧**，
-   * 所以忘了传的后果是多问几次，不是少问几次。
-   */
-  readonly untrustedSince?: number;
-  /**
-   * **造成本会话污染的那次工具调用**（`SessionState.untrustedContext.callId`）。
-   * `undefined` = 尚未污染。
-   *
-   * 与 `untrustedSince` 必须同源取出。它补的是那条时间比较的一个边界：批准了这次污染
-   * 本身的那条授权，时间戳反而早于污染时刻（污点标在 `tool.start`，授权记在更早的
-   * `permission.decision`）。见 `isInformedGrant` 条件 ④（ADR-0035）。
-   *
-   * 同样是不传 = 不算知情，落在保守的那一侧。
-   */
-  readonly untrustedCallId?: string;
 }
 
-export const TIER_FALLBACK_RULE_ID = 'builtin.tier-fallback';
+/** 没有任何规则匹配时的兜底规则 ID。见下方第 3 步。 */
+export const FALLBACK_ALLOW_RULE_ID = 'builtin.no-rule-matched';
 /** 路径目标无法规范化时的合成规则 ID。见下方"失败关闭"。 */
 export const INVALID_TARGET_RULE_ID = 'builtin.invalid-target';
 
 /**
  * 权限判定 —— **纯函数**，无 I/O、无状态、无时间依赖。
  *
- * ── 求值顺序 ──
+ * ── 求值顺序（ADR-0039 之后只有三步）──
  *
  * ```
  * 0  target 规范化，失败关闭
  * 1  全部层里的 immutable deny（红线）—— 任何层都翻不了
- * 2  自最后一层向前，第一个「有匹配」的层定案；层内 deny > ask > allow，同效果后定义者胜
- * 3  没有任何层匹配 → 档位兜底
- * 4  YOLO：把结论里的 ask 变成 allow —— **跳过 ask，跳不过任何 deny**（docs/09 C5）
- * 5  不可信上下文降级，只作用于不可撤销能力；**且感知档位**（ADR-0035）：
- *      · YOLO + 非严重项 → 不降级（否则第 5 步会把第 4 步刚放行的又打回来问）
- *      · 其余情况 allow→ask；ask→deny 只对严重项，非严重项停在高警示 ask
+ * 2  自最后一层向前，第一个「有匹配」的层定案；层内 deny > allow，同效果后定义者胜
+ * 3  没有任何层匹配 → 放行
  * ```
+ *
+ * 这里曾经还有两步，都随"问用户"这件事一起消失了：**档位兜底**（strict/balanced/yolo，
+ * ADR-0003）与**注入降级**（allow→ask / ask→deny，ADR-0003/0017/0034/0035）。
+ * 前者唯一的作用是决定"没有规则匹配时要不要问"，后者的全部输出是"降一档再问一次"——
+ * 判定结果里没有 `ask` 之后，两者都没有落点。
+ *
+ * 注入降级要保护的东西没有丢，改成了 `defaults.ts` 里三条
+ * `match: { trustLevel: ['untrusted'] }` 的 deny（判据仍是 ADR-0035 论证过的
+ * "后果留不留在本会话之外"），与早就存在的 `red.*-untrusted` 红线同一个形状。
+ * **规则表达在规则表里，不在判定函数里** —— 一个后置的、能推翻前面全部结论的
+ * 修正步骤，是本项目在 ADR-0034/0035/0036 上连着栽三次的地方。
  *
  * ── 第 2 步为什么是「分层」而不是「一张拍平的表」──
  *
- * 上一版把所有规则拍成一个数组，优先级是 `deny > ask > allow` 且**与定义顺序无关**。
- * 那条规矩单看很合理（一条写宽了的 allow 不该悄悄把 ask 放松掉），但它有一个
- * 直到 M1-c 接上审批 UI 才暴露出来的后果：
+ * 上一版把所有规则拍成一个数组，优先级与定义顺序无关。那条规矩单看很合理
+ * （一条写宽了的 allow 不该悄悄把内置的收紧放松掉），但后果是**用户在
+ * `config.json` 里写的 allow 对所有值得授权的能力一条都不生效**——只能收紧，
+ * 不能放松，而这件事没有任何地方写着（ADR-0023）。
  *
- *   **任何 allow 都压不过内置的 ask，于是「永久授权」在这个引擎里根本表达不出来。**
- *
- * 内置默认里 `fs.write` / `fs.delete` / `shell.exec` / `git.push` / `net.fetch` …
- * 全是 ask。用户在 `config.json` 里写 `allow fs.write /proj/**`，判定照样 ask——
- * `Config.permission.rules` 的 allow 条目对**所有值得授权的能力**一条都不生效。
- * 用户只能收紧，不能放松，而这件事没有任何地方写着。
- *
- * 现在的语义是：**后一层覆盖前一层；同一层内仍是 deny > ask > allow。**
- * 「一条写宽了的 allow 不该放松同一批规则里的 ask」这个保护留在层内，
+ * 现在的语义是：**后一层覆盖前一层；同一层内 deny 胜 allow。**
+ * 「一条写宽了的 allow 不该放松同一批规则里的收紧」这个保护留在层内，
  * 而「我显式配置的东西应该压过出厂默认」这条常识在层间成立。
  *
  * 红线仍然在分层之前、全局最先判——它是唯一不参与层序的东西，也必须是。
@@ -99,7 +91,7 @@ export const INVALID_TARGET_RULE_ID = 'builtin.invalid-target';
  * 的所有组合跑一遍"变成不可能，而那正是唯一能证明它对的方式。
  */
 export function evaluate(input: EvaluateInput): PolicyVerdict {
-  const { request, layers, tier } = input;
+  const { request, layers } = input;
 
   /*
    * 0) 目标先规范化，**失败关闭**。
@@ -140,103 +132,45 @@ export function evaluate(input: EvaluateInput): PolicyVerdict {
   );
   if (immutableDeny !== undefined) return denyOf(immutableDeny);
 
-  /*
-   * 2) 自最后一层向前：第一个有匹配的层定案，层内 deny > ask > allow
-   *
-   * 顺带记下**是哪一层的哪条规则定的案**（`winner`）。第 5 步要用它区分
-   * "用户当场针对这个目标点的允许"和"配置文件里一条泛化的允许"——两者都是 allow，
-   * 对注入防御的意义却完全相反（见 `isInformedGrant`）。
-   */
-  let verdict: PolicyVerdict | undefined;
-  let winner: WinningRule | undefined;
-  for (let i = matchedPerLayer.length - 1; i >= 0 && verdict === undefined; i--) {
+  // 2) 自最后一层向前：第一个有匹配的层定案，层内 deny 胜 allow
+  for (let i = matchedPerLayer.length - 1; i >= 0; i--) {
     const matched = matchedPerLayer[i] ?? [];
     if (matched.length === 0) continue;
-    const layerId = layers[i]?.id ?? 'builtin';
 
+    // deny 直接定案：没有任何后续步骤能翻它（用户自己写的 deny 同样算数，docs/09 C5）
     const deny = lastWhere(matched, (r) => r.effect === 'deny');
-    // deny 直接定案：YOLO 与后续步骤都越不过它（用户自己写的 deny 同样算数，docs/09 C5）
     if (deny !== undefined) return denyOf(deny);
-
-    const ask = lastWhere(matched, (r) => r.effect === 'ask');
-    if (ask !== undefined) {
-      verdict = { effect: 'ask', ruleId: ask.id, reason: ask.reason, risk: request.risk };
-      winner = { rule: ask, layerId };
-      break;
-    }
 
     const allow = lastWhere(matched, (r) => r.effect === 'allow');
     if (allow !== undefined) {
-      verdict = { effect: 'allow', ruleId: allow.id, reason: allow.reason };
-      winner = { rule: allow, layerId };
+      return { effect: 'allow', ruleId: allow.id, reason: allow.reason };
     }
   }
 
-  // 3) 档位兜底。YOLO 没有自己的兜底档，它借平衡档的结论再走第 4 步
-  verdict ??= tierFallback(tier === 'yolo' ? 'balanced' : tier, request.risk);
-
   /*
-   * 4) YOLO —— **跳过 ask，不跳过 deny**（docs/09 C5 定稿）。
+   * 3) 没有任何规则匹配 → 放行。
    *
-   * 它之前排在普通 deny 之前，效果是 YOLO 把**用户自己写下的 deny 规则**也一并忽略了。
-   * 实测：用户写 `deny fs.delete /home/ming/work/prod/**`，balanced 档 DENY，yolo 档 ALLOW。
+   * 这是 ADR-0039 的核心一步，也是整个改动里唯一真正放宽了的地方，所以把话说清楚：
    *
-   * 那个语义站不住。YOLO 的意思是"别再问我了"，不是"忘掉我说过不许碰的地方"——
-   * 前者省的是确认框，后者删的是用户唯一能表达"这里绝对不行"的手段。
-   * 而且它恰好在最危险的时候失效：用户开 YOLO 正是因为要放手让它长时间自己跑。
+   * 兜底放行**不等于**没有防线。防线是第 1/2 步那张拒绝清单——红线（27 条自改保护、
+   * 删根目录、审计日志、不可信上下文下的密钥读/GUI 操作/装插件）、敏感路径不许读
+   * （ADR-0025）、持久化路径不许写（ADR-0027）、SSRF 网段（ADR-0028）、
+   * 危险命令拆解出的主张（ADR-0026）、以及用户自己写下的任何 deny。
+   * 它们一条都没少，而且因为不再有"用户会顺手点允许"这个出口，实际比原来更硬。
    *
-   * 放在这里而不是更早，是为了让 `ruleId` 仍然指向**那条本来要问的规则**：
-   * 审计里"YOLO 跳过了 def.fs-delete"比"YOLO 默认放行"有用得多。
+   * 兜底选放行而不是拒绝，是因为小明的目标形态是一个基本自主的 agent：
+   * 一个"没写规则就干不了"的兜底，等于把闭集之外的一切都变成待办的规则表维护工作，
+   * 而那份工作没人做得完——最后的结果一定是有人加一条 `allow *`。
+   *
+   * `ruleId` 明确写成"没有规则匹配"，不假装是某条规则的功劳：审计里
+   * "无规则匹配，默认放行"和"命中 def.fs-write 放行"是完全不同的两件事，
+   * 混在一起会让"这条到底是谁放行的"变得查不出来。
    */
-  if (tier === 'yolo' && verdict.effect === 'ask') {
-    verdict = {
-      effect: 'allow',
-      ruleId: verdict.ruleId,
-      reason: `YOLO 档：跳过确认（${verdict.reason}）`,
-    };
-  }
-
-  /*
-   * 5) 注入降级。ask 也要过——默认规则里 git.push / fs.delete / net.fetch 本来就是 ask，
-   *    不在这里过一遍，注入降级就永远碰不到最该拦的那批操作。
-   *
-   * 两个例外，都是为了消掉**零安全价值的重复提问**：
-   *
-   *   · **知情授权**（ADR-0034）：用户在污染之后、针对这个具体目标当场点过的允许
-   *     不再被打回——否则同一个域名会被无限次重复询问，问的是同一个问题。
-   *   · **档位**（ADR-0035）：用户开着「帮我批准」/「完全访问权限」时，非严重项
-   *     不再降级——否则这一步会把第 4 步刚放行的东西整批打回，"别问我"这个开关
-   *     对不可撤销操作**整体失效**，一次联网搜索就是十几个确认框。
-   *
-   * `tier` 原样传下去而不是在这里分支：降级矩阵（档位 × 严重项 × allow/ask）
-   * 是一件事，摊在两个文件里迟早会分叉。
-   */
-  return downgradeIfUntrusted(
-    verdict,
-    request,
-    isInformedGrant(winner, input.untrustedSince, input.untrustedCallId),
-    tier,
-  );
-}
-
-function tierFallback(tier: Exclude<PermissionTier, 'yolo'>, risk: RiskLevel): PolicyVerdict {
-  if (tier === 'strict') {
-    return {
-      effect: 'ask',
-      ruleId: TIER_FALLBACK_RULE_ID,
-      reason: '严格档：没有明确规则的操作一律询问',
-      risk,
-    };
-  }
-  // balanced：只有明确无害的才默认放行（ADR-0003）
-  return risk === 'safe'
-    ? { effect: 'allow', ruleId: TIER_FALLBACK_RULE_ID, reason: '平衡档：无风险操作默认放行' }
-    : {
-        effect: 'ask',
-        ruleId: TIER_FALLBACK_RULE_ID,
-        reason: '平衡档：非无风险操作需要确认',
-        risk,
-      };
+  return {
+    effect: 'allow',
+    ruleId: FALLBACK_ALLOW_RULE_ID,
+    reason: '没有任何规则匹配这个操作，默认放行',
+  };
 }
 
 const denyOf = (r: PolicyRule): PolicyVerdict => ({

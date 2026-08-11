@@ -8,9 +8,7 @@ import {
   ConfigPatch,
   Message,
   MessageId,
-  PermissionRequest,
   PtySessionId,
-  RequestId,
   SessionId,
   Todo,
   TurnId,
@@ -50,15 +48,6 @@ import {
  * （开发时热重载让两侧代码错开的那类问题），所以复合字段用 `z.unknown()`
  * 兜底而不是逐层展开每一种 `ContentBlock`/工具输入——那些已经在事件层校验过一次。
  */
-const PermissionGrantSchema = z.object({
-  requestId: RequestId,
-  capability: Capability,
-  target: z.string(),
-  effect: z.enum(['allow', 'deny']),
-  scope: z.enum(['session', 'always']),
-  ts: z.number(),
-});
-
 const UntrustedContextSchema = z.object({
   callId: CallId,
   toolName: z.string(),
@@ -124,7 +113,7 @@ export const SerializedSessionStateResult = z.object({
   title: z.string(),
   cwd: z.string(),
   modelRef: z.string(),
-  status: z.enum(['idle', 'running', 'waiting_permission', 'error']),
+  status: z.enum(['idle', 'running', 'error']),
   messages: z.array(Message),
   activeTurn: z.object({ turnId: TurnId, startedAt: z.number() }).or(z.undefined()),
   activeMessage: z
@@ -135,8 +124,6 @@ export const SerializedSessionStateResult = z.object({
       startedAt: z.number(),
     })
     .or(z.undefined()),
-  pendingPermission: PermissionRequest.or(z.undefined()),
-  grants: z.array(PermissionGrantSchema),
   untrustedContext: UntrustedContextSchema.or(z.undefined()),
   todos: z.array(Todo),
   runningCalls: z.array(z.tuple([CallId, RunningCallSchema])),

@@ -6,15 +6,12 @@ import {
   AbandonOrphanedSessionRequest,
   ClearUntrustedRequest,
   CreateSessionRequest,
-  GetApprovalModeRequest,
   InterruptRequest,
   ReadBlobRequest,
   ReadSessionRequest,
   ResumeOrphanedSessionRequest,
-  RespondPermissionRequest,
   SendUserMessageRequest,
   SetApiKeyRequest,
-  SetApprovalModeRequest,
 } from '../shared/ipc.js';
 import type { Services } from './services.js';
 
@@ -30,7 +27,7 @@ import type { Services } from './services.js';
  * **二、异常不直接扔过 IPC。** Electron 会把它序列化成一个丢了类型、丢了 code、
  * 只剩字符串的东西，UI 拿它没法给出正确的下一步引导。所以失败也是一个正常返回值
  * （`{ ok: false, code, message }`）——contracts 里区分 policy_denied / user_rejected /
- * permission_denied，就是为了 UI 能说出"改策略 / 重新审批 / 改系统权限"这三句不同的话。
+ * permission_denied，就是为了 UI 能说出"改策略 / 解除不可信标记 / 改系统权限"这三句不同的话。
  */
 export function registerIpc(services: Services, windows: () => BrowserWindow[]): void {
   handle(CH.listSessions, undefined, async () => services.listSessions());
@@ -77,32 +74,6 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   handle(CH.abandonOrphanedSession, AbandonOrphanedSessionRequest, async (req) => ({
     resolved: await services.abandonOrphanedSession(req.sessionId),
   }));
-
-  /*
-   * 审批应答。`requestId` 对不上就返回 accepted:false，**不去猜"用户大概是想答那个"**——
-   * 一次工具调用可能连着问两个能力，猜错就是把"允许读"当成了"允许写"。
-   */
-  handle(CH.respondPermission, RespondPermissionRequest, (req) =>
-    Promise.resolve({
-      accepted: services.respondPermission(req.requestId, {
-        effect: req.effect,
-        scope: req.scope,
-      }),
-    }),
-  );
-
-  /*
-   * 审批模式的读/写（docs/09 C6）。会话级、不持久化——两个 handler 都只转发到
-   * `services.ts` 内存里的那个 Map，跟别的会话态（`pending`、`running`）同一存放方式。
-   */
-  handle(CH.getApprovalMode, GetApprovalModeRequest, (req) =>
-    Promise.resolve({ mode: services.getApprovalMode(req.sessionId) }),
-  );
-
-  handle(CH.setApprovalMode, SetApprovalModeRequest, (req) => {
-    services.setApprovalMode(req.sessionId, req.mode);
-    return Promise.resolve({ mode: req.mode });
-  });
 
   /*
    * 选工作目录。**路径由主进程的原生对话框产生。**

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { PriceTable } from '../model/price.js';
-import { PermissionTier, PolicyRuleSet } from '../permission/policy.js';
+import { PolicyRuleSet } from '../permission/policy.js';
 import { SecretRef } from './secret.js';
 
 /**
@@ -37,8 +37,13 @@ export const Config = z.object({
   /** 见 model/price.ts：默认空表，算不出成本时 UI 显示"未配置价格"而不是 $0.00 */
   prices: PriceTable.default({}),
   permission: z.object({
-    tier: PermissionTier.default('balanced'),
-    /** 用户/项目自定义规则，与内置规则合并后统一求值 */
+    /*
+     * 用户/项目自定义规则。分层覆盖（ADR-0023），不与内置规则合并成一张平表。
+     *
+     * ADR-0039 之后这是**唯一**的用户侧权限入口：`tier` 字段（三档）已删除，
+     * 想放宽或收紧只有写规则一条路。相应地，一条人手写的 `allow` 现在承担了原来
+     * 「本会话都允许」那个按钮的职责——包括盖住污染上下文下那三条非 immutable 的 deny。
+     */
     rules: PolicyRuleSet.default([]),
   }),
   tools: z.object({

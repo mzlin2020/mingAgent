@@ -4,7 +4,6 @@ import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
 import type { LiveBuffer, SerializedSessionState, SessionState } from '@xm/kernel';
 import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kernel';
 import type {
-  ApprovalMode,
   ImageAttachment,
   ListSessionsResult,
   PushedEvent,
@@ -23,7 +22,7 @@ type Status = z.infer<typeof StatusResult>;
  *
  * ── 会话状态由 `reduce()` 算出，UI 不维护第二份真相（ADR-0015）──
  *
- * 消息列表、运行中的工具、待审批的权限……全都从事件流 reduce 出来，跟主进程用的是
+ * 消息列表、运行中的工具、被拒绝的操作……全都从事件流 reduce 出来，跟主进程用的是
  * **同一个纯函数**。这不是复用代码的小便宜，它是"会话状态 = reduce(events)"这条
  * 原则在 UI 上唯一成立的方式：只要 UI 自己维护一份 messages 数组，
  * 它就会和回放出来的那份慢慢分叉，而分叉的表现是刷新一下内容就变了。
@@ -76,13 +75,6 @@ interface UiState extends OrphanedSlice {
    */
   status: Status | undefined;
   /**
-   * 本会话当前的审批模式（docs/09 C6）——请求批准 / 帮我批准 / 完全访问权限。
-   *
-   * 跟 `status` 一样不是会话状态的一部分：它是主进程内存里的一个开关，
-   * 不进事件流，也不持久化，回放回放不出来。切会话时重新拉一次。
-   */
-  approvalMode: ApprovalMode;
-  /**
    * 会话冲突（M1-e 错误态呈现）：这个会话正被另一个写句柄占用（`WriteLeaseError`，
    * 典型场景是另一个窗口/另一个小明进程正开着同一个会话）。跟 `error` 一样是纯
    * UI 态，不进事件流；跟 `error` 不一样的地方是它有专门的呈现（`SessionConflictBanner`），
@@ -96,11 +88,6 @@ interface UiState extends OrphanedSlice {
   readonly newSession: (cwd?: string) => Promise<void>;
   /** 打开原生目录选择框；用户取消时返回 undefined */
   readonly chooseWorkspace: () => Promise<string | undefined>;
-  readonly respondPermission: (
-    requestId: string,
-    effect: 'allow' | 'deny',
-    scope: 'once' | 'session' | 'always',
-  ) => Promise<void>;
   readonly openSession: (id: SessionId) => Promise<void>;
   /** 回到 Home；保留 tabs 打开集合与 currentId，只切主区 */
   readonly goHome: () => void;
@@ -109,7 +96,12 @@ interface UiState extends OrphanedSlice {
    * 若关掉的是焦点，则聚焦剩余最后一个 tab，否则回 Home。
    */
   readonly closeTab: (id: SessionId) => Promise<void>;
-  readonly setApprovalMode: (mode: ApprovalMode) => Promise<void>;
+  /**
+   * 解除本会话的不可信标记（ADR-0019）。**不乐观更新**：真实状态来自事件流
+   * （`trust.cleared` → `reduce` → 推回渲染层），这里抢先改一份本地副本就等于
+   * 在权限相关的 UI 上显示一个可能没生效的结果。
+   */
+  readonly clearUntrusted: () => Promise<void>;
   readonly send: (text: string, images?: readonly ImageAttachment[]) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly refreshStatus: () => Promise<void>;
@@ -156,7 +148,6 @@ export const useUi = create<UiState>((set, get) => {
     busy: false,
     error: undefined,
     status: undefined,
-    approvalMode: 'ask',
     sessionConflict: undefined,
 
     refreshSessions: async () => {
@@ -189,47 +180,6 @@ export const useUi = create<UiState>((set, get) => {
       }
     },
 
-    /**
-     * 应答审批。**与 stop 同一个姿态：发出去就完了，不乐观更新。**
-     *
-     * 在这里顺手把 `pendingPermission` 清掉会快一帧，代价是主进程若没收到
-     * （requestId 已经过期、窗口刚重载），用户看到的是"已允许"而闸门其实拒了。
-     * 权限状态尤其不能乐观更新——它是这套系统里最不该出现"看起来生效了"的地方。
-     */
-    respondPermission: async (requestId, effect, scope) => {
-      const id = get().currentId;
-      if (id === undefined) return;
-      try {
-        const { accepted } = await api.respondPermission(id, requestId, effect, scope);
-        /*
-         * `accepted: false` 意味着主进程里没有一个在等这个 requestId 的 waiter——
-         * 请求已经过期（重复点击、上一条已经被处理、或者窗口重载丢了状态）。
-         *
-         * 这曾经是"点了没反应"的表现形式之一：卡片是乐观渲染之外的真实状态
-         * （`pendingPermission` 来自事件流），不会自己收起，用户点了却什么都
-         * 没发生，也不知道是网络慢还是点错了。这里必须给一个能看见的反馈，
-         * 而不是像从前那样把返回值直接扔掉。
-         */
-        if (!accepted) {
-          set({
-            error: '这条确认请求已经失效（可能已被处理，或已出现新的待确认请求），请重新查看当前状态。',
-          });
-        }
-      } catch (e) {
-        applyIpcError(e, id);
-      }
-    },
-
-    /*
-     * `readSession` 现在直接返回主进程里已经 `reduce()` 过的状态（ADR-0032，修 G4/G5）
-     * ——不再是原始事件数组，这里也就不用自己重放一遍历史。`deserializeSessionState`
-     * 只做"镜像 → SessionState"这一步纯转换（Map 从 entry 数组建回来），不是第二次判断。
-     *
-     * **`readSession` 本身也可能失败**（典型是 `WriteLeaseError`——这个会话正被另一个
-     * 写句柄占用，`getSessionState` 内部照样要 `runtimeFor()`，读也要先拿到运行时）。
-     * 此前这一步没有 `try/catch`，失败会变成一个没人接的 unhandled rejection，
-     * 界面上什么反馈都没有——这正是"错误态呈现"这条 M1-e 条目要补的洞之一。
-     */
     openSession: async (id) => {
       // 切会话必须清在途缓冲：它属于上一个会话，留着就会挂在新会话的消息流末尾
       set({
@@ -240,19 +190,11 @@ export const useUi = create<UiState>((set, get) => {
         live: EMPTY_LIVE,
         error: undefined,
         sessionConflict: undefined,
-        approvalMode: 'ask',
       });
       try {
         const serialized: SerializedSessionState = await api.readSession(id);
         // 会话可能在这次 await 期间又被切走——不要用一个旧会话的状态覆盖当前会话
         if (get().currentId === id) set({ session: deserializeSessionState(serialized) });
-      } catch (e) {
-        applyIpcError(e, id);
-        return;
-      }
-      try {
-        const { mode } = await api.getApprovalMode(id);
-        if (get().currentId === id) set({ approvalMode: mode });
       } catch (e) {
         applyIpcError(e, id);
       }
@@ -277,7 +219,6 @@ export const useUi = create<UiState>((set, get) => {
           session: undefined,
           live: EMPTY_LIVE,
           shellView: 'home',
-          approvalMode: 'ask',
           error: undefined,
           sessionConflict: undefined,
         });
@@ -287,17 +228,11 @@ export const useUi = create<UiState>((set, get) => {
       await get().openSession(next);
     },
 
-    /**
-     * 切审批模式。**乐观更新是安全的**——不像 `respondPermission`，这里没有"看起来
-     * 生效了、实际没生效"的窗口：切换本身没有副作用，真正受影响的是*下一次*
-     * `sendUserMessage` 用哪个 `tier`，而那次调用会重新读一遍主进程里的当前值。
-     */
-    setApprovalMode: async (mode) => {
+    clearUntrusted: async () => {
       const id = get().currentId;
       if (id === undefined) return;
       try {
-        const result = await api.setApprovalMode(id, mode);
-        if (get().currentId === id) set({ approvalMode: result.mode });
+        await api.clearUntrusted(id);
       } catch (e) {
         applyIpcError(e, id);
       }

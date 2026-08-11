@@ -80,7 +80,7 @@ const writeProject = async (value: unknown): Promise<void> => {
 describe('分层加载', () => {
   it('🔴 用户级与项目级的规则各自成层，不互相抹掉', async () => {
     await writeUser({ permission: { rules: [rule({ id: 'u.one' })] } });
-    await writeProject({ permission: { rules: [rule({ id: 'p.one', effect: 'ask' })] } });
+    await writeProject({ permission: { rules: [rule({ id: 'p.one', effect: 'deny' })] } });
 
     const loaded = await loadConfig({ paths, cwd: project });
     expect(loaded.permissionRules.user.map((r) => r.id)).toEqual(['u.one']);

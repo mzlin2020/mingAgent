@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { newCallId, newMessageId, newRequestId, newSessionId, newTurnId } from '@xm/contracts';
-import type { Message, PermissionRequest } from '@xm/contracts';
+import { newCallId, newMessageId, newSessionId, newTurnId } from '@xm/contracts';
+import type { Message } from '@xm/contracts';
 import { detectOrphanedTurn, emptySessionState } from '@xm/kernel';
 import type { RunningCall, SessionState } from '@xm/kernel';
 
@@ -13,17 +13,6 @@ const runningCall = (): RunningCall => ({
   startedAt: 1,
   messageId: newMessageId(),
   input: { path: '/work' },
-});
-
-const permissionRequest = (callId = newCallId()): PermissionRequest => ({
-  requestId: newRequestId(),
-  sessionId,
-  callId,
-  capability: 'fs.write',
-  target: '/work/a.ts',
-  risk: 'medium',
-  reason: '写文件',
-  trustLevel: 'model',
 });
 
 describe('detectOrphanedTurn', () => {
@@ -64,36 +53,21 @@ describe('detectOrphanedTurn', () => {
     });
   });
 
-  it("pendingPermission 挂着：kind === 'permission'", () => {
-    const turnId = newTurnId();
-    const req = permissionRequest();
-    const state = { ...base(), activeTurn: { turnId, startedAt: 1 }, pendingPermission: req };
-    expect(detectOrphanedTurn(state)).toEqual({
-      turnId,
-      kind: 'permission',
-      requestId: req.requestId,
-      callId: req.callId,
-      danglingToolUses: [],
-    });
-  });
-
-  it('判定顺序：message 优先于 tool 优先于 permission（今天的 dispatchCall 是顺序执行，三者理论上互斥，但顺序仍要有确定的优先级）', () => {
+  it('判定顺序：message 优先于 tool（dispatchCall 是顺序执行，两者理论上互斥，但顺序仍要有确定的优先级）', () => {
     const turnId = newTurnId();
     const call = runningCall();
-    const req = permissionRequest();
     const messageId = newMessageId();
     const state = {
       ...base(),
       activeTurn: { turnId, startedAt: 1 },
       activeMessage: { messageId, role: 'assistant' as const, model: 'x/y', startedAt: 1 },
       runningCalls: new Map([[call.callId, call]]),
-      pendingPermission: req,
     };
     expect(detectOrphanedTurn(state)).toMatchObject({ kind: 'message' });
   });
 
   /**
-   * 一批并行 tool_use 里，"卡住的那个"之后的调用连 permission.request 都没发过——
+   * 一批并行 tool_use 里，"卡住的那个"之后的调用连 tool.start 都没发过——
    * dispatchCall 是顺序执行的（turn.ts），第 3 个调用根本没轮到。这类调用要能从
    * 最后一条 assistant 消息的 tool_use 块里识别出来，否则续跑时喂给模型的上一条
    * assistant 消息会有一个 tool_use 找不到匹配的 tool_result（Anthropic API 硬错误）。
@@ -106,7 +80,7 @@ describe('detectOrphanedTurn', () => {
       ts: 1,
     });
 
-    it('第 2 个调用卡在权限审批：第 3 个调用没有 tool.start/tool_result，被识别为 dangling', () => {
+    it('第 2 个调用正在执行：第 3 个调用没有 tool.start/tool_result，被识别为 dangling', () => {
       const turnId = newTurnId();
       const [first, second, third] = [newCallId(), newCallId(), newCallId()];
       const assistant = assistantMessageWithThreeCalls([
@@ -121,17 +95,23 @@ describe('detectOrphanedTurn', () => {
         blocks: [{ type: 'tool_result', toolUseId: first, content: [], isError: false }],
         ts: 2,
       };
-      const req = permissionRequest(second);
+      const stuck: RunningCall = {
+        callId: second,
+        name: 'fs.write',
+        startedAt: 1,
+        messageId: assistant.id,
+        input: {},
+      };
       const state = {
         ...base(),
         activeTurn: { turnId, startedAt: 1 },
         messages: [assistant, resultBucket],
-        pendingPermission: req,
+        runningCalls: new Map([[second, stuck]]),
       };
 
       const orphan = detectOrphanedTurn(state);
-      expect(orphan).toMatchObject({ kind: 'permission', requestId: req.requestId, callId: second });
-      if (orphan?.kind !== 'permission') throw new Error('expected permission-kind orphan');
+      expect(orphan).toMatchObject({ kind: 'tool', calls: [stuck] });
+      if (orphan?.kind !== 'tool') throw new Error('expected tool-kind orphan');
       expect(orphan.danglingToolUses).toEqual([{ callId: third, name: 'fs.write', input: {} }]);
     });
 

@@ -140,11 +140,9 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         provider,
         tools: h.tools,
         layers: builtinLayers(ENV),
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: pureGateway(targetOf),
         // ask 一律放行：这样如果防御失效，push 就会真的执行 —— 用例才拦得住回归
-        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       textInput('看看这个网页'),
     );
@@ -169,10 +167,8 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
       runtime: h.runtime,
       tools: h.tools,
       layers,
-      tier: 'balanced' as const,
       model: 'scripted-1',
       gateway: pureGateway(targetOf),
-      decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
     };
 
     await runTurn(
@@ -209,7 +205,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
     expect(startedTools(events)).not.toContain('git.push');
   });
 
-  it('没读过网页时 push 只是 ask，用户点允许就能执行 —— 防御不能宽到误伤日常', async () => {
+  it('没读过网页时 push 直接放行 —— 防御不能宽到误伤日常', async () => {
     const h = await harness();
     await runTurn(
       {
@@ -222,18 +218,15 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
         }),
         tools: h.tools,
         layers: builtinLayers(ENV),
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: pureGateway(targetOf),
-        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       textInput('推上去'),
     );
 
     const events = await collect(h.store, h.sessionId);
-    const decisions = decisionFor(events, 'git.push');
-    expect(decisions[0]!.effect).toBe('allow');
-    expect(decisions[0]!.by).toBe('user');
+    // 放行不留痕（ADR-0039）：干净上下文下这次 push 没撞任何规则，一条权限事件都没有
+    expect(decisionFor(events, 'git.push')).toHaveLength(0);
     expect(startedTools(events)).toContain('git.push');
   });
 });

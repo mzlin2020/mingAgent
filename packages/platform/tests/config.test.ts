@@ -44,15 +44,16 @@ const writeProject = async (json: unknown): Promise<void> => {
 describe('分层与合并', () => {
   it('没有任何配置文件时用内置默认，且不报问题', async () => {
     const { config, problems } = await loadConfig({ paths });
-    expect(config.permission.tier).toBe('balanced');
+    expect(config.permission.rules).toEqual([]);
+    expect(config.logging.redact).toBe(true);
     expect(problems).toEqual([]);
   });
 
   it('项目级覆盖用户级', async () => {
-    await writeUser({ permission: { tier: 'strict' } });
-    await writeProject({ permission: { tier: 'yolo' } });
+    await writeUser({ logging: { level: 'debug' } });
+    await writeProject({ logging: { level: 'error' } });
     const { config } = await loadConfig({ paths, cwd: dir });
-    expect(config.permission.tier).toBe('yolo');
+    expect(config.logging.level).toBe('error');
   });
 
   it('数组整体替换，不拼接（schema.ts 定死的语义）', async () => {
@@ -68,14 +69,14 @@ describe('失败关闭', () => {
     await writeFile(join(paths.config, 'config.json'), '{ 这不是 JSON');
     const { config, problems } = await loadConfig({ paths });
     // 起不来的话，用户连改配置的界面都打不开
-    expect(config.permission.tier).toBe('balanced');
+    expect(config.logging.redact).toBe(true);
     expect(problems.map((p) => p.code)).toContain('config.unreadable');
   });
 
   it('🔴 配置不合法时退回默认并报问题', async () => {
-    await writeUser({ permission: { tier: '随便写的档位' } });
+    await writeUser({ logging: { level: '随便写的级别' } });
     const { config, problems } = await loadConfig({ paths });
-    expect(config.permission.tier).toBe('balanced');
+    expect(config.logging.level).toBe('info');
     expect(problems.map((p) => p.code)).toContain('config.invalid');
   });
 

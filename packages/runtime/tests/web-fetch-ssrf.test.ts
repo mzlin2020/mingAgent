@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import type { PermissionRequest, PersistedEvent, PolicyRuleSet } from '@xm/contracts';
+import type { PersistedEvent, PolicyRuleSet } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
@@ -53,23 +53,15 @@ async function harness({ userRules = [], dnsLookup }: HarnessOptions = {}) {
   const tools = new ToolRegistry();
   for (const t of coreTools({ os: 'linux' })) tools.register(t);
 
-  const asked: PermissionRequest[] = [];
-
   const exec = async (url: string): Promise<PersistedEvent[]> => {
     await runTurn(
       {
         runtime,
         tools,
         layers: composeRules({ env: ENV, user: userRules }),
-        tier: 'balanced' as const,
         model: 'scripted-1',
         gateway: nodeToolGateway({ ...(dnsLookup === undefined ? {} : { dnsLookup }) }),
         provider: new ScriptedProvider({ turns: [call('web.fetch', { url }), END] as never }),
-        // 永远点"允许"：于是任何一次放行都必须是 deny 没拦住，不是"这个用例恰好没人点允许"
-        decide: (request: PermissionRequest) => {
-          asked.push(request);
-          return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
-        },
       },
       textInput('跑一下'),
     );
@@ -78,13 +70,20 @@ async function harness({ userRules = [], dnsLookup }: HarnessOptions = {}) {
     return out;
   };
 
-  return { exec, asked };
+  return { exec };
 }
 
 const ended = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'tool.end' ? [e.payload] : []));
 const decisions = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'permission.decision' ? [e.payload] : []));
+/**
+ * ADR-0039 之后 `permission.request` 只在**拒绝**时产生（成对记在 decision 前面）。
+ * 于是"这次调用有没有撞上拒绝清单"就等于"事件流里有没有 request"——
+ * 以前这个信息靠注入一个记账用的 `decide()` 拿，那条注入点已经不存在了。
+ */
+const requests = (all: PersistedEvent[]) =>
+  all.flatMap((e) => (e.type === 'permission.request' ? [e.payload] : []));
 
 beforeEach(() => {
   ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.xiaoming' };
@@ -96,14 +95,14 @@ describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {
     ['回环', 'http://127.0.0.1:9/'],
     ['RFC 1918 私网', 'http://10.1.2.3/'],
   ])('%s → deny，一个确认框都不弹', async (_label, url) => {
-    const { exec, asked } = await harness();
+    const { exec } = await harness();
     const all = await exec(url);
 
     expect(ended(all)[0]?.ok).toBe(false);
     const denied = decisions(all).filter((d) => d.effect === 'deny');
     expect(denied[0]?.ruleId).toBe('def.no-fetch-private-network');
-    // 判完全部主张才问人，而这次判完就已经 deny 了——不该有任何一次确认框
-    expect(asked).toHaveLength(0);
+    // 拒绝是判定当场做出的，不经过任何人 —— 所有 decision 都是 policy 判的
+    expect(decisions(all).every((d) => d.by === 'policy')).toBe(true);
     expect(JSON.stringify(ended(all)[0]?.forModel)).toMatch(/保留|内网/);
   });
 
@@ -125,7 +124,7 @@ describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {
     const port = address.port;
 
     try {
-      const { exec, asked } = await harness({
+      const { exec } = await harness({
         dnsLookup: () => Promise.resolve([{ address: '127.0.0.1', family: 4 }]),
         userRules: [
           {
@@ -141,13 +140,13 @@ describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {
       const all = await exec(`http://web-fetch-e2e-test.invalid:${String(port)}/`);
 
       /*
-       * 两条 claim 各自的命运不同：域名那条（claim A）没有用户规则匹配它，
-       * 仍然走默认的 `def.net-fetch`（ask），所以还是会问一次；
+       * 两条 claim 各自的命运不同：域名那条（claim A）没有任何规则匹配它，走兜底放行；
        * 解析出的 IP 那条（claim B）命中用户新写的 allow，覆盖了内置的
-       * `def.no-fetch-private-network`，不再问。两条只要有一条被拒，
-       * 整次调用就会被拒——这次都没被拒，请求才真的连通。
+       * `def.no-fetch-private-network`。两条只要有一条被拒，整次调用就会被拒——
+       * 这次都没被拒，请求才真的连通。
        */
-      expect(asked.map((a) => a.capability)).toContain('net.fetch');
+      // 放行的路径不产生任何 permission.request —— 只有拒绝才记
+      expect(requests(all)).toHaveLength(0);
       expect(ended(all)[0]?.ok).toBe(true);
       expect(JSON.stringify(ended(all)[0]?.forModel)).toContain('来自测试服务器');
     } finally {
@@ -160,23 +159,19 @@ describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {
   });
 });
 
-describe('🔴 解析出的 IP 主张只查 deny，不拿去问用户（ADR-0036）', () => {
+describe('🔴 解析出的 IP 主张仍然只用来查 deny（ADR-0028 / 曾经的 ADR-0036）', () => {
   /*
    * `resolveHost` 每个 URL 产出两条主张：可读域名（claim A）和解析出的 IP（claim B）。
    * claim B 存在只是为了让 SSRF 的 IP 段规则有东西可匹配——判定与建连必须看同一个
    * 地址，否则就是 DNS 重绑定的窗口（ADR-0028）。
    *
-   * 但它同时也匹配上了 `def.net-fetch` 的 ask，于是**每一次 web.fetch 弹两个框**：
-   * 一个写着域名，一个写着用户根本无从判断的裸 IP。实测确认过，这是审批噪音的
-   * 第二个来源，和 ADR-0035 修的那个乘在一起——用户报的"10+ 次"就是这么来的。
+   * 它曾经要额外标一个 `checkOnly`（ADR-0036），因为它也命中 `def.net-fetch` 的 ask，
+   * 于是每次联网弹两个框：一个域名、一个用户根本无从判断的裸 IP。ADR-0039 删掉 ask
+   * 之后所有主张的待遇都一样了（只查 deny），标记随之删除——
+   * **但 deny 的那一半必须一个字没动**，这就是这条用例钉的东西。
    */
-  /*
-   * "公网地址只问一次"那一半放在 `informed-grant-noise.test.ts` 里用假网关考——
-   * 在这里考需要 DNS 指向一个真实可连的公网地址，那会让用例去拨真网络。
-   * 这里留的是**只有真网关才能证明的那一半**：deny 仍然拦得住。
-   */
-  it('🔴 deny 的那一半一个字没动：解析到保留网段仍然拦，且仍然零确认框', async () => {
-    const { exec, asked } = await harness({
+  it('🔴 解析到保留网段仍然拦得住', async () => {
+    const { exec } = await harness({
       dnsLookup: () => Promise.resolve([{ address: '10.1.2.3', family: 4 as const }]),
     });
     const all = await exec('https://looks-public.example/page');
@@ -185,7 +180,13 @@ describe('🔴 解析出的 IP 主张只查 deny，不拿去问用户（ADR-0036
     expect(decisions(all).find((d) => d.effect === 'deny')?.ruleId).toBe(
       'def.no-fetch-private-network',
     );
-    expect(asked).toHaveLength(0);
+    /*
+     * 恰好一条审计记录，且记的是**解析出的 IP**那条主张——不是域名。
+     * 这一条同时证明了两件事：claim B 确实参与了 deny 判定（否则 SSRF 拦不住），
+     * 以及它不再产生第二次"问用户"（因为已经没有问这个动作了）。
+     */
+    expect(requests(all)).toHaveLength(1);
+    expect(requests(all)[0]?.target).toContain('10.1.2.3');
   });
 });
 

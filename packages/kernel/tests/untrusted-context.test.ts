@@ -156,21 +156,20 @@ describe('端到端：污点接上判定，docs/06 §9 的验收项', () => {
         trustLevel,
       } satisfies PermissionRequest,
       rules: RULES,
-      tier: 'balanced',
     });
 
   // 这就是 turn.ts 现在做的事：状态里有没有标记，决定请求里填什么
   const trustOf = (s: { untrustedContext: unknown }) =>
     s.untrustedContext === undefined ? ('model' as const) : ('untrusted' as const);
 
-  it('读过网页之后，git.push 从 ask 变 deny', () => {
+  it('读过网页之后，git.push 从放行变 deny', () => {
     const clean = reduceAll(emptySessionState(SESSION), [created()]);
-    expect(ask('git.push', '/repo', trustOf(clean)).effect).toBe('ask');
+    expect(ask('git.push', '/repo', trustOf(clean)).effect).toBe('allow');
 
     const tainted = reduce(clean, toolStart('web.fetch', ['net.fetch']));
     const v = ask('git.push', '/repo', trustOf(tainted));
     expect(v.effect).toBe('deny');
-    expect(v.ruleId).toBe('builtin.injection-downgrade');
+    expect(v.ruleId).toBe('untrusted.git-push');
   });
 
   it('读过网页之后，读密钥命中红线', () => {

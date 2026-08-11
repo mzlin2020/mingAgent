@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { BlobRef, EventEnvelope, RequestId, SessionId } from '@xm/contracts';
+import { BlobRef, EventEnvelope, SessionId } from '@xm/contracts';
 
 /**
  * IPC 载荷契约（ADR-0015）。
@@ -136,7 +136,7 @@ export const InterruptResult = z.object({ interrupted: z.boolean() });
  * `kind` 不携带 `OrphanedTurn` 的其余细节——那些只在 `resumeOrphanedSession`/
  * `abandonOrphanedSession` 处理器里当场重新算一遍（不信任扫描时的旧缓存）。
  */
-export const OrphanedSessionKind = z.enum(['message', 'tool', 'permission', 'none']);
+export const OrphanedSessionKind = z.enum(['message', 'tool', 'none']);
 export type OrphanedSessionKind = z.infer<typeof OrphanedSessionKind>;
 
 export const ListOrphanedSessionsResult = z.array(z.object({ sessionId: SessionId, kind: OrphanedSessionKind }));
@@ -149,59 +149,22 @@ export const ResumeOrphanedSessionResult = z.object({ resolved: z.boolean() });
 export const AbandonOrphanedSessionRequest = z.strictObject({ sessionId: SessionId });
 export const AbandonOrphanedSessionResult = z.object({ resolved: z.boolean() });
 
-/**
- * 应答一次权限审批。
+/*
+ * ── 这里曾经有 `RespondPermission*` 与 `ApprovalMode`（三档审批模式）──
  *
- * ── `requestId` 为什么必须带 ──
+ * 前者是"用户在审批卡片上点了本次/本会话/永久/拒绝"这条 IPC，后者是头部那个
+ * 请求批准 / 帮我批准 / 完全访问权限的切换器（ADR-0030）。ADR-0039 把审批整体删除，
+ * 两组契约一起消失。
  *
- * 不带的话，主进程只能"把当前挂着的那个请求应答掉"。而一次工具调用可能连着问两个
- * 能力，用户看到的是第一个、点下去时第二个已经上来了——那就是把"允许读"错当成
- * "允许写"。带上 id 之后，对不上的应答直接被丢掉。
+ * 两条当时想清楚了、将来若再引入类似 IPC 仍然成立的纪律留在这里：
  *
- * ── 没有 `by` 字段 ──
- *
- * 与 `ClearUntrustedRequest` 同一条纪律：应答者永远是人，这条 IPC 的到达本身就是
- * 全部含义。让渲染层报出自己是谁，等于给一个将来可能被 XSS 或插件 UI 驱动的进程
- * 一个可以撒谎的字段。
+ *   · **`requestId` 必须带。** 不带的话主进程只能"把当前挂着的那个应答掉"，
+ *     而一次调用可能连着问两个能力——用户看到的是第一个、点下去时第二个已经上来了，
+ *     那就是把"允许读"错当成"允许写"。
+ *   · **没有 `by` 字段。** 与 `ClearUntrustedRequest` 同一条纪律：动作的发起者永远是人，
+ *     这条 IPC 的到达本身就是全部含义。让渲染层报出自己是谁，等于给一个将来可能被
+ *     XSS 或插件 UI 驱动的进程一个可以撒谎的字段。
  */
-export const RespondPermissionRequest = z.strictObject({
-  sessionId: SessionId,
-  requestId: RequestId,
-  effect: z.enum(['allow', 'deny']),
-  scope: z.enum(['once', 'session', 'always']),
-});
-export const RespondPermissionResult = z.object({
-  /** 有没有真的对上一个在等的请求。对不上时 UI 该把那张卡片收起来 */
-  accepted: z.boolean(),
-});
-
-/**
- * 审批模式（docs/09 C6）——桌面层的纯 UI 概念，不进 `@xm/contracts`。
- *
- * 三档都落在已经实现、已经验证过的 `PermissionTier`（`balanced`/`yolo`）语义上，
- * 不新增、不修改 tier，也不碰 `evaluate()`：
- *
- *   - `ask`  —— 请求批准。今天的默认行为，映射到 `balanced`。
- *   - `auto` —— 帮我批准。跳过所有 `ask`（含 `shell.exec`），红线与任何 `deny`
- *                （含内置的敏感路径/持久化/SSRF/危险命令 deny，也含用户自己写的）
- *                原样生效——映射到已经过 ADR-0017/C5 验证过的 `yolo`。
- *   - `full` —— 完全访问权限。与 `auto` 是**同一套判定机制**（同样映射到 `yolo`），
- *                唯一区别在桌面 UI 的开启门槛（需要二次确认）与文案，而不是新开一个
- *                凌驾于红线之上的层级——"是否该越过红线"是 C6 明确要求单独拍板的
- *                问题，本轮刻意不做，见 ADR-0030。
- *
- * 会话级、不持久化，跟 docs/06 对 YOLO 开关的既有约束一致：新会话一律从 `ask` 起步，
- * 存在主进程内存里，不读写 `config.json`。
- */
-export const ApprovalMode = z.enum(['ask', 'auto', 'full']);
-export type ApprovalMode = z.infer<typeof ApprovalMode>;
-
-export const GetApprovalModeRequest = z.strictObject({ sessionId: SessionId });
-export const GetApprovalModeResult = z.object({ mode: ApprovalMode });
-
-export const SetApprovalModeRequest = z.strictObject({ sessionId: SessionId, mode: ApprovalMode });
-/** 回显真正生效的值，而不是假定请求里的值一定被采纳 */
-export const SetApprovalModeResult = z.object({ mode: ApprovalMode });
 
 /** 选工作目录。用户取消时 `path` 缺省——取消不是错误 */
 export const ChooseWorkspaceResult = z.object({ path: z.string().optional() });

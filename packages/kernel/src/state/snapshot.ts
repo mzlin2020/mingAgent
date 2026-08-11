@@ -3,7 +3,6 @@ import type {
   CallId,
   ConfigPatch,
   Message,
-  PermissionRequest,
   PtySessionId,
   SessionId,
   Todo,
@@ -16,7 +15,6 @@ import type {
   Compaction,
   Notice,
   OpenPtySession,
-  PermissionGrant,
   RunningCall,
   RunningSubagent,
   SessionState,
@@ -48,8 +46,6 @@ export interface SerializedSessionState {
   readonly messages: readonly Message[];
   readonly activeTurn: { readonly turnId: TurnId; readonly startedAt: number } | undefined;
   readonly activeMessage: ActiveMessage | undefined;
-  readonly pendingPermission: PermissionRequest | undefined;
-  readonly grants: readonly PermissionGrant[];
   readonly untrustedContext: UntrustedContext | undefined;
   readonly todos: readonly Todo[];
   readonly runningCalls: readonly (readonly [CallId, RunningCall])[];
@@ -76,8 +72,6 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     messages: state.messages,
     activeTurn: state.activeTurn,
     activeMessage: state.activeMessage,
-    pendingPermission: state.pendingPermission,
-    grants: state.grants,
     untrustedContext: state.untrustedContext,
     todos: state.todos,
     runningCalls: [...state.runningCalls.entries()],
@@ -105,8 +99,6 @@ export function deserializeSessionState(s: SerializedSessionState): SessionState
     messages: s.messages,
     activeTurn: s.activeTurn,
     activeMessage: s.activeMessage,
-    pendingPermission: s.pendingPermission,
-    grants: s.grants,
     untrustedContext: s.untrustedContext,
     todos: s.todos,
     runningCalls: new Map(s.runningCalls),

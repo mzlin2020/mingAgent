@@ -1,20 +1,19 @@
 import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { AppMenu } from './components/app-menu.js';
-import { ApprovalModeSwitcher } from './components/approval-mode-switcher.js';
 import {
   InterruptedSessionBanner,
   NoticeBanner,
   SessionConflictBanner,
   SetupBanner,
   TurnErrorBanner,
+  UntrustedBanner,
   UsageBadge,
 } from './components/banners.js';
 import { Composer } from './components/composer.js';
 import { HomeView } from './components/home-view.js';
 import { LiveCalls, LiveMessage } from './components/live-views.js';
 import { MessageStream } from './components/message-stream.js';
-import { PermissionCard } from './components/permission-card.js';
 import { SessionTabs } from './components/session-tabs.js';
 import { TerminalPanel } from './components/terminal-panel.js';
 import { api } from './bridge.js';
@@ -105,19 +104,12 @@ export function App(): ReactNode {
       {/*
         顶栏坐在页面底色上，不再自己顶一层 surface —— 选中的 tab 才用 surface。
         上一版两者同色，选中态在顶栏上等于看不见（见 `session-tabs.tsx`）。
-        定高 44px：汉堡 / Home / tabs / 审批档位 / 用量落在同一条基线上。
+        定高 44px：汉堡 / Home / tabs / 用量落在同一条基线上。
       */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <AppMenu />
         <SessionTabs />
-        <div className="flex shrink-0 items-center gap-3">
-          {inChat && (
-            <>
-              <ApprovalModeSwitcher />
-              <UsageBadge />
-            </>
-          )}
-        </div>
+        <div className="flex shrink-0 items-center gap-3">{inChat && <UsageBadge />}</div>
       </header>
 
       {error !== undefined && (
@@ -142,11 +134,11 @@ export function App(): ReactNode {
             <SetupBanner />
             <SessionConflictBanner />
             <NoticeBanner />
+            <UntrustedBanner />
             <MessageStream messages={session?.messages ?? []} />
             <LiveMessage />
             <LiveCalls />
             <TerminalPanel />
-            <PermissionCard />
           </div>
         )}
       </div>
@@ -157,10 +149,7 @@ export function App(): ReactNode {
             <InterruptedSessionBanner />
             <TurnErrorBanner />
           </div>
-          <Composer
-            disabled={busy}
-            running={session?.status === 'running' || session?.status === 'waiting_permission'}
-          />
+          <Composer disabled={busy} running={session?.status === 'running'} />
         </>
       )}
     </div>

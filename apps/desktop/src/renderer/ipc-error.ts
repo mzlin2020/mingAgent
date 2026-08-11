@@ -34,7 +34,7 @@ export class IpcError extends Error {
  * 因此天然带着 `code:'WriteLeaseError'` 过桥。这是目前唯一一个"落进通用错误横幅
  * 会让用户不知道下一步该做什么"的错误码：一句没有区分度的原始报错，和"关掉另一个
  * 窗口再试一次"之间差着一次翻译。其余错误码（`policy_denied`/`user_rejected`/
- * `permission_denied` 等）已经各自有专门的呈现路径（审批卡片、`TurnErrorBanner`
+ * `permission_denied` 等）已经各自有专门的呈现路径（`TurnErrorBanner`
  * 读的 `error.raised` 事件），不需要在这里重复分类。
  *
  * `sessionConflict` 需要 `sessionId` 才能定位是"哪个会话"冲突了——调用方在

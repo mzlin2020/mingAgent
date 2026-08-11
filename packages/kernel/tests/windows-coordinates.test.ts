@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PermissionRequest, PolicyRuleSet } from '@xm/contracts';
 import { newRequestId, newSessionId } from '@xm/contracts';
-import type { PermissionGrant } from '@xm/kernel';
-import { evaluate, grantsToRules, normalizePathPattern } from '@xm/kernel';
+import { evaluate, normalizePathPattern } from '@xm/kernel';
 
 /**
  * ── 规则模式与请求 target 必须在**同一个坐标系**里（M1-c 补记）──
@@ -36,7 +35,7 @@ const ask = (target: string, capability: 'fs.read' | 'fs.write' = 'fs.write'): P
 });
 
 const judge = (rules: PolicyRuleSet, request: PermissionRequest): string =>
-  evaluate({ request, layers: [{ id: 'user', rules }], tier: 'balanced' }).effect;
+  evaluate({ request, layers: [{ id: 'user', rules }] }).effect;
 
 const denyRule = (target: string): PolicyRuleSet => [
   {
@@ -75,8 +74,8 @@ describe('🔴 规则模式的坐标系归一', () => {
 
   /**
    * 反向：POSIX 上反斜杠**仍然是转义符**，一个字节都不能动。
-   * `escapeGlobPattern` 整个依赖这一点——它把一次针对单个文件的授权
-   * escape 成只匹配它自己的模式（`/work/a\*b` 不该放行 `/work/aXb`）。
+   * 用户要放开一个名字里带 `*` 的真实文件时，靠的就是这个转义
+   * （`/work/a\*b` 只匹配 `/work/a*b`，不匹配 `/work/aXb`）。
    */
   it('POSIX 模式里的反斜杠仍然是转义，不是分隔符', () => {
     expect(judge(denyRule('/work/a\\*b'), ask('/work/a*b'))).toBe('deny');
@@ -90,44 +89,55 @@ describe('🔴 规则模式的坐标系归一', () => {
   });
 });
 
-describe('🔴 会话授权：合成出来的规则要真的能命中', () => {
-  const grant = (target: string): PermissionGrant[] => [
+/**
+ * ── 用户手写的 allow 规则同样要在这个坐标系里命中（ADR-0039 之后尤其重要）──
+ *
+ * 这一组的前身考的是 `grantsToRules()`：把用户在审批卡片上点的"本会话都允许"
+ * 合成成规则，而合成时忘了归一，Windows 上点了等于没点。审批删掉之后合成器没了，
+ * 但**同一个坐标系问题原地留着**——用户唯一的放开手段变成了手写 config.json，
+ * 而他在 Windows 上手写的一定是 `C:\work\a.md` 这种形状。
+ */
+describe('🔴 用户手写的 allow 规则：Windows 写法必须命中', () => {
+  const allowRule = (pattern: string): PolicyRuleSet => [
     {
-      requestId: newRequestId(),
-      capability: 'fs.write',
-      target,
+      id: 'u.allow',
       effect: 'allow',
-      scope: 'session',
-      ts: 0,
+      capability: 'fs.write',
+      match: { target: pattern },
+      reason: '用户自己写的',
+      immutable: false,
+    },
+  ];
+  const denyAll: PolicyRuleSet = [
+    {
+      id: 'b.deny',
+      effect: 'deny',
+      capability: 'fs.write',
+      reason: '内置：默认不许写',
+      immutable: false,
     },
   ];
 
-  it('🔴 Windows 写法的授权，下一次调用真的不再问', () => {
-    // 授权存的是网关给的原生路径，判定比的是规范化后的路径 —— 中间必须归一
-    const rules = grantsToRules(grant('C:\\work\\a.md'));
-    expect(judge(rules, ask('C:/work/a.md'))).toBe('allow');
+  /** 内置层一律 deny，用户层写 allow —— 命中了才会是 allow，没命中就还是 deny */
+  const judgeLayered = (userRules: PolicyRuleSet, request: PermissionRequest) =>
+    evaluate({
+      request,
+      layers: [
+        { id: 'builtin', rules: denyAll },
+        { id: 'user', rules: userRules },
+      ],
+      pathCaseInsensitive: true,
+    }).effect;
+
+  it('🔴 反斜杠写法的 allow 命中正斜杠的请求', () => {
+    expect(judgeLayered(allowRule('C:\\work\\a.md'), ask('C:/work/a.md'))).toBe('allow');
   });
 
-  it('授权仍然只覆盖那一个文件', () => {
-    const rules = grantsToRules(grant('C:\\work\\a.md'));
-    expect(judge(rules, ask('C:/work/b.md'))).not.toBe('allow');
+  it('盘符小写写法也命中', () => {
+    expect(judgeLayered(allowRule('c:\\work\\**'), ask('C:/work/sub/a.md'))).toBe('allow');
   });
 
-  it('🔴 转义没有因为归一而失效 —— `a*b` 的授权不放行 `aXb`', () => {
-    const rules = grantsToRules(grant('/work/a*b'));
-    expect(judge(rules, ask('/work/a*b'))).toBe('allow');
-    expect(judge(rules, ask('/work/aXb'))).not.toBe('allow');
-  });
-
-  it('🔴 规范化不了的授权直接丢掉 —— 判定时必然 deny 的东西，别合成成"已授权"', () => {
-    // 相对路径：内核判不了 → 失败关闭
-    expect(grantsToRules(grant('work/a.md'))).toHaveLength(0);
-    // 8.3 短名：同理，它是长名的别名，按短名授权等于授权了一个匹配不上的东西
-    expect(grantsToRules(grant('C:\\Users\\RUNNER~1\\a.md'))).toHaveLength(0);
-  });
-
-  it('授权的 target 与红线是同一个坐标系 —— `..` 也消解掉', () => {
-    const rules = grantsToRules(grant('/work/sub/../a.md'));
-    expect(judge(rules, ask('/work/a.md'))).toBe('allow');
+  it('只放开它指名的那一个 —— 放松不该顺手扩大范围', () => {
+    expect(judgeLayered(allowRule('C:\\work\\a.md'), ask('C:/work/b.md'))).toBe('deny');
   });
 });

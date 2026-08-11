@@ -126,10 +126,10 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
     });
 
     // 未解析：工作区内的一个普通路径 → 规则完全匹配不上
-    expect(evaluate({ request: ask(join(root, 'looks-innocent.txt')), layers, tier: 'balanced' }).effect)
+    expect(evaluate({ request: ask(join(root, 'looks-innocent.txt')), layers }).effect)
       .toBe('allow');
     // 解析之后：命中 deny
-    expect(evaluate({ request: ask(join(outside, 'id_rsa')), layers, tier: 'balanced' }).effect)
+    expect(evaluate({ request: ask(join(outside, 'id_rsa')), layers }).effect)
       .toBe('deny');
   });
 });
@@ -418,11 +418,10 @@ describe('网络分支', () => {
 
     expect(calls).toEqual(['example.com']); // 🔴 只解析一次
     expect(r.claims).toContainEqual({ capability: 'net.fetch', target: 'https://example.com/meta' });
-    // claim B 标着 checkOnly：它只用来给 SSRF 规则匹配，不拿去问用户（ADR-0036）
+    // claim B 是解析出的 IP：只用来给 SSRF 的 IP 段规则匹配（ADR-0028）
     expect(r.claims).toContainEqual({
       capability: 'net.fetch',
       target: 'https://169.254.169.254/',
-      checkOnly: true,
     });
     expect(r.pinnedHosts?.get('example.com')).toEqual({ address: '169.254.169.254', family: 4 });
   });
@@ -437,7 +436,6 @@ describe('网络分支', () => {
     expect(r.claims).toContainEqual({
       capability: 'net.fetch',
       target: 'https://10.0.0.5:8443/',
-      checkOnly: true,
     });
   });
 
@@ -451,7 +449,6 @@ describe('网络分支', () => {
     expect(r.claims).toContainEqual({
       capability: 'net.fetch',
       target: 'http://[::1]/',
-      checkOnly: true,
     });
     expect(r.pinnedHosts?.get('example.com')).toEqual({ address: '::1', family: 6 });
   });

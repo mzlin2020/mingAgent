@@ -47,10 +47,6 @@ describe('reduce：fixture 会话归约出的状态', () => {
     expect(state.interruptedCalls).toHaveLength(0);
   });
 
-  it('权限决定后清空待审批项', () => {
-    expect(state.pendingPermission).toBeUndefined();
-  });
-
   it('用量累计', () => {
     expect(state.usage.usage.inputTokens).toBe(1200);
     expect(state.usage.usage.cacheReadTokens).toBe(900);
@@ -143,13 +139,16 @@ describe('reduce：真崩溃形状（无 turn.end）', () => {
     expect(state.interruptedCalls).toHaveLength(0);
   });
 
-  it('停在 permission.request：pendingPermission 挂着，status 是 waiting_permission', () => {
+  /*
+   * ADR-0039：`permission.request` 不再让会话进入任何"挂着"的状态——判定不会停下等人，
+   * 所以停在这条事件上与停在两条事件之间没有区别，回合仍然是"在跑"。
+   */
+  it('停在 permission.request：会话仍然是 running，没有挂起态', () => {
     const events = upTo('permission.request');
     const state = reduceAll(emptySessionState(events[0]!.sessionId), events);
 
-    expect(state.status).toBe('waiting_permission');
+    expect(state.status).toBe('running');
     expect(state.activeTurn).toBeDefined();
-    expect(state.pendingPermission).toBeDefined();
   });
 });
 

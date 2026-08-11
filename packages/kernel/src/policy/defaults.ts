@@ -238,103 +238,91 @@ const selfModifyRedLines = (appRoot: string): PolicyRule[] =>
   });
 
 /**
- * 平衡档的默认规则（ADR-0003）。用户可覆盖。
+ * 不可信上下文下的拒绝规则（ADR-0039，取代 ADR-0035 的注入降级）。
  *
- * 取舍：读操作放行，写操作询问。这条线的依据是**可撤销性**——
- * 读不改变世界，写有还原点但需要用户知情。
+ * ── 判据：后果留不留在本会话之外 ──
+ *
+ * 推上去的提交撤不回、装上的包会一直执行、改掉的系统设置关掉小明也还在。
+ * 一个网页说服模型做了它们，用户回过神来时已经没有现场可以恢复——还原点救不了
+ * 已经离开这台机器的东西。这三条是 ADR-0035 逐条论证过的那张「严重项」表，
+ * 只是表达方式从"判定完之后再降一档"换成了"就写成规则"。
+ *
+ * ── 为什么恰好是这三个 ──
+ *
+ * 少了不行：见上面的判据。
+ * 多了会让整道防御被绕开：`net.fetch` / `fs.delete` / `shell.session` / `net.listen`
+ * 是读完网页之后**最正常的后续动作**（照着文档改个文件、再查一个链接）。
+ * 把它们也拦掉，用户每次搜完东西都要去点「解除标记」，
+ * 而那个按钮一按就把整轮的不可信标记全部放倒——**防线越是只剩"全开或全关"，
+ * 用户就越会选全关**（ADR-0035 的原话，在没有审批之后更成立）。
+ *
+ * `gui.input` / `plugin.install` / `secrets.read` 不在这里：它们在不可信上下文下
+ * **已经是红线**（`red.*-untrusted`），第 1 步就定案。同一条规则表达两处迟早会分叉。
+ *
+ * ── 为什么不是 immutable ──
+ *
+ * 刻意留给人覆盖。新模型里没有"当场点允许"这个动作了，用户表达"我知道它读过网页，
+ * 我仍然允许它推这个仓库"的唯一方式就是在 `config.json` 里写一条 allow——
+ * 用户层排在内置层之后，能盖住这三条（ADR-0023 的分层覆盖）。
+ * 这是把 ADR-0034 那个「知情授权」概念换了个时机：从事中一次点击，变成事前一次配置。
+ *
+ * 项目级配置盖不住它们：项目层只能收紧（`tightenOnly`）。那个文件躺在别人的仓库里，
+ * 而"仓库里的文件能放开自己被 push 的限制"正好是这条防线要挡的东西。
  */
-export const BALANCED_DEFAULT_RULES: readonly PolicyRule[] = [
+export const UNTRUSTED_CONTEXT_RULES: readonly PolicyRule[] = [
   {
-    id: 'def.fs-read',
-    effect: 'allow',
-    capability: 'fs.read',
-    reason: '读取文件不改变任何状态',
-    immutable: false,
-  },
-  {
-    id: 'def.env-read',
-    effect: 'allow',
-    capability: 'env.read',
-    reason: '读取环境变量不改变任何状态（值本身在日志里会被脱敏）',
-    immutable: false,
-  },
-  {
-    id: 'def.gui-capture',
-    effect: 'ask',
-    capability: 'gui.capture',
-    reason: '截屏会把屏幕上的一切送进模型上下文，包括其它窗口里的内容',
-    immutable: false,
-  },
-  {
-    id: 'def.fs-write',
-    effect: 'ask',
-    capability: 'fs.write',
-    reason: '写入文件会改变工作区',
-    immutable: false,
-  },
-  {
-    id: 'def.fs-delete',
-    effect: 'ask',
-    capability: 'fs.delete',
-    reason: '删除文件',
-    immutable: false,
-  },
-  {
-    id: 'def.shell-exec',
-    effect: 'ask',
-    capability: 'shell.exec',
-    reason: '执行命令的后果无法从命令行本身完全判断',
-    immutable: false,
-  },
-  {
-    /*
-     * `shell.session`（ADR-0031）只在打开会话这一刻判权一次——`write`/`resize`/
-     * `close` 声明空能力集，不会再次撞到这条或任何其它规则。这条 ask 因此承担的
-     * 分量比 `def.shell-exec` 重得多：同意一次，就等于对这个会话生命周期内的
-     * 一切输入放弃逐条判断（红线与 deny 都不再有 claim 可判）。
-     */
-    id: 'def.shell-session',
-    effect: 'ask',
-    capability: 'shell.session',
-    reason: '打开一个交互式终端；此后在里面输入的内容不再逐条判权',
-    immutable: false,
-  },
-  {
-    id: 'def.git-write',
-    effect: 'ask',
-    capability: 'git.write',
-    reason: '修改 git 仓库状态',
-    immutable: false,
-  },
-  {
-    id: 'def.git-push',
-    effect: 'ask',
+    id: 'untrusted.git-push',
+    effect: 'deny',
     capability: 'git.push',
-    reason: '推送到远端不可撤销',
+    match: { trustLevel: ['untrusted'] },
+    reason:
+      '上下文含不可信内容时推送到远端。推上去的提交撤不回，后果留在本会话之外——' +
+      '要允许，请在 config.json 的 permission.rules 里写一条 allow。',
     immutable: false,
   },
   {
-    id: 'def.net-fetch',
-    effect: 'ask',
-    capability: 'net.fetch',
-    reason: '访问网络可能把工作区内容发送出去',
-    immutable: false,
-  },
-  {
-    id: 'def.package-install',
-    effect: 'ask',
+    id: 'untrusted.package-install',
+    effect: 'deny',
     capability: 'package.install',
-    reason: '安装依赖会执行第三方的安装脚本',
+    match: { trustLevel: ['untrusted'] },
+    reason:
+      '上下文含不可信内容时安装依赖。安装脚本会执行第三方代码，且装上之后一直有效——' +
+      '要允许，请在 config.json 的 permission.rules 里写一条 allow。',
     immutable: false,
   },
   {
-    id: 'def.self-modify',
-    effect: 'ask',
-    capability: 'self.modify',
-    reason: '修改小明自身的代码',
+    id: 'untrusted.system-settings',
+    effect: 'deny',
+    capability: 'system.settings',
+    match: { trustLevel: ['untrusted'] },
+    reason:
+      '上下文含不可信内容时修改系统设置。改掉的设置关掉小明也还在——' +
+      '要允许，请在 config.json 的 permission.rules 里写一条 allow。',
     immutable: false,
   },
 ];
+
+/*
+ * ── 这里曾经有 `BALANCED_DEFAULT_RULES`（12 条 `def.*`，ADR-0003）──
+ *
+ * 十条 ask（`fs.write` / `fs.delete` / `shell.exec` / `shell.session` / `git.write` /
+ * `git.push` / `net.fetch` / `package.install` / `gui.capture` / `self.modify`）
+ * 加两条 allow（`fs.read` / `env.read`）。ADR-0039 之后：
+ *
+ *   · 十条 ask 没有了落点——判定结果里不存在 `ask` 这个值；
+ *   · 两条 allow 与第 3 步的兜底放行是同一件事，说两遍只会让人以为它们有额外作用。
+ *
+ * 于是整块删掉，`BUILTIN_RULES` 变成一张**纯拒绝清单**：红线 + 内置 deny。
+ * 这正是这份规则表现在的全部语义——"哪些事不许干"，而不是"每件事分别怎么对待"。
+ * 它也是「红线可展示可配置」（docs/09 C9）最容易渲染的形状。
+ *
+ * ⚠️ 有一条 ask 的消失值得单独记：`def.self-modify`。它不再询问，意味着小明可以
+ * 静默改自己的代码——这正是"最终能改进自己"想要的。真正的边界不在这条 ask 上，
+ * 而在 `selfModifyRedLines()` 那 27 条 immutable 红线：判权逻辑、能力闭集、
+ * 脱敏出口、CI 与钩子、依赖护栏一律改不了，且那批红线同时挂在
+ * `self.modify` / `fs.write` / `fs.delete` 三个能力上（红线按**目标**写而不是按
+ * 调用方自称在做什么写，ADR-0017 的教训）。删 ask 没有削弱它们中的任何一条。
+ */
 
 // ── 敏感路径不许读 ──────────────────────────────────────────────
 
@@ -703,18 +691,20 @@ function assertRules(rules: PolicyRuleSet): PolicyRuleSet {
 }
 
 /**
- * 内置规则集 = 红线 + 平衡档默认 + 敏感路径不许读 + 持久化路径不许写 + 判不了的命令。
+ * 内置规则集 —— ADR-0039 之后是一张**纯拒绝清单**：
+ * 红线 + 不可信上下文 + 敏感路径不许读 + 持久化路径不许写 + SSRF 网段 + 判不了的命令。
  *
- * 顺序按"从不可覆盖到可覆盖"读下来，但**判定与顺序无关**：层内永远是
- * deny > ask > allow，所以敏感路径的 deny 压得住 `def.fs-read` 的 allow，
- * 而它自己又压不住用户层——那正是想要的形状（ADR-0025）。
+ * **这里面没有一条 allow。** 没被任何一条拦住的操作由 `evaluate()` 第 3 步兜底放行，
+ * 所以读这张表的方式很简单：它列的就是小明**不许**做的全部事情。
  *
- * 用户级与项目级规则是**后面的层**，从而能覆盖默认但覆盖不了红线。
+ * 顺序按"从不可覆盖到可覆盖"读下来，但**判定与顺序无关**：层内 deny 胜 allow，
+ * 所以内置的 deny 压不住用户层写的 allow——那正是想要的形状（ADR-0023/0025），
+ * 红线除外（它跨层最先判）。
  */
 export const builtinRules = (env: PolicyEnv): PolicyRuleSet =>
   assertRules([
     ...redLineRules(env),
-    ...BALANCED_DEFAULT_RULES,
+    ...UNTRUSTED_CONTEXT_RULES,
     ...sensitiveReadRules(env),
     ...persistencePathRules(env),
     ...ssrfDenyRules(),
@@ -745,8 +735,6 @@ export interface ComposeInput {
   readonly user?: PolicyRuleSet;
   /** 项目级 `.xiaoming/config.json` 里的规则。**必须先过 `tightenOnly()`** */
   readonly project?: PolicyRuleSet;
-  /** 本会话的授权，由 `grantsToRules()` 合成 */
-  readonly session?: PolicyRuleSet;
 }
 
 /**
@@ -767,9 +755,6 @@ export function composeRules(input: ComposeInput): readonly RuleLayer[] {
   }
   if (input.project !== undefined && input.project.length > 0) {
     layers.push({ id: 'project', rules: input.project });
-  }
-  if (input.session !== undefined && input.session.length > 0) {
-    layers.push({ id: 'session', rules: input.session });
   }
   for (const layer of layers) assertRules(layer.rules);
   return layers;

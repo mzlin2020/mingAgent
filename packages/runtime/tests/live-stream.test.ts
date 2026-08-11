@@ -96,7 +96,6 @@ async function run(): Promise<Screen> {
       }),
       tools: new ToolRegistry(),
       layers: builtinLayers(ENV),
-      tier: 'balanced',
       model: 'scripted-1',
     },
     textInput('说点什么'),

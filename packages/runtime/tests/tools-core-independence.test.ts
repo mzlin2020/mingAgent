@@ -66,11 +66,9 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
         provider,
         tools,
         layers,
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: pureGateway(demoTargetOf),
         pathCaseInsensitive: platform.os === 'windows',
-        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       textInput('你好'),
     );
@@ -124,11 +122,9 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
         provider,
         tools,
         layers,
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: pureGateway(demoTargetOf),
         pathCaseInsensitive: platform.os === 'windows',
-        decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
       },
       textInput('读一下 a.txt'),
     );

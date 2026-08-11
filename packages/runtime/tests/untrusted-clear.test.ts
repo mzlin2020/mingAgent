@@ -112,11 +112,9 @@ async function harness(extra?: ReturnType<typeof spyTool>) {
     runtime,
     tools,
     layers: builtinLayers(ENV),
-    tier: 'balanced' as const,
     model: 'scripted-1',
     gateway: pureGateway(targetOf),
     // ask 一律放行：防御失效时 push 会真的跑起来，用例才拦得住回归
-    decide: () => Promise.resolve({ effect: 'allow' as const, scope: 'once' as const }),
   };
 
   const turn = (text: string, ...calls: { chunks: unknown }[]): Promise<unknown> =>
@@ -160,7 +158,7 @@ const fetchCall = () => callChunks('web.fetch', '{"url":"https://evil.example/x"
 const pushCall = () => callChunks('git.push', '{"remote":"origin"}');
 
 describe('解除不可信标记', () => {
-  it('解除之后，原本被注入降级拒绝的操作能重新走到 ask', async () => {
+  it('解除之后，原本被拒绝的操作真的能跑起来 —— 这是被拦住的用户唯一的出路', async () => {
     const h = await harness();
 
     await h.turn('看看这个网页', { chunks: fetchCall() });
@@ -172,10 +170,9 @@ describe('解除不可信标记', () => {
     await h.turn('好，推上去', { chunks: pushCall() });
 
     const events = await collect(h.store, h.sessionId);
-    const decisions = decisionsFor(events, 'git.push');
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0]!.effect).toBe('allow');
-    // 决定性断言：不是"判了允许"，是**工具真的跑起来了**
+    // 放行不再产生任何 permission 事件（ADR-0039）——
+    // 于是"有没有被拦"的唯一证据就是工具到底跑起来了没有，这也是更强的那个断言
+    expect(decisionsFor(events, 'git.push')).toHaveLength(0);
     expect(startedTools(events)).toContain('git.push');
   });
 

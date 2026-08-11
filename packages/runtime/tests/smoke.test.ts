@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { AnyEvent, ModelChunk, PermissionRequest } from '@xm/contracts';
+import type { AnyEvent, ModelChunk } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import {
   ToolRegistry,
@@ -110,21 +110,15 @@ describe('headless 冒烟：一轮完整对话', () => {
       ],
     });
 
-    const asked: PermissionRequest[] = [];
     const reason = await runTurn(
       {
         runtime,
         provider,
         tools,
         layers,
-        tier: 'balanced',
         model: 'scripted-1',
         gateway: pureGateway(demoTargetOf),
         pathCaseInsensitive: platform.os === 'windows',
-        decide: (request) => {
-          asked.push(request);
-          return Promise.resolve({ effect: 'allow' as const, scope: 'once' as const });
-        },
       },
       textInput('试一下这几个工具'),
     );
@@ -134,14 +128,17 @@ describe('headless 冒烟：一轮完整对话', () => {
 
     // ── 闸门确实长在路径上 ──
     const decisions = seen.filter((e) => e.type === 'permission.decision');
-    expect(decisions).toHaveLength(2); // 红线那次 + ask 那次；echo 零能力不产生权限事件
-    expect(decisions.map((e) => (e.payload as { effect: string }).effect)).toEqual(['deny', 'allow']);
+    // 只有被拒的那次留痕（ADR-0039）：放行不产生权限事件，echo 零能力也不产生
+    expect(decisions).toHaveLength(1);
+    expect(decisions.map((e) => (e.payload as { effect: string }).effect)).toEqual(['deny']);
     expect(
       (decisions[0]?.payload as { ruleId?: string }).ruleId,
-      '删家目录必须是红线拦的，不是档位兜底',
+      '删家目录必须是红线拦的，不是兜底',
     ).toBe('red.fs-delete-home-root');
-    expect(asked, 'ask 只该问一次 —— 红线那次连问都不该问').toHaveLength(1);
-    expect(asked[0]?.target).toBe('/tmp/xm-demo');
+    expect(
+      (decisions[0]?.payload as { by?: string }).by,
+      '拒绝是判定做的决定，事件流里不该再有 by: user',
+    ).toBe('policy');
 
     // ── 三次调用的结局 ──
     const ends = seen.filter((e) => e.type === 'tool.end');
@@ -190,11 +187,21 @@ describe('headless 冒烟：一轮完整对话', () => {
     }
   });
 
-  it('没有应答者时 ask 等同于拒绝 —— 默认放行就等于没有闸门', async () => {
-    const dataDir = join(ROOT, 'run2');
-    const platform = nodePlatform({ appRoot: APP_ROOT, dataDir });
-    const stores = await openStores(platform.paths());
-    const layers = builtinLayers(policyEnvFromPaths(platform.paths()));
+  /**
+   * ── 这条用例的前身：「没有应答者时 ask 等同于拒绝」──
+   *
+   * 那时 `TurnDeps.decide` 是可选的，不传就等于所有 ask 都被拒——**默认放行等于没有闸门**。
+   * ADR-0039 删掉了 ask 与应答者，那个判断点不存在了；同一个位置现在要钉的是相反方向的
+   * 事情：**没有任何"要不要问"的开关之后，拒绝清单本身仍然是唯一的闸门。**
+   *
+   * 用的还是同一个 `fakeDelete` 工具与同一个家目录路径——它撞的是红线，
+   * 而红线在第 1 步、跨层最先判，与有没有人在旁边看着完全无关。
+   */
+  it('没有任何人在旁边看着，红线照样拦得住 —— 闸门是规则，不是确认框', async () => {
+    const platform = nodePlatform({ appRoot: APP_ROOT, dataDir: join(ROOT, 'run2') });
+    const paths = platform.paths();
+    const stores = await openStores(paths);
+    const layers = builtinLayers(policyEnvFromPaths(paths));
     const bus = new EventBus();
     const seen: AnyEvent[] = [];
     bus.subscribe((e) => seen.push(e));
@@ -209,13 +216,14 @@ describe('headless 冒烟：一轮完整对话', () => {
     const tools = new ToolRegistry();
     tools.register(fakeDeleteTool());
     const callId = newCallId();
+    const home = paths.home;
 
     const provider = new ScriptedProvider({
       turns: [
         {
           chunks: [
             { kind: 'tool_call_start', id: callId, name: DEMO_FAKE_DELETE },
-            { kind: 'tool_call_delta', id: callId, argsJson: '{"path":"/tmp/xm-demo"}' },
+            { kind: 'tool_call_delta', id: callId, argsJson: JSON.stringify({ path: home }) },
             { kind: 'tool_call_end', id: callId },
             { kind: 'stop', reason: 'tool_use' },
           ] satisfies ModelChunk[],
@@ -224,15 +232,15 @@ describe('headless 冒烟：一轮完整对话', () => {
       ],
     });
 
-    // 刻意不传 decide
     await runTurn(
-      { runtime, provider, tools, layers, tier: 'balanced', model: 'scripted-1', gateway: pureGateway(demoTargetOf) },
-      textInput('删掉它'),
+      { runtime, provider, tools, layers, model: 'scripted-1', gateway: pureGateway(demoTargetOf) },
+      textInput('删掉家目录'),
     );
 
     const end = seen.find((e) => e.type === 'tool.end');
     expect((end?.payload as { ok: boolean }).ok).toBe(false);
-    expect((end?.payload as { error?: { code: string } }).error?.code).toBe('user_rejected');
+    // 不再是 user_rejected：没有用户参与，这是策略判的
+    expect((end?.payload as { error?: { code: string } }).error?.code).toBe('policy_denied');
     expect(seen.filter((e) => e.type === 'tool.start')).toHaveLength(0);
 
     await runtime.close();

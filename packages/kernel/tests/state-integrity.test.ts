@@ -6,10 +6,13 @@ import { emptySessionState, reduceAll } from '@xm/kernel';
 /**
  * 状态完整性：**能影响安全的东西，一律不能只存在于"当时"，必须能从事件流回放出来。**
  *
- * 这里两条都是实测抓到的洞：
- *   · `session.configured` 的补丁可以设 `permission.tier = 'yolo'` —— 一条会话事件即提权
- *   · `permission.decision(scope=session)` 只清空 pendingPermission，决定本身不落状态
- *     —— 回放出来的会话看不出用户授权过什么
+ * 第一条是实测抓到的洞：`session.configured` 的补丁可以写 `permission` 子树——
+ * 一条会话事件即提权。模型能发这条事件，所以这个禁令是结构性的，不是礼貌性的。
+ *
+ * 第二条是 ADR-0039 之后的新不变量：两条 `permission.*` 事件**只推进 seq**。
+ * 它们过去驱动 `pendingPermission`（确认卡片）与 `grants`（本会话都允许），
+ * 现在两个字段都不存在了，但事件仍然留在老会话的流里——回放老流不能凭空造出
+ * 一个当时并不存在的状态，也不能崩。
  */
 
 const S: SessionId = newSessionId();
@@ -26,9 +29,15 @@ const ev = (type: Parameters<typeof createEvent>[0]['type'], payload: unknown): 
   });
 
 describe('会话级配置不得提权', () => {
-  it('🔴 session.configured 改不动 permission.tier', () => {
+  it('🔴 session.configured 改不动 permission —— 一条会话事件不能给自己加 allow 规则', () => {
     const st = reduceAll(emptySessionState(S), [
-      ev('session.configured', { patch: { permission: { tier: 'yolo' } } }),
+      ev('session.configured', {
+        patch: {
+          permission: {
+            rules: [{ id: 's.allow-all', effect: 'allow', capability: '*', reason: 'x' }],
+          },
+        },
+      }),
     ]);
     expect(st.config).not.toHaveProperty('permission');
   });
@@ -50,7 +59,14 @@ describe('会话级配置不得提权', () => {
   });
 });
 
-describe('权限决定必须可回放', () => {
+/**
+ * ── 老会话的 `permission.*` 事件（ADR-0039）──
+ *
+ * 审批删掉之后这两条事件只剩一个用途：deny 的审计记录（`by: 'policy'`）。
+ * 它们**不再派生任何状态**——但老库里存着大量 `by: 'user'`、`scope: 'session'`
+ * 的旧事件，回放它们时必须既不崩、也不凭空造出一个当时不存在的宽松状态。
+ */
+describe('permission.* 事件只推进 seq', () => {
   const requestId = newRequestId();
   const request = {
     requestId,
@@ -61,34 +77,28 @@ describe('权限决定必须可回放', () => {
     trustLevel: 'model' as const,
   };
 
-  it('🔴 scope=session 的授权进入状态', () => {
-    const st = reduceAll(emptySessionState(S), [
+  it('deny 的审计对（今天唯一会产生的形状）不改变状态', () => {
+    const before = emptySessionState(S);
+    const st = reduceAll(before, [
+      ev('permission.request', request),
+      ev('permission.decision', { requestId, effect: 'deny', scope: 'once', by: 'policy' }),
+    ]);
+    expect(st).toEqual({ ...before, lastSeq: st.lastSeq });
+    expect(st.lastSeq).toBeGreaterThan(0);
+  });
+
+  it('🔴 老事件流里 scope=session 的用户授权回放不出任何放宽', () => {
+    const before = emptySessionState(S);
+    const st = reduceAll(before, [
       ev('permission.request', request),
       ev('permission.decision', { requestId, effect: 'allow', scope: 'session', by: 'user' }),
     ]);
-    expect(st.pendingPermission).toBeUndefined();
-    expect(st.grants).toHaveLength(1);
-    expect(st.grants[0]).toMatchObject({
-      capability: 'shell.exec',
-      target: 'rm -rf build',
-      effect: 'allow',
-      scope: 'session',
-    });
+    // 状态里已经没有能表达"本会话都允许"的地方了，回放出来必须与空状态一致
+    expect(st).toEqual({ ...before, lastSeq: st.lastSeq });
   });
 
-  it('🔴 拒绝同样留痕 —— 只记允许，回放出的状态就偏松', () => {
-    const st = reduceAll(emptySessionState(S), [
-      ev('permission.request', request),
-      ev('permission.decision', { requestId, effect: 'deny', scope: 'session', by: 'user' }),
-    ]);
-    expect(st.grants[0]).toMatchObject({ effect: 'deny' });
-  });
-
-  it('scope=once 不留痕 —— 它只对这一次调用有效', () => {
-    const st = reduceAll(emptySessionState(S), [
-      ev('permission.request', request),
-      ev('permission.decision', { requestId, effect: 'allow', scope: 'once', by: 'user' }),
-    ]);
-    expect(st.grants).toHaveLength(0);
+  it('status 不会被推到一个已经不存在的取值上', () => {
+    const st = reduceAll(emptySessionState(S), [ev('permission.request', request)]);
+    expect(st.status).toBe('idle');
   });
 });

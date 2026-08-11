@@ -177,7 +177,7 @@ describe('端到端：deny net.fetch *.evil.com 挡得住全部写法', () => {
     'https://x.evil.com:443/',
     'https://good.com@evil.com/',
   ])('%s → deny', (target) => {
-    const v = judge({ request: req('net.fetch', target), rules: RULES, tier: 'balanced' });
+    const v = judge({ request: req('net.fetch', target), rules: RULES });
     expect(v.effect).toBe('deny');
     expect(v.ruleId).toBe('user.no-evil');
   });
@@ -187,20 +187,17 @@ describe('端到端：deny net.fetch *.evil.com 挡得住全部写法', () => {
     const v = judge({
       request: req('net.fetch', 'http://2130706433/'),
       rules: RULES,
-      tier: 'balanced',
     });
     expect(v.effect).toBe('deny');
     expect(v.ruleId).toBe('builtin.invalid-target');
   });
 
-  it('无关域名照常走默认规则 —— 防线不能宽到把一切都拦下', () => {
+  it('无关域名照常放行 —— 防线不能宽到把一切都拦下', () => {
     const v = judge({
       request: req('net.fetch', 'https://good.example/'),
       rules: [...RULES, ...builtinRules(ENV)],
-      tier: 'balanced',
     });
-    expect(v.effect).toBe('ask');
-    expect(v.ruleId).toBe('def.net-fetch');
+    expect(v.effect).toBe('allow');
   });
 });
 
@@ -213,17 +210,14 @@ describe('command：归一到规范形式，判不了的仍然失败关闭', () 
     const v = judge({
       request: req('shell.exec', 'git push'),
       rules: builtinRules(ENV),
-      tier: 'balanced',
     });
-    expect(v.effect).toBe('ask');
-    expect(v.ruleId).toBe('def.shell-exec');
+    expect(v.effect).toBe('allow');
   });
 
   it('🔴 展开结果取决于运行时环境的写法，照旧 deny', () => {
     const v = judge({
       request: req('shell.exec', 'rm -rf $(cat target)'),
       rules: builtinRules(ENV),
-      tier: 'balanced',
     });
     expect(v.effect).toBe('deny');
     expect(v.ruleId).toBe('builtin.invalid-target');
@@ -233,7 +227,6 @@ describe('command：归一到规范形式，判不了的仍然失败关闭', () 
     const v = judge({
       request: req('shell.exec', 'rm -rf /tmp/*'),
       rules: builtinRules(ENV),
-      tier: 'yolo',
     });
     expect(v.effect).toBe('deny');
   });
@@ -242,7 +235,6 @@ describe('command：归一到规范形式，判不了的仍然失败关闭', () 
     const denied = judge({
       request: req('shell.exec', 'sudo rm -rf /'),
       rules: builtinRules(ENV),
-      tier: 'balanced',
     });
     expect(denied.effect).toBe('deny');
     expect(denied.ruleId).toBe('def.no-exec-sudo-args');
@@ -252,10 +244,10 @@ describe('command：归一到规范形式，判不了的仍然失败关闭', () 
     const v = judge({
       request: req('shell.exec', ''),
       rules: builtinRules(ENV),
-      tier: 'balanced',
     });
-    expect(v.effect).toBe('ask');
-    expect(v.ruleId).toBe('def.shell-exec');
+    // 没有任何规则拦 `shell.exec` 了，但重点是它**没有因为 target 为空而失败关闭**
+    expect(v.effect).toBe('allow');
+    expect(v.ruleId).not.toBe('builtin.invalid-target');
   });
 
   it('normalizeTarget 直接问也是同一个答案', () => {
@@ -283,9 +275,9 @@ describe('🔴 构造期闸门：写不出假防线', () => {
     ).toThrow(/命令类能力/);
   });
 
-  it('普通规则可以匹配命令 —— 否则「本会话允许这条命令」根本表达不出来', () => {
+  it('普通规则可以匹配命令 —— 否则用户没法在配置里放开某一条具体命令', () => {
     expect(() =>
-      composeRules({ env: ENV, session: [bad({ effect: 'allow', match: { target: 'ls -l' } })] }),
+      composeRules({ env: ENV, user: [bad({ effect: 'allow', match: { target: 'ls -l' } })] }),
     ).not.toThrow();
   });
 

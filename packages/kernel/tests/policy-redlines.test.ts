@@ -58,7 +58,6 @@ const verdict = (capability: Capability, target: string, caseInsensitive = false
   judge({
     request: req(capability, target),
     rules: RULES,
-    tier: 'balanced',
     pathCaseInsensitive: caseInsensitive,
   });
 
@@ -125,7 +124,7 @@ describe('红线：删除家目录', () => {
   });
 
   it('删家目录里的某个文件不是红线 —— 那是日常操作', () => {
-    expect(verdict('fs.delete', '/home/ming/tmp/a.log').effect).toBe('ask');
+    expect(verdict('fs.delete', '/home/ming/tmp/a.log').effect).toBe('allow');
   });
 });
 
@@ -149,8 +148,10 @@ describe('红线：自我修改', () => {
     }
   });
 
-  it('普通业务代码不在红线内，只是需要确认', () => {
-    expect(verdict('self.modify', '/repo/packages/kernel/src/tool/truncate.ts').effect).toBe('ask');
+  it('普通业务代码不在红线内 —— 小明可以自由改自己的业务代码（ADR-0039）', () => {
+    expect(verdict('self.modify', '/repo/packages/kernel/src/tool/truncate.ts').effect).toBe(
+      'allow',
+    );
   });
 
   it('🔴 相对路径不再"绕过"，而是被判为不可判定并拒绝', () => {
@@ -173,7 +174,7 @@ describe('glob 在安全边界上的语义', () => {
   });
 
   it('🔴 Windows 上大小写不敏感，否则改个大小写就绕过红线', () => {
-    expect(verdict('self.modify', 'C:/REPO/scripts/x.mjs').effect).toBe('ask');
+    expect(verdict('self.modify', 'C:/REPO/scripts/x.mjs').effect).toBe('allow');
 
     const winEnv: PolicyEnv = {
       home: 'C:/Users/ming',
@@ -183,7 +184,6 @@ describe('glob 在安全边界上的语义', () => {
     const v = judge({
       request: req('self.modify', 'C:/REPO/SCRIPTS/check-secrets.mjs'),
       rules: builtinRules(winEnv),
-      tier: 'balanced',
       pathCaseInsensitive: true,
     });
     expect(v.effect).toBe('deny');
@@ -195,7 +195,6 @@ describe('红线不受档位影响', () => {
     const v = judge({
       request: req('fs.delete', '/tmp/..'),
       rules: RULES,
-      tier: 'yolo',
     });
     expect(v.effect).toBe('deny');
   });
@@ -210,57 +209,47 @@ describe('红线不受档位影响', () => {
  * net.fetch）在默认规则里**本来就是 ask**——只做 allow→ask 等于在攻击路径上什么都没变，
  * 用户看到的还是那个每天都点的确认框。
  */
-describe('注入降级：ask → deny', () => {
+describe('不可信上下文：三条声明式 deny（ADR-0039，取代注入降级）', () => {
   /*
-   * ADR-0035 把这一段收窄到**严重项**：后果留在本会话之外的那几件事仍然硬 deny，
-   * 其余停在一个指名污染源的高警示 ask。理由是硬 deny 之下用户想继续只能去
-   * 「解除标记」，那把整轮防线一起放倒——比他实际想做的决定大得多，
-   * 而防线越是只剩"全开或全关"，用户就越会选全关。
+   * 判据仍是 ADR-0035 那一条：**后果留不留在本会话之外**。变的是表达方式——
+   * 以前是判完之后再降一档（allow→ask、ask→deny），现在直接写成规则。
+   *
+   * ADR-0035 当时把非严重项从硬 deny 放宽成"指名污染源的高警示 ask"，理由是
+   * 硬 deny 之下用户想继续只能去「解除标记」，那把整轮防线一起放倒。
+   * ADR-0039 之后没有 ask 这个中间档了，于是那条理由换了个方向落地：
+   * **非严重项直接放行**，只有三条严重项拦着，而「解除标记」仍然是它们的出路。
    */
-  it('🔴 untrusted + 严重项 + 本来 ask → deny', () => {
-    for (const [capability, target] of [
-      ['git.push', '/repo'],
-      ['package.install', 'lodash'],
-      ['system.settings', 'dark-mode'],
+  it('🔴 untrusted + 严重项 → deny', () => {
+    for (const [capability, target, ruleId] of [
+      ['git.push', '/repo', 'untrusted.git-push'],
+      ['package.install', 'lodash', 'untrusted.package-install'],
+      ['system.settings', 'dark-mode', 'untrusted.system-settings'],
     ] as const) {
       const v = judge({
         request: { ...req(capability, target), trustLevel: 'untrusted' },
         rules: RULES,
-        tier: 'balanced',
       });
       expect(v.effect, capability).toBe('deny');
-      expect(v.ruleId, capability).toBe('builtin.injection-downgrade');
+      expect(v.ruleId, capability).toBe(ruleId);
     }
   });
 
-  it('🔴 untrusted + 非严重项 + 本来 ask → 高警示 ask（仍然指向注入降级）', () => {
+  it('untrusted + 非严重项 → 放行（否则用户每次搜完东西都要去解除标记）', () => {
     for (const [capability, target] of [
       ['fs.delete', '/repo/src/a.ts'],
       ['net.fetch', 'https://example.com'],
+      ['fs.write', '/repo/src/a.ts'],
     ] as const) {
       const v = judge({
         request: { ...req(capability, target), trustLevel: 'untrusted' },
         rules: RULES,
-        tier: 'balanced',
       });
-      expect(v.effect, capability).toBe('ask');
-      expect(v.ruleId, capability).toBe('builtin.injection-downgrade');
+      expect(v.effect, capability).toBe('allow');
     }
   });
 
-  it('可撤销的能力不降级 —— 全局收紧会被用户整体关掉，等于防御不存在', () => {
-    const v = judge({
-      request: { ...req('fs.write', '/repo/src/a.ts'), trustLevel: 'untrusted' },
-      rules: RULES,
-      tier: 'balanced',
-    });
-    expect(v.effect).toBe('ask');
-    expect(v.ruleId).toBe('def.fs-write');
-  });
-
-  it('可信上下文下 ask 保持 ask', () => {
-    expect(judge({ request: req('git.push', '/repo'), rules: RULES, tier: 'balanced' }).effect)
-      .toBe('ask');
+  it('可信上下文下三条严重项照常放行 —— 它们只在污染之后生效', () => {
+    expect(judge({ request: req('git.push', '/repo'), rules: RULES }).effect).toBe('allow');
   });
 });
 
@@ -308,13 +297,13 @@ describe('自改红线：按目标而不是按自报能力', () => {
 
   it('绕过手法二：Windows 上改大小写（需运行时打开 pathCaseInsensitive）', () => {
     const p = '/repo/Scripts/Check-Secrets.mjs';
-    expect(verdict('fs.write', p, false).effect, '大小写敏感：本就不该命中').toBe('ask');
+    expect(verdict('fs.write', p, false).effect, '大小写敏感：本就不该命中').toBe('allow');
     expect(verdict('fs.write', p, true).effect, '大小写不敏感：必须命中').toBe('deny');
   });
 
   it('保护范围之外的文件不受影响 —— 红线不能宽到让人去找绕过的办法', () => {
-    expect(verdict('fs.write', '/repo/packages/runtime/src/turn.ts').effect).toBe('ask');
-    expect(verdict('fs.write', '/repo/README.md').effect).toBe('ask');
+    expect(verdict('fs.write', '/repo/packages/runtime/src/turn.ts').effect).toBe('allow');
+    expect(verdict('fs.write', '/repo/README.md').effect).toBe('allow');
   });
 });
 
@@ -374,7 +363,6 @@ describe('Windows 8.3 短文件名：一条真实的红线绕过路径', () => {
       judge({
         request: req('fs.write', target),
         rules,
-        tier: 'yolo',
         pathCaseInsensitive: true,
       });
 

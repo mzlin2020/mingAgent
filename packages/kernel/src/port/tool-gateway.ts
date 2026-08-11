@@ -87,24 +87,20 @@ export interface ResolvedCall {
 export interface PermissionClaim {
   readonly capability: Capability;
   readonly target: string;
-  /**
-   * 这条主张**只用来查 deny，不拿去问用户**（ADR-0036）。
-   *
-   * 唯一的用例是网络类主张里那条"解析出的 IP"（`resolveHost` 的 claim B）：它存在
-   * 是为了让 SSRF 的 IP 段规则有东西可匹配——判定与建连必须看同一个地址，否则就是
-   * DNS 重绑定的窗口（ADR-0028）。但它同时也匹配上了 `def.net-fetch` 的 ask，
-   * 于是**每一次 `web.fetch` 都弹两个框**：一个写着域名，一个写着用户根本无从判断的
-   * 裸 IP。实测确认过，这是审批噪音的第二个来源，和 ADR-0035 修的那个乘在一起。
-   *
-   * 那第二个框换不来任何安全：用户能做的判断全在域名那一个框里，
-   * 而针对 IP 的授权也不会泛化到任何别处。所以这里的语义是——
-   * **`deny` 照旧拦（那才是它的用途），`ask` 视为已满足，不进待问队列。**
-   *
-   * 缺省 `false`：只有明确知道自己是"检查用"的主张才配得上这个标记，
-   * 忘了标的后果是多问一次，不是少拦一次。
-   */
-  readonly checkOnly?: boolean;
 }
+
+/*
+ * ── 这里曾经有 `checkOnly`（ADR-0036）──
+ *
+ * 它标的是"这条主张只用来查 deny，不拿去问用户"，唯一的用例是网络主张里那条
+ * "解析出的 IP"（`resolveHost` 的 claim B，为 SSRF 的 IP 段规则提供匹配对象，
+ * ADR-0028）。那条主张同时也命中了 `def.net-fetch` 的 ask，于是每次 `web.fetch`
+ * 都弹两个框：一个写着域名，一个写着用户根本无从判断的裸 IP。
+ *
+ * ADR-0039 之后没有"拿去问用户"这件事了，所有主张都只查 deny——
+ * 这个标记要区分的两种待遇合并成了同一种，留着它就是留一个恒为 no-op 的字段。
+ * **SSRF 那一半（deny）一个字没动**，claim B 照旧产出，照旧被 IP 段规则匹配。
+ */
 
 /**
  * 「工具声明的每个能力 × 同一个 target」—— 路径类工具的主张形状，也是默认形状。

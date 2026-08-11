@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { newCallId, newMessageId, newRequestId, newSessionId, newTurnId } from '@xm/contracts';
+import { newCallId, newMessageId, newSessionId, newTurnId } from '@xm/contracts';
 import { MemoryEventStore, ToolRegistry, builtinLayers, emptySessionState, reduce } from '@xm/kernel';
 import {
   EventBus,
@@ -86,7 +86,7 @@ describe('崩溃恢复：scanForOrphanedSessions / abandonOrphanedTurn / resumeT
     expect(replayed.runningCalls.size).toBe(0);
   });
 
-  it('kind: permission —— 卡在权限审批，第 3 个并行调用连 tool.start 都没有（danglingToolUses）', async () => {
+  it('kind: tool —— 第 2 个调用执行中崩溃，第 3 个并行调用连 tool.start 都没有（danglingToolUses）', async () => {
     const store = new MemoryEventStore();
     const sessionId = newSessionId();
     const dead = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });
@@ -123,25 +123,24 @@ describe('崩溃恢复：scanForOrphanedSessions / abandonOrphanedTurn / resumeT
       turnId,
       payload: { callId: first, ok: true, durationMs: 5, forModel: [{ type: 'text', text: 'ok' }] },
     });
-    // 第 2 个调用卡在权限审批——进程在这里死了，第 3 个调用连 tool.start 都没轮到
-    const requestId = newRequestId();
+    // 第 2 个调用正在执行——进程在这里死了，第 3 个调用连 tool.start 都没轮到
     await dead.record({
-      type: 'permission.request',
+      type: 'tool.start',
       turnId,
-      payload: { requestId, callId: second, capability: 'fs.write', target: '/b', risk: 'medium', reason: '写文件', trustLevel: 'model' },
+      payload: { callId: second, messageId: assistantMessageId, name: 'fs.write', input: { path: '/b' }, risk: 'medium', capabilities: ['fs.write'] },
     });
 
     const found = await scanForOrphanedSessions(store);
     expect(found).toHaveLength(1);
     const orphan = found[0]!.orphan;
-    expect(orphan).toMatchObject({ kind: 'permission', requestId, callId: second });
-    if (orphan.kind !== 'permission') throw new Error('expected permission-kind orphan');
+    expect(orphan).toMatchObject({ kind: 'tool' });
+    if (orphan.kind !== 'tool') throw new Error('expected tool-kind orphan');
+    expect(orphan.calls.map((c) => c.callId)).toEqual([second]);
     expect(orphan.danglingToolUses).toEqual([{ callId: third, name: 'fs.write', input: { path: '/c' } }]);
 
     const revived = dead;
     await abandonOrphanedTurn(revived, orphan);
 
-    expect(revived.state.pendingPermission).toBeUndefined();
     const toolResults = revived.state.messages.flatMap((m) => m.blocks).filter((b) => b.type === 'tool_result');
     // 三个 tool_use 都要有对应的 tool_result：第 1 个正常完成，第 2/3 个被崩溃恢复补上
     expect(new Set(toolResults.map((b) => b.toolUseId))).toEqual(new Set([first, second, third]));
@@ -237,7 +236,6 @@ describe('崩溃恢复：scanForOrphanedSessions / abandonOrphanedTurn / resumeT
         provider: new ScriptedProvider({ turns: [{ chunks: [{ kind: 'stop', reason: 'end_turn' }] }] }),
         tools: new ToolRegistry(),
         layers: builtinLayers(ENV),
-        tier: 'balanced',
         model: 'x',
       },
       orphan.turnId,

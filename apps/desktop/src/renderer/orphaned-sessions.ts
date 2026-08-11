@@ -8,7 +8,7 @@ import { api } from './bridge.js';
  * 拆分的理由不是"store.ts 太长了要挑一块搬走"——是这组东西本来就**不属于任何一个
  * 会话**：`orphanedSessions` 是启动时扫出来的、跨会话的一张列表，横幅因此挂在渲染层
  * 顶层，而不像 `TurnErrorBanner` 那样只在打开某个会话时才出现。它既不进事件流、也不
- * 随 `openSession` 切换，与 store 里其余字段（`session`/`live`/`approvalMode` 全都以
+ * 随 `openSession` 切换，与 store 里其余字段（`session`/`live` 全都以
  * "当前会话"为轴）没有共享的不变量，唯一的耦合是共用同一个 `applyIpcError` 出错收口。
  *
  * 拆成 zustand 的 slice 而不是独立的 store：横幅需要同时读 `currentId` 才能判断

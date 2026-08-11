@@ -1,6 +1,6 @@
 import { app, safeStorage } from 'electron';
 import { join } from 'node:path';
-import type { BlobRef, Config, ContentBlock, RequestId, SessionId } from '@xm/contracts';
+import type { BlobRef, Config, ContentBlock, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
 import type {
   ModelProvider,
@@ -21,7 +21,6 @@ import {
 } from '@xm/kernel';
 import type { ConfigProblem } from '@xm/platform';
 import {
-  appendUserRule,
   loadConfig,
   nodePlatform,
   parseModelRef,
@@ -31,7 +30,7 @@ import {
 import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
 import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
-import type { PermissionAnswer, TurnDeps } from '@xm/runtime';
+import type { TurnDeps } from '@xm/runtime';
 import {
   EventBus,
   ScriptedProvider,
@@ -46,8 +45,7 @@ import {
   synthesizeInterruption,
 } from '@xm/runtime';
 import { PtySessionManager, coreTools, nodeCheckpointer, nodeToolGateway, shellSessionTools } from '@xm/tools-core';
-import type { ApprovalMode, ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
-import { ApprovalModeStore, TIER_OF } from './approval-mode.js';
+import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
@@ -105,15 +103,6 @@ export interface Services {
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
   interrupt(sessionId: SessionId): boolean;
-  /** 应答一次审批。返回是否对上了一个正在等的请求 */
-  respondPermission(requestId: RequestId, answer: PermissionAnswer): boolean;
-  /**
-   * 本会话当前的审批模式（docs/09 C6）。会话级、不持久化——`createSession` 里
-   * 一律初始化成 `'ask'`，不读 `config.json`，也不在这里写它。
-   */
-  getApprovalMode(sessionId: SessionId): ApprovalMode;
-  /** 切换本会话的审批模式，立即对下一次 `sendUserMessage` 生效 */
-  setApprovalMode(sessionId: SessionId, mode: ApprovalMode): void;
   status(): Promise<RuntimeStatus>;
   setApiKey(providerId: string, key: string): Promise<void>;
   /**
@@ -179,10 +168,9 @@ export async function startServices(): Promise<Services> {
    * 用户 clone 来的仓库里，而小明自己有 `fs.write`。被丢弃的条目进 `problems`，
    * 变成一条用户看得见的 notice：不生效可以，不告诉他不行。
    */
-  let userRules = [...loaded.permissionRules.user];
-  let layers: readonly RuleLayer[] = composeRules({
+  const layers: readonly RuleLayer[] = composeRules({
     env: policyEnv,
-    user: userRules,
+    user: loaded.permissionRules.user,
     project: loaded.permissionRules.project,
   });
 
@@ -225,33 +213,16 @@ export async function startServices(): Promise<Services> {
     orphanedSessions.set(sessionId, orphan);
   }
 
-  /**
-   * 等待用户应答的审批请求。
+  /*
+   * ── 这里曾经有一个 `pending: Map<RequestId, resolve>` 与 `denyAllPending()` ──
    *
-   * ── 三个地方必须**兑现成 deny**，一个都不能漏 ──
+   * 挂起的审批请求，以及"关窗 / 退出 / 点停止三个地方都必须把它兑现成 deny"这条
+   * 一个都不能漏的纪律：漏一个，那个 promise 永远不 resolve，表现是 Turn 循环挂死、
+   * 会话卡在 `waiting_permission`，而用户看到的是"点了停止但它还在转"。
    *
-   * 关窗、退出、点停止。任何一个漏掉，那个 promise 就永远不 resolve——
-   * 表现是 Turn 循环挂死、会话卡在 `waiting_permission`，而用户看到的是
-   * "点了停止但它还在转"。失败关闭在这里不只是安全姿态，也是不卡死的唯一做法。
+   * ADR-0039 之后没有挂起的审批，这个 Map 与它那三处兑现点一起删除。
+   * `interrupt()` / `close()` 因此只需要 abort：**没有第二种需要唤醒的等待了。**
    */
-  const pending = new Map<RequestId, (answer: PermissionAnswer) => void>();
-
-  const settle = (requestId: RequestId, answer: PermissionAnswer): boolean => {
-    const resolve = pending.get(requestId);
-    if (resolve === undefined) return false;
-    pending.delete(requestId);
-    resolve(answer);
-    return true;
-  };
-
-  const denyAllPending = (): void => {
-    for (const requestId of [...pending.keys()]) {
-      settle(requestId, { effect: 'deny', scope: 'once' });
-    }
-  };
-
-  /** 每会话的审批模式（docs/09 C6，ADR-0030）。会话级、不持久化——见 approval-mode.ts */
-  const approvalModes = new ApprovalModeStore();
 
   const runtimeFor = async (sessionId: SessionId): Promise<SessionRuntime> => {
     const existing = runtimes.get(sessionId);
@@ -264,7 +235,7 @@ export async function startServices(): Promise<Services> {
 
   /**
    * PTY 会话（`shell.session`，ADR-0031）。全应用共享一个实例，按 `xmSessionId`
-   * 分区——与 `ApprovalModeStore` 同一个形状，理由见 `pty-session.ts` 顶部注释。
+   * 分区——一个共享实例按 xm 会话分区，理由见 `pty-session.ts` 顶部注释。
    *
    * `emit` 只管把事实转成一次 `SessionRuntime.record()`，不关心持久化/广播怎么做——
    * 那是 `record()` 自己的事，manager 不重复一份判断。record 失败（会话已关闭之类）
@@ -384,7 +355,6 @@ export async function startServices(): Promise<Services> {
       provider,
       tools,
       layers,
-      tier: TIER_OF[approvalModes.get(sessionId)],
       model: provider.id === 'scripted' ? 'scripted-1' : model,
       prices: config.prices,
       gateway,
@@ -392,20 +362,6 @@ export async function startServices(): Promise<Services> {
       blobs: stores.blobs,
       pathCaseInsensitive: platform.os === 'windows',
       signal: controller.signal,
-      // 审批：把请求挂起来，等渲染层送答复回来（见 sendUserMessage 原来那份注释）
-      decide: (request) =>
-        new Promise<PermissionAnswer>((resolve) => {
-          if (controller.signal.aborted) {
-            resolve({ effect: 'deny', scope: 'once' });
-            return;
-          }
-          pending.set(request.requestId, resolve);
-        }),
-      persistGrant: async (rule) => {
-        await appendUserRule({ paths, env: policyEnv, rule });
-        userRules = [...userRules.filter((r) => r.id !== rule.id), rule];
-        layers = composeRules({ env: policyEnv, user: userRules, project: loaded.permissionRules.project });
-      },
     };
   };
 
@@ -418,7 +374,6 @@ export async function startServices(): Promise<Services> {
 
     async createSession(options: { title?: string; cwd?: string } = {}): Promise<SessionId> {
       const sessionId = newSessionId();
-      approvalModes.init(sessionId);
       const runtime = await runtimeFor(sessionId);
       await runtime.record({
         type: 'session.created',
@@ -505,8 +460,6 @@ export async function startServices(): Promise<Services> {
         return await runTurn(deps, blocks);
       } finally {
         running.delete(sessionId);
-        // 这一轮结束了，还挂着的审批不可能再有人处理它 —— 兑现成拒绝
-        denyAllPending();
       }
     },
 
@@ -546,7 +499,6 @@ export async function startServices(): Promise<Services> {
         await resumeTurn(deps, orphan.turnId);
       } finally {
         running.delete(sessionId);
-        denyAllPending();
       }
       return true;
     },
@@ -592,27 +544,8 @@ export async function startServices(): Promise<Services> {
     interrupt(sessionId: SessionId): boolean {
       const controller = running.get(sessionId);
       if (controller === undefined) return false;
-      /*
-       * 先把挂着的审批兑现成拒绝，再 abort。
-       *
-       * 顺序要紧：Turn 循环此刻很可能正 await 在 `decide` 上，而 `AbortController`
-       * 唤不醒一个普通的 promise。只 abort 不兑现，用户点了停止之后界面会一直转下去。
-       */
-      denyAllPending();
       controller.abort();
       return true;
-    },
-
-    respondPermission(requestId: RequestId, answer: PermissionAnswer): boolean {
-      return settle(requestId, answer);
-    },
-
-    getApprovalMode(sessionId: SessionId): ApprovalMode {
-      return approvalModes.get(sessionId);
-    },
-
-    setApprovalMode(sessionId: SessionId, mode: ApprovalMode): void {
-      approvalModes.set(sessionId, mode);
     },
 
     async status(): Promise<RuntimeStatus> {
@@ -659,7 +592,6 @@ export async function startServices(): Promise<Services> {
     },
 
     async close(): Promise<void> {
-      denyAllPending();
       // 后台命名任务先停：它不在 running 里，没人替它 abort
       background.abort();
       for (const controller of running.values()) controller.abort();

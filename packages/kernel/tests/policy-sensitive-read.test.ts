@@ -32,11 +32,10 @@ const ask = (target: string): PermissionRequest => ({
   trustLevel: 'model',
 });
 
-const read = (target: string, options: { user?: PolicyRuleSet; yolo?: boolean } = {}) =>
+const read = (target: string, options: { user?: PolicyRuleSet } = {}) =>
   evaluate({
     request: ask(target),
     layers: composeRules({ env: ENV, ...(options.user === undefined ? {} : { user: options.user }) }),
-    tier: options.yolo === true ? 'yolo' : 'balanced',
   });
 
 describe('🔴 家目录下的凭据', () => {
@@ -101,7 +100,6 @@ describe('这批 deny 在层序里的位置', () => {
     const verdict = evaluate({
       request: ask(`${HOME}/.aws/credentials`),
       layers: builtinLayers(ENV),
-      tier: 'balanced',
     });
     expect(verdict.effect).toBe('deny');
     expect(verdict.ruleId).toBe('def.no-read-aws');
@@ -128,8 +126,14 @@ describe('这批 deny 在层序里的位置', () => {
     expect(read(`${HOME}/.ssh/id_rsa`, { user }).effect).toBe('deny');
   });
 
-  it('🔴 YOLO 档跳不过它 —— YOLO 跳的是 ask，不是 deny', () => {
-    expect(read(`${HOME}/.ssh/id_rsa`, { yolo: true }).effect).toBe('deny');
+  /*
+   * 这条以前叫"YOLO 档跳不过它"——档位删掉之后（ADR-0039）没有能跳过它的东西了，
+   * 但断言本身仍然是这套规则最该被质疑的地方：**兜底放行不会顺带放开一条 deny。**
+   */
+  it('🔴 兜底放行跳不过它 —— 拒绝清单在前，兜底在后', () => {
+    expect(read(`${HOME}/.ssh/id_rsa`).effect).toBe('deny');
+    // 家目录下没在清单里的文件确实放行，说明拦住上面那条的是规则本身，不是"家目录不许读"
+    expect(read(`${HOME}/notes.md`).effect).toBe('allow');
   });
 
   it('不是红线：它是可覆盖的，红线不是', () => {
@@ -161,7 +165,6 @@ describe('规则本身的形状', () => {
       evaluate({
         request: ask('C:/Users/ming/.ssh/id_rsa'),
         layers: builtinLayers(win),
-        tier: 'balanced',
       }).effect,
     ).toBe('deny');
   });
