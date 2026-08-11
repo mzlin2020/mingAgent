@@ -63,6 +63,22 @@ export function App(): ReactNode {
     stickToBottom.current = true;
   }, [currentId]);
 
+  /*
+   * Home 与对话共用同一个滚动容器。对话默认贴底，scrollTop 很大；若不复位，
+   * 跳回 Home 时列表（最新在上）会停在底部——用户看到的是最旧会话。
+   * 反过来：Home 把滚动顶到 0 后 onScroll 会把 stickToBottom 冲成 false，
+   * 再点回同一会话 tab 时 currentId 不变、贴底标志也不会被上面那条重置，
+   * 于是对话也贴不上底。进出 Home 时成对处理。
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (shellView === 'home') {
+      if (el !== null) el.scrollTop = 0;
+      return;
+    }
+    stickToBottom.current = true;
+  }, [shellView]);
+
   useEffect(() => {
     const el = scrollRef.current;
     if (el === null) return;

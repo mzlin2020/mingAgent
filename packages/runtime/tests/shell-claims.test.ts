@@ -218,7 +218,13 @@ describe('🔴 curl 不再绕过不可信标记', () => {
 describe('放行的路径也要真的通', () => {
   it('普通命令问一次就跑起来了', async () => {
     const { exec, asked } = await harness();
-    const all = await exec(['echo', 'hello-xm']);
+    /*
+     * 不能用 `echo`：它是 shell 内建，不是 PATH 上的可执行文件。
+     * `shell.exec` 的契约是 `spawn(..., { shell: false })`（ADR-0026），
+     * Windows 上 `spawn('echo')` 直接 ENOENT——这不是实现 bug，是测试选错了命令。
+     * `process.execPath` 在任何跑 vitest 的环境里都在，三平台都能真的 spawn 起来。
+     */
+    const all = await exec([process.execPath, '-e', "process.stdout.write('hello-xm')"]);
     expect(ended(all)[0]?.ok).toBe(true);
     expect(JSON.stringify(ended(all)[0]?.forModel)).toContain('hello-xm');
     // 只有 shell.exec 一条主张要问

@@ -1019,7 +1019,7 @@ function buildRequest(deps: TurnDeps): ModelRequest {
     system: [],
     messages: [...deps.runtime.state.messages],
     tools: deps.tools.descriptors(),
-    maxOutputTokens: 4096,
+    maxOutputTokens: 128_000,
   };
 }
 
