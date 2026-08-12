@@ -1,5 +1,5 @@
 import type { BlobRef, ResultBlock, ResultLimits } from '@xm/contracts';
-import { formatBlobRef } from '@xm/contracts';
+import { formatBlobLocator } from '@xm/contracts';
 
 /**
  * 结果截断（docs/10 §5.3 / ADR-0009）。
@@ -155,7 +155,7 @@ function buildMarker(
   droppedBlocks: number,
   fullRef?: BlobRef,
 ): string {
-  const ref = fullRef === undefined ? '' : `完整内容: ${formatBlobRef(fullRef)}，`;
+  const ref = fullRef === undefined ? '' : `完整内容: ${formatBlobLocator(fullRef)}，`;
   const blocks =
     droppedBlocks === 0 ? '' : `另有 ${droppedBlocks.toLocaleString('en-US')} 个图片/文档块被省略。`;
   return (

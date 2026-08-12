@@ -2,6 +2,8 @@
 
 M2-a 新增内建 `todo.update`：工具通过 ADR-0041 的窄 `TodoUpdater` 写入当前会话的 `todo.updated`，不向 `ToolContext` 暴露通用事件写入口。提示词只在该工具实际可用时引导三步以上任务维护清单。
 
+M2-b 新增内建 `result.expand`：完整 hash 只是定位符，工具只读取当前会话已持久化 `tool.end.fullRef` 可达的 Blob，并按行范围流式展开；跨会话 hash 不可读取（ADR-0042）。
+
 **装配层**：把内核（纯逻辑）、存储（端口实现）、Provider 与工具拼成一个可运行的
 headless 引擎。
 
@@ -14,6 +16,7 @@ headless 引擎。
 | `src/turn.ts` | 极薄的 Turn 循环：Provider → 事件 → 权限闸门 → 工具 → 事件 |
 | `src/provider/scripted.ts` | 按剧本吐 chunk 的 Provider（冒烟、回放、评测都用它） |
 | `src/tools/demo.ts` | 两个零 I/O 的玩具工具，覆盖闸门的三条路径 |
+| `src/tools/result-expand.ts` | 当前会话截断工具结果的 Blob 可达性校验与按行展开 |
 
 ## 不负责什么
 

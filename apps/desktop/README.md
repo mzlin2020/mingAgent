@@ -4,6 +4,8 @@ M1.5 新增只读“设置与安全”面板，使用与运行时分发相同的
 
 M2-a 新增可见任务清单：生产装配注册 `todo.update`，renderer 直接读取事件归约出的 `SessionState.todos` 展示进度；空清单不渲染面板，不维护第二份任务状态。
 
+M2-b 的生产装配注册 `search.text` 与 `result.expand`；后者通过窄回调只解析当前会话 `tool.end.fullRef`，renderer 不获得 BlobStore 浏览能力。
+
 小明的 Electron 外壳：`main` / `preload` / `renderer` 三段。
 
 **这是整个应用唯一同时认识 Electron 与业务的地方**——往下每一层都不认识 electron

@@ -19,3 +19,4 @@ export * from './crash-recovery.js';
 export * from './provider/scripted.js';
 export * from './tools/demo.js';
 export * from './tools/todo.js';
+export * from './tools/result-expand.js';

@@ -19,3 +19,6 @@ export type BlobRef = z.infer<typeof BlobRef>;
 
 /** 展示用的短标识，如 `blob:sha256:ab3f1c…` */
 export const formatBlobRef = (ref: BlobRef): string => `blob:sha256:${ref.hash.slice(0, 12)}…`;
+
+/** 工具间传递用的完整定位符。它只标识内容，不代表调用方有权读取。 */
+export const formatBlobLocator = (ref: BlobRef): string => `blob:sha256:${ref.hash}`;

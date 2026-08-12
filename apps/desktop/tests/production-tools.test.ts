@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+import { MemoryBlobStore } from '@xm/kernel';
 import { PtySessionManager } from '@xm/tools-core';
 import { productionTools } from '../src/main/production-tools.js';
 
@@ -13,9 +15,17 @@ describe('desktop production tool assembly', () => {
       os: 'linux',
       ptySessions: manager,
       updateTodos: () => Promise.resolve(),
+      expandResults: {
+        blobs: new MemoryBlobStore((data) =>
+          Promise.resolve(createHash('sha256').update(data).digest('hex')),
+        ),
+        resolveRef: () => Promise.resolve(undefined),
+      },
     }).map((tool) => tool.descriptor.name);
     expect(names.some((name) => name.startsWith('demo.'))).toBe(false);
     expect(names).toContain('todo.update');
+    expect(names).toContain('search.text');
+    expect(names).toContain('result.expand');
     expect(names).toContain('shell.session.run');
     expect(names).not.toContain('shell.session.write');
   });

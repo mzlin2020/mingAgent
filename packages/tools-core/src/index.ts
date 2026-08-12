@@ -13,6 +13,7 @@ export * from './checkpoint.js';
 export * from './fs-read.js';
 export * from './fs-list.js';
 export * from './fs-write.js';
+export * from './search-text.js';
 export * from './shell-exec.js';
 export * from './pty-session.js';
 export * from './pty-executable.js';
@@ -23,6 +24,7 @@ import type { RegisteredTool } from '@xm/kernel';
 import { fsListTool } from './fs-list.js';
 import { fsReadTool } from './fs-read.js';
 import { fsWriteTool } from './fs-write.js';
+import { textSearchTool } from './search-text.js';
 import type { ShellExecOptions } from './shell-exec.js';
 import { shellExecTool } from './shell-exec.js';
 import { webFetchTool } from './web-fetch.js';
@@ -49,6 +51,7 @@ export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
   fsReadTool(),
   fsListTool(),
   fsWriteTool(),
+  textSearchTool(),
   shellExecTool(options),
   webFetchTool(),
 ];

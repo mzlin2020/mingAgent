@@ -44,6 +44,7 @@ import {
   demoTargetOf,
   echoTool,
   fakeDeleteTool,
+  resultExpandTool,
   runTurn,
   textInput,
   todoUpdateTool,
@@ -92,6 +93,20 @@ try {
         payload: { todos: [...todos] },
         ...(turnId === undefined ? {} : { turnId }),
       });
+    }),
+  );
+  tools.register(
+    resultExpandTool({
+      blobs: stores.blobs,
+      resolveRef: async ({ sessionId: target, hash }) => {
+        if (target !== sessionId) return undefined;
+        for await (const event of runtime.read()) {
+          if (event.type === 'tool.end' && event.payload.fullRef?.hash === hash) {
+            return event.payload.fullRef;
+          }
+        }
+        return undefined;
+      },
     }),
   );
   for (const t of coreTools({ os: platform.os })) tools.register(t);
@@ -192,7 +207,84 @@ try {
   );
   const permAfterFileTurn = permissionEventCount();
 
-  // ── 第三段：M1-d 的 DoD —— rm -rf ~ 的四种写法判定一致 ──────
+  // ── 第三段：M2-b 搜索 → 统一截断 → 会话内按范围展开 ────────
+  const searchFixture = Array.from(
+    { length: 120 },
+    (_, index) => `needle-${String(index + 1).padStart(3, '0')} ${'x'.repeat(900)}`,
+  ).join('\n');
+  writeFileSync(join(workspace, 'search-fixture.txt'), searchFixture);
+  const searchCall = newCallId();
+  await runTurn(
+    {
+      runtime,
+      provider: new ScriptedProvider({
+        turns: [
+          {
+            chunks: [
+              ...toolCall(searchCall, 'search.text', {
+                pattern: 'needle-',
+                path: '.',
+                glob: ['search-fixture.txt'],
+                maxResults: 100,
+              }),
+              { kind: 'stop', reason: 'tool_use' },
+            ],
+          },
+          { chunks: [{ kind: 'stop', reason: 'end_turn' }] },
+        ],
+      }),
+      tools,
+      layers,
+      model: 'scripted-1',
+      gateway: nodeToolGateway(),
+      blobs: stores.blobs,
+      pathCaseInsensitive: platform.os === 'windows',
+    },
+    textInput('在夹具仓库搜索 needle'),
+  );
+  const searchEnd = seen.find(
+    (event) => event.type === 'tool.end' && event.payload.callId === searchCall,
+  );
+  const searchRef = searchEnd?.payload.fullRef;
+  let searchExpanded = false;
+  if (searchRef !== undefined) {
+    const expandCall = newCallId();
+    await runTurn(
+      {
+        runtime,
+        provider: new ScriptedProvider({
+          turns: [
+            {
+              chunks: [
+                ...toolCall(expandCall, 'result.expand', {
+                  ref: `blob:sha256:${searchRef.hash}`,
+                  offset: 95,
+                  limit: 3,
+                }),
+                { kind: 'stop', reason: 'tool_use' },
+              ],
+            },
+            { chunks: [{ kind: 'stop', reason: 'end_turn' }] },
+          ],
+        }),
+        tools,
+        layers,
+        model: 'scripted-1',
+        gateway: nodeToolGateway(),
+        blobs: stores.blobs,
+        pathCaseInsensitive: platform.os === 'windows',
+      },
+      textInput('只展开搜索结果第 95 到 97 行'),
+    );
+    searchExpanded = seen.some(
+      (event) =>
+        event.type === 'tool.end' &&
+        event.payload.callId === expandCall &&
+        JSON.stringify(event.payload.forModel).includes('search-fixture.txt'),
+    );
+  }
+
+  // ── 第四段：M1-d 的 DoD —— rm -rf ~ 的四种写法判定一致 ──────
   //
   // 这一段跑的是真实的 `shell.exec` 工具与真实的能力网关，但**一次也不会真的
   // spawn 出去**：四种写法全都在闸门那里就被拦住了。断言的不只是"都被拦"，
@@ -265,7 +357,7 @@ try {
     (e) => e.type === 'tool.end' && e.payload.ok && JSON.stringify(e.payload.forModel).includes('hello-xm'),
   );
 
-  // ── 第四段：多模态最小反向演练 ──────────────────────────────
+  // ── 第五段：多模态最小反向演练 ──────────────────────────────
   //
   // 贯穿"组装 ContentBlock[] → runTurn → 事件落库 → blob 落盘"整条链路——
   // 其余多模态测试都是分层单测（runtime 的能力闸门、Provider 的 wire 编码、
@@ -356,6 +448,11 @@ try {
   if (!seen.some((e) => e.type === 'tool.progress')) {
     fail('总线上没有 tool.progress —— 工具进度显示不出来');
   }
+  if (searchRef === undefined) {
+    fail('search.text 的超量结果没有经过统一截断写入 BlobStore');
+  } else if (!searchExpanded) {
+    fail('result.expand 没有按范围展开当前会话的搜索全文');
+  }
 
   // ── M1-d DoD 的断言 ────────────────────────────────────────
   for (const [i, [label]] of writings.entries()) {
@@ -401,6 +498,7 @@ try {
       `✓ headless 冒烟通过：${String(types.length)} 条持久事件、` +
         `${String(seen.length)} 条总线事件，回放状态一致；` +
         `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，零权限事件）；` +
+        `M2-b 搜索→截断→会话内范围展开跑通；` +
         `rm -rf ~ 的四种写法全部由同一条红线拦下，普通命令照常跑；` +
         `多模态图片贯穿 组装→runTurn→事件落库→blob 落盘 跑通`,
     );

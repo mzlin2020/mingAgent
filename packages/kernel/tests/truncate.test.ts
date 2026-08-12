@@ -37,7 +37,7 @@ describe('truncateResult', () => {
   it('有 blob 引用时标记里带出完整内容的地址', () => {
     const out = truncateResult(text('x'.repeat(5000)), limits({ maxBytes: 200 }), blob);
     const result = out.blocks[0]!;
-    expect(result.type === 'text' && result.text).toContain('blob:sha256:');
+    expect(result.type === 'text' && result.text).toContain(`blob:sha256:${blob.hash}`);
   });
 
   it('head 策略保留开头', () => {

@@ -298,6 +298,18 @@ export async function startServices(): Promise<Services> {
         ...(turnId === undefined ? {} : { turnId }),
       });
     },
+    expandResults: {
+      blobs: stores.blobs,
+      resolveRef: async ({ sessionId, hash }) => {
+        const runtime = await runtimeFor(sessionId);
+        for await (const event of runtime.read()) {
+          if (event.type === 'tool.end' && event.payload.fullRef?.hash === hash) {
+            return event.payload.fullRef;
+          }
+        }
+        return undefined;
+      },
+    },
   })) {
     tools.register(tool);
   }
