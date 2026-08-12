@@ -14,6 +14,7 @@ export * from './session-runtime.js';
 export * from './drain-text.js';
 export * from './session-title.js';
 export * from './turn.js';
+export * from './turn-request.js';
 export * from './crash-recovery.js';
 export * from './provider/scripted.js';
 export * from './tools/demo.js';

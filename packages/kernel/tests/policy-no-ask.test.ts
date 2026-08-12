@@ -40,6 +40,7 @@ const ENV: PolicyEnv = {
   home: '/home/ming',
   appRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
+  configDir: '/home/ming/.config/xiaoming',
 };
 
 const BUILTIN = builtinRules(ENV);

@@ -1,5 +1,5 @@
 import { randomBytes, createCipheriv, createDecipheriv, scrypt, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { SecretRef } from '@xm/contracts';
 import type { SecretBackend, SecretStore } from '@xm/kernel';
@@ -62,19 +62,28 @@ export function fileSecretStore(options: FileSecretStoreOptions): SecretStore {
     try {
       const raw = await readFile(options.file, 'utf8');
       const parsed: unknown = JSON.parse(raw);
-      return typeof parsed === 'object' && parsed !== null ? (parsed as FileShape) : {};
-    } catch {
-      // 文件不存在 / 坏了：当作空。**不抛**——"还没存过任何密钥"是正常起点
-      return {};
+      if (!isFileShape(parsed)) throw new Error('顶层或密文条目类型不合法');
+      return parsed;
+    } catch (e) {
+      if (isNotFound(e)) return {};
+      throw new SecretUnavailableError(
+        backend,
+        `密钥文件 ${options.file} 无法读取或已损坏，已保留原文件：${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   };
 
   const write = async (shape: FileShape): Promise<void> => {
     await mkdir(dirname(options.file), { recursive: true });
     // 写临时文件 → rename，与 FileBlobStore 同一个手法：中途断电不会留下半个文件
-    const tmp = `${options.file}.tmp`;
-    await writeFile(tmp, JSON.stringify(shape, null, 2), { encoding: 'utf8', mode: 0o600 });
-    await rename(tmp, options.file);
+    const tmp = `${options.file}.${String(process.pid)}-${String(Date.now())}.tmp`;
+    await writeFile(tmp, JSON.stringify(shape, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    try {
+      await rename(tmp, options.file);
+    } catch (e) {
+      await rm(tmp, { force: true });
+      throw e;
+    }
   };
 
   return {
@@ -116,6 +125,23 @@ export function fileSecretStore(options: FileSecretStoreOptions): SecretStore {
     },
   };
 }
+
+const isNotFound = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+
+const isFileShape = (value: unknown): value is FileShape =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every(
+    (entry) =>
+      typeof entry === 'object' &&
+      entry !== null &&
+      !Array.isArray(entry) &&
+      ['salt', 'iv', 'tag', 'data'].every(
+        (key) => key in entry && typeof (entry as Record<string, unknown>)[key] === 'string',
+      ),
+  );
 
 // ── 加解密 ──────────────────────────────────────────────────────
 

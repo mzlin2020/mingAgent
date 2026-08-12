@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Button } from './ui.js';
 import { cn } from '../lib/cn.js';
+import { useUi } from '../store.js';
 
 /**
  * 汉堡菜单（ADR-0037）：设置 / 帮助入口。
@@ -9,6 +10,7 @@ import { cn } from '../lib/cn.js';
  * 设置实体页仍归 M3，这里只占位。
  */
 export function AppMenu(): ReactNode {
+  const openSecurity = useUi((state) => state.openSecurity);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -56,7 +58,13 @@ export function AppMenu(): ReactNode {
             'animate-pop-in p-1 shadow-pop',
           )}
         >
-          <MenuItem label="设置" muted hint="M3" onClick={close} />
+          <MenuItem
+            label="设置与安全"
+            onClick={() => {
+              close();
+              openSecurity();
+            }}
+          />
           <MenuItem label="帮助" muted onClick={close} />
         </div>
       )}

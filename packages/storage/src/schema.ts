@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3';
-import { StoreVersionError } from '@xm/kernel';
+import { StoreCorruptionError, StoreVersionError } from '@xm/kernel';
 
 /**
  * 事件库的表结构与迁移（ADR-0013 / ADR-0016）。
@@ -119,5 +119,17 @@ function readVersion(db: Database): number {
   const row = db.prepare(`SELECT value FROM meta WHERE key = 'schema_version'`).get() as
     | { value: string }
     | undefined;
-  return row === undefined ? 0 : Number.parseInt(row.value, 10);
+  if (row === undefined) return 0;
+  if (!/^\d+$/.test(row.value)) {
+    throw new StoreCorruptionError(
+      `事件库 meta.schema_version 的值 ${JSON.stringify(row.value)} 不是非负整数，拒绝迁移。`,
+    );
+  }
+  const version = Number(row.value);
+  if (!Number.isSafeInteger(version)) {
+    throw new StoreCorruptionError(
+      `事件库 meta.schema_version 的值 ${JSON.stringify(row.value)} 超出安全整数范围，拒绝迁移。`,
+    );
+  }
+  return version;
 }

@@ -11,7 +11,7 @@ import { taintOf } from './taint.js';
  * 1. **必须处理全部事件类型**。`default` 分支落到 `never`，漏一种就编译不过
  *    （TS2345）。这是"新增事件类型时不会忘记更新状态"的唯一保证。
  *
- * 2. **瞬态事件必须是空操作**。message.delta / tool.progress 不得改变状态的任何一位，
+ * 2. **瞬态事件必须是空操作**。message.delta / provider.status / tool.progress 不得改变状态的任何一位，
  *    包括 `lastSeq`。这不是"还没实现"，是 ADR-0008 的硬不变量：
  *    *transient 事件不得携带 persisted 事件流中不存在的信息*。
  *    `tests/persistence-containment.test.ts` 把它变成 CI 闸门。
@@ -23,6 +23,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
   switch (e.type) {
     // ── 瞬态：空操作。改这里之前先读上面第 2 条 ──────────────────
     case 'message.delta':
+    case 'provider.status':
     case 'tool.progress':
     case 'shell.session.output':
       return state;
@@ -159,6 +160,10 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       });
       return { ...state, ptySessions: sessions, lastSeq: e.seq };
     }
+
+    case 'shell.session.command.started':
+    case 'shell.session.command.finished':
+      return { ...state, lastSeq: e.seq };
 
     case 'shell.session.closed': {
       const sessions = new Map(state.ptySessions);

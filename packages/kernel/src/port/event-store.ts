@@ -234,3 +234,11 @@ export class StoreVersionError extends Error {
     this.supported = supported;
   }
 }
+
+/** schema_version 存在但不是严格的非负整数，说明元数据损坏。 */
+export class StoreCorruptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'StoreCorruptionError';
+  }
+}

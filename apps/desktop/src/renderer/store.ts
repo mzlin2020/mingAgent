@@ -40,7 +40,7 @@ type Status = z.infer<typeof StatusResult>;
  */
 
 /** 壳层主区：Home 最近会话 vs 当前焦点会话（ADR-0037） */
-export type ShellView = 'home' | 'chat';
+export type ShellView = 'home' | 'chat' | 'security';
 
 interface UiState extends OrphanedSlice {
   sessions: ListSessionsResult;
@@ -91,6 +91,7 @@ interface UiState extends OrphanedSlice {
   readonly openSession: (id: SessionId) => Promise<void>;
   /** 回到 Home；保留 tabs 打开集合与 currentId，只切主区 */
   readonly goHome: () => void;
+  readonly openSecurity: () => void;
   /**
    * 关闭一个 tab（移出打开集合）。**不删除**会话数据。
    * 若关掉的是焦点，则聚焦剩余最后一个 tab，否则回 Home。
@@ -202,6 +203,11 @@ export const useUi = create<UiState>((set, get) => {
 
     goHome: () => {
       set({ shellView: 'home', error: undefined, sessionConflict: undefined });
+    },
+
+    openSecurity: () => {
+      set({ shellView: 'security', error: undefined, sessionConflict: undefined });
+      void get().refreshStatus();
     },
 
     closeTab: async (id) => {

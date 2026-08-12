@@ -468,5 +468,8 @@ export function pickHttpDeps(o: HttpDeps): HttpDeps {
     ...(o.sleep === undefined ? {} : { sleep: o.sleep }),
     ...(o.maxRetries === undefined ? {} : { maxRetries: o.maxRetries }),
     ...(o.retryBaseMs === undefined ? {} : { retryBaseMs: o.retryBaseMs }),
+    ...(o.firstByteTimeoutMs === undefined ? {} : { firstByteTimeoutMs: o.firstByteTimeoutMs }),
+    ...(o.streamIdleTimeoutMs === undefined ? {} : { streamIdleTimeoutMs: o.streamIdleTimeoutMs }),
+    ...(o.onStatus === undefined ? {} : { onStatus: o.onStatus }),
   };
 }

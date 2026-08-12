@@ -44,6 +44,7 @@ const ENV: PolicyEnv = {
   home: '/home/ming',
   appRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
+  configDir: '/home/ming/.config/xiaoming',
 };
 const BUILTIN_RULES = builtinRules(ENV);
 const RED_LINE_RULES = redLineRules(ENV);
@@ -368,7 +369,8 @@ describe('红线清单', () => {
      * 代理一旦不成立，这条测试就会在一次**正确**的加固上报红。
      */
     const nonSelfModify = RED_LINE_RULES.filter((r) => !r.id.startsWith('red.self-modify-'));
-    expect(nonSelfModify.length).toBeLessThanOrEqual(8);
+    // M1.5 新增数据/配置两类根目录 × read/write/delete，共六条不可覆盖边界。
+    expect(nonSelfModify.length).toBeLessThanOrEqual(14);
   });
 
   it('包含"不许改权限模块自身"这条', () => {

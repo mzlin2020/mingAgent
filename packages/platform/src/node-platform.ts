@@ -39,6 +39,7 @@ function nodeCapabilities(): PlatformCapabilities {
      * 真正的钥匙串探测在 apps/desktop（`safeStorage.isEncryptionAvailable()`）。
      */
     secrets: 'encrypted-file',
+    shellSession: true,
     screenCapture: false,
     // Linux/Wayland 上即便到了 M4 也多半仍是 false（ADR-0007 Tier 3）
     inputInjection: false,

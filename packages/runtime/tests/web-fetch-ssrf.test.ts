@@ -86,7 +86,7 @@ const requests = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'permission.request' ? [e.payload] : []));
 
 beforeEach(() => {
-  ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.xiaoming' };
+  ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.xiaoming', configDir: '/home/ming/.config/xiaoming' };
 });
 
 describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {

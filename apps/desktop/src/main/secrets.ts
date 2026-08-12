@@ -1,5 +1,5 @@
 import { safeStorage } from 'electron';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { SecretRef } from '@xm/contracts';
 import type { SecretStore } from '@xm/kernel';
@@ -31,17 +31,27 @@ export function keychainSecretStore(options: KeychainSecretStoreOptions): Secret
   const read = async (): Promise<FileShape> => {
     try {
       const parsed: unknown = JSON.parse(await readFile(options.file, 'utf8'));
-      return typeof parsed === 'object' && parsed !== null ? (parsed as FileShape) : {};
-    } catch {
-      return {};
+      if (!isStringRecord(parsed)) throw new Error('顶层或条目类型不合法');
+      return parsed;
+    } catch (e) {
+      if (isNotFound(e)) return {};
+      throw new SecretUnavailableError(
+        'keychain',
+        `密钥文件 ${options.file} 无法读取或已损坏，已保留原文件：${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   };
 
   const write = async (shape: FileShape): Promise<void> => {
     await mkdir(dirname(options.file), { recursive: true });
-    const tmp = `${options.file}.tmp`;
-    await writeFile(tmp, JSON.stringify(shape, null, 2), { encoding: 'utf8', mode: 0o600 });
-    await rename(tmp, options.file);
+    const tmp = `${options.file}.${String(process.pid)}-${String(Date.now())}.tmp`;
+    await writeFile(tmp, JSON.stringify(shape, null, 2), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    try {
+      await rename(tmp, options.file);
+    } catch (e) {
+      await rm(tmp, { force: true });
+      throw e;
+    }
   };
 
   /**
@@ -97,3 +107,12 @@ export function keychainSecretStore(options: KeychainSecretStoreOptions): Secret
     },
   };
 }
+
+const isNotFound = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+
+const isStringRecord = (value: unknown): value is FileShape =>
+  typeof value === 'object' &&
+  value !== null &&
+  !Array.isArray(value) &&
+  Object.values(value).every((entry) => typeof entry === 'string');

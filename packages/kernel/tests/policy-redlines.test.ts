@@ -41,6 +41,7 @@ const ENV: PolicyEnv = {
   // 真实形态：env-paths 在 Linux 上给出的数据目录（ADR-0014）。刻意不写成 `~/.xiaoming`
   // ——运行时传进来的永远是展开后的绝对路径，拿 `~` 去测就是在测一个不存在的输入
   dataDir: '/home/ming/.local/share/xiaoming',
+  configDir: '/home/ming/.config/xiaoming',
 };
 const RULES = builtinRules(ENV);
 
@@ -180,6 +181,7 @@ describe('glob 在安全边界上的语义', () => {
       home: 'C:/Users/ming',
       appRoot: 'C:/repo',
       dataDir: 'C:/Users/ming/AppData/Roaming/xiaoming',
+      configDir: 'C:/Users/ming/AppData/Roaming/xiaoming/config',
     };
     const v = judge({
       request: req('self.modify', 'C:/REPO/SCRIPTS/check-secrets.mjs'),
@@ -302,8 +304,12 @@ describe('自改红线：按目标而不是按自报能力', () => {
   });
 
   it('保护范围之外的文件不受影响 —— 红线不能宽到让人去找绕过的办法', () => {
-    expect(verdict('fs.write', '/repo/packages/runtime/src/turn.ts').effect).toBe('allow');
+    expect(verdict('fs.write', '/repo/packages/runtime/src/session-title.ts').effect).toBe('allow');
     expect(verdict('fs.write', '/repo/README.md').effect).toBe('allow');
+  });
+
+  it('🔴 运行时判权入口本身不可通过通用写工具修改', () => {
+    expect(verdict('fs.write', '/repo/packages/runtime/src/turn.ts').effect).toBe('deny');
   });
 });
 

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Terminal } from '@xterm/xterm';
 import type { LiveTerminal } from '@xm/kernel';
@@ -10,8 +10,8 @@ import { useUi } from '../store.js';
  * 打开着的 PTY 会话（`shell.session`，ADR-0031）。
  *
  * `live.terminals` 跨 turn 存活（见 `live-buffer.ts`），所以这里显示的是"当前会话
- * 打开过的全部终端"，不是"这一轮打开的"。已关闭的会话继续显示到用户手动收起
- * 为止——关闭前的最后输出往往正是用户想看的那部分。
+ * 打开过的全部终端"，不是"这一轮打开的"。已关闭且有输出的会话默认收起，
+ * 用户仍可展开查看最后输出；没有输出的会话由 live buffer 直接移除。
  *
  * **v1 只读**：这里不接受用户直接往终端里敲字（没有接到 `shell.session.write`
  * 的输入通路）。是模型在开、模型在敲，人在看——这是 ADR-0004"观察面板"定位的
@@ -34,6 +34,11 @@ function TerminalView({ terminal }: { readonly terminal: LiveTerminal }): ReactN
   const containerRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
   const writtenLength = useRef(0);
+  const [collapsed, setCollapsed] = useState(terminal.closed);
+
+  useEffect(() => {
+    if (terminal.closed) setCollapsed(true);
+  }, [terminal.closed]);
 
   // 挂载一次；仅在这一个终端会话的生命周期内存在
   useEffect(() => {
@@ -80,8 +85,18 @@ function TerminalView({ terminal }: { readonly terminal: LiveTerminal }): ReactN
     <Card className={cn('p-2', terminal.closed && 'opacity-70')}>
       <div className="mb-1.5 flex items-center justify-between px-1.5 pt-0.5 text-meta">
         <span className="min-w-0 truncate font-mono text-muted">{terminal.cwd}</span>
-        <span className={cn('shrink-0', terminal.closed ? 'text-faint' : 'text-accent')}>
-          {terminal.closed ? '已结束' : '运行中'}
+        <span className="flex shrink-0 items-center gap-2">
+          <span className={cn(terminal.closed ? 'text-faint' : 'text-accent')}>
+            {terminal.closed ? '已结束' : '运行中'}
+          </span>
+          <button
+            type="button"
+            className="text-faint hover:text-foreground"
+            onClick={() => { setCollapsed((value) => !value); }}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? '展开' : '收起'}
+          </button>
         </span>
       </div>
       {/*
@@ -90,7 +105,10 @@ function TerminalView({ terminal }: { readonly terminal: LiveTerminal }): ReactN
       */}
       <div
         ref={containerRef}
-        className="h-64 overflow-hidden rounded-control border border-border bg-terminal-bg p-2"
+        className={cn(
+          'h-64 overflow-hidden rounded-control border border-border bg-terminal-bg p-2',
+          collapsed && 'hidden',
+        )}
       />
     </Card>
   );

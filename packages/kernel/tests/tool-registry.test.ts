@@ -11,7 +11,7 @@ import {
   defineTool,
 } from '@xm/kernel';
 import type { ToolAvailabilityContext, ToolContext } from '@xm/kernel';
-import { ALL_CAPABILITIES, newSessionId } from '@xm/contracts';
+import { newSessionId } from '@xm/contracts';
 
 const ctx: ToolContext = {
   sessionId: newSessionId(),
@@ -24,7 +24,14 @@ const ctx: ToolContext = {
 const availCtx = (over: Partial<ToolAvailabilityContext> = {}): ToolAvailabilityContext => ({
   cwd: '/work',
   executor: 'local',
-  platformCapabilities: ALL_CAPABILITIES,
+  platform: {
+    secrets: 'keychain',
+    shellSession: true,
+    screenCapture: true,
+    inputInjection: true,
+    tray: true,
+    notifications: true,
+  },
   disabledTools: [],
   ...over,
 });
@@ -167,6 +174,7 @@ describe('工具可用性过滤', () => {
       inputSchema: z.strictObject({ x: z.number(), y: z.number() }),
       risk: 'high',
       capabilities: ['gui.input'],
+      available: (ctx) => ctx.platform.inputInjection,
       // eslint-disable-next-line @typescript-eslint/require-await
       execute: async function* (): AsyncIterable<ToolProgress> {
         yield { kind: 'result', forModel: [] };
@@ -182,8 +190,9 @@ describe('工具可用性过滤', () => {
   it('🔴 平台不支持所需能力 → 工具不进模型视野', () => {
     const r = new ToolRegistry();
     r.register(guiTool());
-    const platformCapabilities = ALL_CAPABILITIES.filter((c) => c !== 'gui.input');
-    expect(r.descriptors(availCtx({ platformCapabilities }))).toHaveLength(0);
+    expect(
+      r.descriptors(availCtx({ platform: { ...availCtx().platform, inputInjection: false } })),
+    ).toHaveLength(0);
   });
 
   it('🔴 配置禁用优先于工具自己的判断', () => {
@@ -205,6 +214,7 @@ describe('工具可用性过滤', () => {
       }),
     );
     expect(r.descriptors(availCtx({ disabledTools: ['fs.list'] }))).toHaveLength(0);
+    expect(r.getAvailable('fs.list', availCtx({ disabledTools: ['fs.list'] }))).toBeUndefined();
   });
 
   it('工具自报不可用（如无 git 仓库）时也不暴露', () => {

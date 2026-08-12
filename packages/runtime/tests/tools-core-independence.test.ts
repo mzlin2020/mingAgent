@@ -4,6 +4,8 @@ import { newCallId, newSessionId } from '@xm/contracts';
 import { MemoryEventStore, ToolRegistry, builtinLayers, policyEnvFromPaths, pureGateway } from '@xm/kernel';
 import { nodePlatform } from '@xm/platform';
 import { EventBus, ScriptedProvider, SessionRuntime, demoTargetOf, runTurn, textInput } from '@xm/runtime';
+import { defineTool } from '@xm/kernel';
+import { z } from 'zod';
 
 /**
  * 原则二（docs/01）的验收约束："删掉 `packages/tools-core` 后，内核 + UI 必须仍能
@@ -44,7 +46,19 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
 
     // 空注册表——一个工具都没有，就是"删掉 tools-core"之后内核这一侧的真实处境
     const tools = new ToolRegistry();
-    expect(tools.descriptors({ cwd: '/w', executor: 'local', platformCapabilities: [], disabledTools: [] })).toEqual(
+    expect(tools.descriptors({
+      cwd: '/w',
+      executor: 'local',
+      platform: {
+        secrets: 'plaintext-unavailable',
+        shellSession: false,
+        screenCapture: false,
+        inputInjection: false,
+        tray: false,
+        notifications: false,
+      },
+      disabledTools: [],
+    })).toEqual(
       [],
     );
 
@@ -139,5 +153,82 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
       .find((b) => b.type === 'tool_result' && b.toolUseId === callId);
     expect(toolResultBlock).toBeDefined();
     expect(toolResultBlock?.type === 'tool_result' && toolResultBlock.isError).toBe(true);
+  });
+  it('disabled tools stay out of prompts and cannot bypass dispatch checks', async () => {
+    const platform = nodePlatform({ appRoot: '/opt/xiaoming' });
+    const paths = platform.paths();
+    const store = new MemoryEventStore();
+    const bus = new EventBus();
+    const sessionId = newSessionId();
+    const runtime = await SessionRuntime.open({ sessionId, store, bus });
+    await runtime.record({ type: 'session.created', payload: { cwd: '/w', modelRef: 'scripted/scripted-1' } });
+
+    let executions = 0;
+    const tools = new ToolRegistry();
+    tools.register(
+      defineTool({
+        name: 'demo.blocked',
+        group: 'demo',
+        description: 'disabled test fixture',
+        inputSchema: z.strictObject({}),
+        risk: 'low',
+        capabilities: ['fs.read'],
+        async *execute() {
+          await Promise.resolve();
+          executions += 1;
+          yield { kind: 'result' as const, forModel: [{ type: 'text' as const, text: 'unexpected' }] };
+        },
+      }),
+    );
+
+    const callId = newCallId();
+    const provider = new ScriptedProvider({
+      capabilities: { maxOutput: 200_000 },
+      turns: [
+        {
+          chunks: [
+            { kind: 'tool_call_start', id: callId, name: 'demo.blocked' },
+            { kind: 'tool_call_delta', id: callId, argsJson: '{}' },
+            { kind: 'tool_call_end', id: callId },
+            { kind: 'stop', reason: 'tool_use' },
+          ] satisfies ModelChunk[],
+        },
+        { chunks: [{ kind: 'stop', reason: 'end_turn' }] satisfies ModelChunk[] },
+      ],
+    });
+    const reason = await runTurn(
+      {
+        runtime,
+        provider,
+        tools,
+        layers: builtinLayers(policyEnvFromPaths(paths)),
+        model: 'scripted-1',
+        hostOs: 'windows',
+        gateway: pureGateway(demoTargetOf),
+        pathCaseInsensitive: platform.os === 'windows',
+        toolAvailability: {
+          executor: 'local',
+          platform: platform.capabilities(),
+          disabledTools: ['demo.blocked'],
+        },
+      },
+      textInput('call the disabled tool'),
+    );
+
+    expect(reason).toBe('end_turn');
+    // 即使 Provider 声称能输出 200K，主回合也只申请 16K，不再沿用旧的 128K。
+    expect(provider.requests[0]?.maxOutputTokens).toBe(16_384);
+    expect(provider.requests[0]?.system.map((segment) => segment.text).join('\n')).toContain(
+      '优先执行',
+    );
+    expect(provider.requests[0]?.system.map((segment) => segment.text).join('\n')).toContain(
+      '已知运行平台：windows',
+    );
+    expect(provider.requests[0]?.tools?.some((tool) => tool.name === 'demo.blocked') ?? false).toBe(false);
+    expect(executions).toBe(0);
+    const result = runtime.state.messages
+      .flatMap((message) => message.blocks)
+      .find((block) => block.type === 'tool_result' && block.toolUseId === callId);
+    expect(result?.type === 'tool_result' && result.isError).toBe(true);
   });
 });

@@ -47,10 +47,14 @@ const CLAUDE: ModelCapabilities = {
  * 没有任何 deepseek 条目，于是 `capabilitiesFor('deepseek-v4-flash').thinking`
  * 取兜底值 `false`：我们一边在给它回传思考内容，一边在能力表里说它不会思考。
  *
- * 其余字段一律保守值——这张表的规矩是"不知道的往小了取"，而我们对这一家
- * 真正有证据的只有"它会思考"这一件事（一次真调用，见 `live.test.ts`）。
+ * 实际主回合已经稳定返回过超过 4K 的输出；继续沿用未知模型的 4096 兜底会把
+ * 完整工具调用截断在思考阶段。其余字段仍保持保守值。
  */
-const DEEPSEEK: ModelCapabilities = { ...CONSERVATIVE_CAPABILITIES, thinking: true };
+const DEEPSEEK: ModelCapabilities = {
+  ...CONSERVATIVE_CAPABILITIES,
+  thinking: true,
+  maxOutput: 16_384,
+};
 
 /**
  * 前缀匹配的能力表。用前缀而不是全名，是因为模型 id 常带日期后缀

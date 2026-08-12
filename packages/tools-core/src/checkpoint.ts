@@ -3,7 +3,7 @@ import { basename } from 'node:path';
 import type { BlobRef } from '@xm/contracts';
 import type {
   BlobStore,
-  CheckpointRecord,
+  CheckpointBeforeResult,
   Checkpointer,
   PermissionClaim,
   RegisteredTool,
@@ -39,6 +39,9 @@ import type {
 
 export interface NodeCheckpointerOptions {
   readonly blobs: BlobStore;
+  /** 测试注入点；生产默认使用 node:fs/promises。 */
+  readonly statFile?: typeof stat;
+  readonly readFileBytes?: typeof readFile;
 }
 
 /** 单个文件的快照上限。超过就不快照，并在 label 里说清楚——绝不假装存过 */
@@ -50,7 +53,7 @@ export const nodeCheckpointer = (options: NodeCheckpointerOptions): Checkpointer
     _input: unknown,
     ctx: ToolContext,
     claims: readonly PermissionClaim[],
-  ): Promise<CheckpointRecord | undefined> {
+  ): Promise<CheckpointBeforeResult | undefined> {
     if (ctx.signal.aborted) return undefined;
 
     const paths = [
@@ -65,23 +68,42 @@ export const nodeCheckpointer = (options: NodeCheckpointerOptions): Checkpointer
 
     const refs: string[] = [];
     const labels: string[] = [];
+    const warnings: string[] = [];
 
     for (const path of paths) {
-      const snapshot = await snapshotOne(options.blobs, path);
-      refs.push(snapshot.ref);
-      labels.push(snapshot.label);
+      const snapshot = await snapshotOne(
+        options.blobs,
+        path,
+        options.statFile ?? stat,
+        options.readFileBytes ?? readFile,
+      );
+      if (snapshot.ref === undefined) warnings.push(snapshot.label);
+      else {
+        refs.push(snapshot.ref);
+        labels.push(snapshot.label);
+      }
     }
 
-    return { kind: 'fs', ref: refs.join(','), label: labels.join('；') };
+    return {
+      ...(refs.length === 0
+        ? {}
+        : { record: { kind: 'fs' as const, ref: refs.join(','), label: labels.join('；') } }),
+      warnings,
+    };
   },
 });
 
 interface OneSnapshot {
-  readonly ref: string;
+  readonly ref?: string;
   readonly label: string;
 }
 
-async function snapshotOne(blobs: BlobStore, path: string): Promise<OneSnapshot> {
+async function snapshotOne(
+  blobs: BlobStore,
+  path: string,
+  statFile: typeof stat,
+  readFileBytes: typeof readFile,
+): Promise<OneSnapshot> {
   /*
    * 目录快照做不了，**而且要说出来**。
    *
@@ -90,26 +112,17 @@ async function snapshotOne(blobs: BlobStore, path: string): Promise<OneSnapshot>
    * 也不要让还原点列表里出现一条指向空内容、回退时什么也恢复不了的记录。
    */
   try {
-    const info = await stat(path);
+    const info = await statFile(path);
     if (info.isDirectory()) {
-      return { ref: '', label: `${path}（目录，**这一步没有还原点**，ADR-0026 遗留）` };
+      return { label: `${path}（目录，**这一步没有还原点**，ADR-0026 遗留）` };
     }
-  } catch {
-    // 不存在：下面按"原本不存在"处理
-  }
-
-  let data: Uint8Array | undefined;
-  try {
-    data = await readFile(path);
-  } catch {
-    // 文件不存在（或读不到）：回退动作是"删掉它"，而这条信息全在 label 里
-    data = undefined;
-  }
-
-  if (data === undefined) {
+  } catch (e) {
+    if (!isNotFound(e)) throw e;
     const ref = await blobs.put(new Uint8Array(0), 'application/octet-stream', basename(path));
     return { ref: refString(ref), label: `${path}（原本不存在）` };
   }
+
+  const data = await readFileBytes(path);
 
   if (data.byteLength > MAX_SNAPSHOT_BYTES) {
     /*
@@ -120,7 +133,6 @@ async function snapshotOne(blobs: BlobStore, path: string): Promise<OneSnapshot>
      * 也不要悄悄存下去直到磁盘满。
      */
     return {
-      ref: '',
       label: `${path}（${String(data.byteLength)} 字节，超过快照上限，**这一步没有还原点**）`,
     };
   }
@@ -131,4 +143,7 @@ async function snapshotOne(blobs: BlobStore, path: string): Promise<OneSnapshot>
 
 /** `sha256:<hex>:<size>` —— 事件里的 `ref` 是字符串，要能一眼看出指向哪个 blob */
 const refString = (ref: BlobRef): string => `sha256:${ref.hash}:${String(ref.size)}`;
+
+const isNotFound = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 

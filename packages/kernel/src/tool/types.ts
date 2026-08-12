@@ -8,6 +8,7 @@ import type {
   ToolDescriptor,
   ToolProgress,
 } from '@xm/contracts';
+import type { PlatformCapabilities } from '../port/platform.js';
 
 /**
  * 取消信号的**最小结构**。
@@ -53,8 +54,8 @@ export interface ToolContext {
 export interface ToolAvailabilityContext {
   readonly cwd: string;
   readonly executor: 'local' | 'container' | 'remote';
-  /** 由 PlatformPort 探测得出，如 `computer.input`（Linux 上不可用，ADR-0007） */
-  readonly platformCapabilities: readonly Capability[];
+  /** 主机实际功能；与“这次动作需要什么权限”的 Capability 是两个概念。 */
+  readonly platform: PlatformCapabilities;
   /** 配置里显式禁用的工具名（Config.tools.disabled） */
   readonly disabledTools: readonly string[];
 }
@@ -108,6 +109,12 @@ export interface ToolSpec<I> {
     readonly argv: string;
     /** 命令的工作目录字段。省略则用会话的 cwd */
     readonly cwd?: string;
+    /**
+     * 工具自己持有工作目录时，用它提供省略 `cwd` 后的真实执行目录。
+     * 典型场景是跨 turn 的受控终端：它的目录来自 `shell.session.open`，不一定等于会话 cwd。
+     * 网关会用这个值判权并回写入参，保证判定与执行不会落到两个目录。
+     */
+    readonly resolveCwd?: (input: unknown, ctx: ToolContext) => string | undefined;
   };
 
   /**

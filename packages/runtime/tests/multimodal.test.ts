@@ -13,7 +13,7 @@ import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '
  * 真正在乎的事。
  */
 
-const ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.local/share/xiaoming' };
+const ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.local/share/xiaoming', configDir: '/home/ming/.config/xiaoming' };
 
 const sha256Hex = (data: Uint8Array): Promise<string> =>
   Promise.resolve(createHash('sha256').update(data).digest('hex'));

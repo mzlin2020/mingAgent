@@ -11,7 +11,7 @@
 
 export * from './sse.js';
 export { ProviderHttpError, postSse } from './http.js';
-export type { HttpDeps, PostSseOptions } from './http.js';
+export type { HttpDeps, PostSseOptions, ProviderStreamStatus } from './http.js';
 export { AnthropicProvider } from './anthropic.js';
 export type { AnthropicOptions } from './anthropic.js';
 export { OpenAICompatibleProvider } from './openai-compatible.js';

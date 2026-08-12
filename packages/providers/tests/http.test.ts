@@ -123,6 +123,7 @@ describe('退避与重试', () => {
     }) as unknown as typeof fetch;
 
     const slept: number[] = [];
+    const statuses: unknown[] = [];
     await postSse({
       ...OPTS,
       signal: abortLike().signal,
@@ -132,11 +133,19 @@ describe('退避与重试', () => {
         return Promise.resolve();
       },
       retryBaseMs: 10,
+      onStatus: (status) => {
+        statuses.push(status);
+      },
     });
 
     expect(calls).toBe(3);
     // Retry-After=2s 压过指数退避的基数，取两者中的大者
     expect(slept.every((ms) => ms >= 2000)).toBe(true);
+    expect(statuses).toEqual([
+      expect.objectContaining({ phase: 'retrying', attempt: 2, maxAttempts: 4 }),
+      expect.objectContaining({ phase: 'retrying', attempt: 3, maxAttempts: 4 }),
+      { phase: 'connected' },
+    ]);
   });
 
   it('🔴 4xx 不重试 —— 重发只是把同一个错误再送一遍', async () => {
@@ -163,6 +172,75 @@ describe('退避与重试', () => {
         maxRetries: 2,
       }),
     ).rejects.toMatchObject({ xm: { code: 'provider_error', retryable: true } });
+  });
+});
+
+describe('流式超时', () => {
+  it('首字节超时会在尚未产生内容时自动重试，并报告重试状态', async () => {
+    let calls = 0;
+    const fetchImpl = (() => {
+      calls += 1;
+      return Promise.resolve(
+        calls === 1
+          ? new Response(new ReadableStream<Uint8Array>({}), { status: 200 })
+          : sse('data: ok\n\n'),
+      );
+    }) as unknown as typeof fetch;
+    const statuses: unknown[] = [];
+
+    const body = await postSse({
+      ...OPTS,
+      signal: abortLike().signal,
+      fetchImpl,
+      firstByteTimeoutMs: 10,
+      sleep: () => Promise.resolve(),
+      maxRetries: 1,
+      onStatus: (status) => {
+        statuses.push(status);
+      },
+    });
+
+    const frames: string[] = [];
+    for await (const frame of readSseFrames(body)) frames.push(frame.data);
+    expect(frames).toEqual(['ok']);
+    expect(calls).toBe(2);
+    expect(statuses).toEqual([
+      expect.objectContaining({ phase: 'retrying', attempt: 2, maxAttempts: 2 }),
+      { phase: 'connected' },
+    ]);
+  });
+
+  it('首字节之后持续无数据会以 timeout 明确结束，不重复已产生的内容', async () => {
+    const encoder = new TextEncoder();
+    const fetchImpl = (() =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(encoder.encode('data: one\n\n'));
+            },
+          }),
+          { status: 200 },
+        ),
+      )) as unknown as typeof fetch;
+
+    const body = await postSse({
+      ...OPTS,
+      signal: abortLike().signal,
+      fetchImpl,
+      streamIdleTimeoutMs: 10,
+      maxRetries: 0,
+    });
+    const frames: string[] = [];
+    let error: unknown;
+    try {
+      for await (const frame of readSseFrames(body)) frames.push(frame.data);
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(frames).toEqual(['one']);
+    expect(error).toMatchObject({ xm: { code: 'timeout', retryable: true } });
   });
 });
 

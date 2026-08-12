@@ -31,7 +31,7 @@ const judge = (
  */
 
 const DATA = '/home/ming/.local/share/xiaoming';
-const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: DATA };
+const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: DATA, configDir: '/home/ming/.config/xiaoming' };
 const RULES = builtinRules(ENV);
 
 const req = (capability: Capability, target: string): PermissionRequest => ({
@@ -90,15 +90,15 @@ describe('审计日志红线', () => {
     expect(verdict('fs.delete', `${DATA}/audit.db`).effect).toBe('deny');
   });
 
-  it('事件库不在红线内 —— 红线只留"没有正当理由"的操作，清自己的会话数据是有的', () => {
+  it('🔴 事件库属于应用私有状态，模型工具不能直接删除', () => {
     const v = verdict('fs.delete', `${DATA}/events.db`);
-    expect(v.effect).toBe('allow');
+    expect(v.effect).toBe('deny');
+    expect(v.ruleId).toMatch(/^red\.private-data-/);
   });
 
-  it('数据目录里的其它文件不受影响', () => {
-    expect(verdict('fs.write', `${DATA}/blobs/ab/cd`).effect).toBe('allow');
-    // `*` 不跨 `/`，所以红线不该顺手把整个目录盖住
-    expect(verdict('fs.write', `${DATA}/audit.db.d/x`).effect).toBe('allow');
+  it('🔴 checkpoint blob 与数据目录其它内容同样受保护', () => {
+    expect(verdict('fs.write', `${DATA}/blobs/ab/cd`).effect).toBe('deny');
+    expect(verdict('fs.write', `${DATA}/audit.db.d/x`).effect).toBe('deny');
   });
 
   /**
@@ -141,6 +141,7 @@ describe('paths → PolicyEnv 只有一条通路', () => {
       home: 'C:/Users/ming',
       appRoot: 'C:/repo',
       dataDir: winData,
+      configDir: 'C:/Users/ming/AppData/Roaming/xiaoming/config',
     });
     const v = judge({
       request: req('fs.delete', 'c:\\users\\ming\\appdata\\roaming\\xiaoming\\audit.db-wal'),

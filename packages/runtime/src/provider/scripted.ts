@@ -43,6 +43,7 @@ export class ScriptedProvider implements ModelProvider {
   readonly #capabilities: ModelCapabilities;
   readonly #delay: number;
   #cursor = 0;
+  readonly requests: ModelRequest[] = [];
 
   constructor(options: ScriptedProviderOptions) {
     this.id = options.id ?? 'scripted';
@@ -66,7 +67,8 @@ export class ScriptedProvider implements ModelProvider {
     return this.#capabilities;
   }
 
-  async *stream(_req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk> {
+  async *stream(req: ModelRequest, signal: AbortLike): AsyncIterable<ModelChunk> {
+    this.requests.push(req);
     const turn = this.#turns[this.#cursor];
     if (turn === undefined) {
       throw new Error(

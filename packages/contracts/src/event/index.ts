@@ -33,6 +33,7 @@ export const XmEvent = z.discriminatedUnion('type', [
     type: z.literal('message.interrupted'),
     payload: P.MessageInterruptedPayload,
   }),
+  EventEnvelope.extend({ type: z.literal('provider.status'), payload: P.ProviderStatusPayload }),
 
   EventEnvelope.extend({ type: z.literal('tool.start'), payload: P.ToolStartPayload }),
   EventEnvelope.extend({ type: z.literal('tool.progress'), payload: P.ToolProgressPayload }),
@@ -45,6 +46,14 @@ export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({
     type: z.literal('shell.session.output'),
     payload: P.ShellSessionOutputPayload,
+  }),
+  EventEnvelope.extend({
+    type: z.literal('shell.session.command.started'),
+    payload: P.ShellSessionCommandStartedPayload,
+  }),
+  EventEnvelope.extend({
+    type: z.literal('shell.session.command.finished'),
+    payload: P.ShellSessionCommandFinishedPayload,
   }),
   EventEnvelope.extend({
     type: z.literal('shell.session.closed'),

@@ -33,6 +33,7 @@ const ENV = {
   home: '/home/ming',
   appRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
+  configDir: '/home/ming/.config/xiaoming',
 };
 
 const PIECES = ['小明', '正在', '流式', '输出', '一段', '话。'];

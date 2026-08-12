@@ -102,8 +102,8 @@ export function mergeConfig(base: ConfigPatch, patch: ConfigPatch): ConfigPatch 
  * **会话层不得触碰的配置路径。**
  *
  * 分层里"会话覆盖"排在项目级之上，于是 `session.configured` 事件的补丁天然能改任何键——
- * 包括 `permission.tier`。那意味着任何能往事件流里追加一条 session.configured 的路径，
- * 都等于一条提权到 YOLO 的通道；而事件流的写入方将来会包括工具、插件宿主、
+ * 包括权限规则。那意味着任何能往事件流里追加一条 session.configured 的路径，
+ * 都可能成为放松权限边界的通道；而事件流的写入方将来会包括工具、插件宿主、
  * 以及小明自己（L4）。**权限档位与规则只能来自用户级/项目级配置文件，不能来自会话内。**
  *
  * 密钥同理：会话补丁能改 `providers.*.apiKey` 就等于能把请求导向任意端点。

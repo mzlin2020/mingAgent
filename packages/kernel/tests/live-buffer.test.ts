@@ -66,6 +66,24 @@ function feed(events: readonly XmEvent[]): { state: SessionState; live: LiveBuff
 }
 
 describe('在途缓冲：累积', () => {
+  it('message.start 本身就算可见在途状态，不必等首个 delta', () => {
+    const id = newMessageId();
+    expect(hasLive(feed([start(id)]).live)).toBe(true);
+  });
+
+  it('Provider 重试状态只挂在当前消息上，连接恢复后清除', () => {
+    const id = newMessageId();
+    const retry = ev(
+      'provider.status',
+      { phase: 'retrying', attempt: 2, maxAttempts: 4, delayMs: 500, reason: '限流' },
+      false,
+    );
+    let live = feed([start(id), retry]).live;
+    expect(live.message?.providerStatus).toMatchObject({ attempt: 2, maxAttempts: 4 });
+    live = applyLive(live, ev('provider.status', { phase: 'connected' }, false));
+    expect(live.message?.providerStatus).toBeUndefined();
+  });
+
   it('delta 逐条累进来，start 之后 end 之前都看得见', () => {
     const id = newMessageId();
     const { live } = feed([start(id), delta(id, '你'), delta(id, '好'), delta(id, '呀')]);
@@ -232,6 +250,11 @@ describe('🔴 在途缓冲：PTY 会话（ADR-0031）', () => {
     const t = live.terminals.get(ptySessionId);
     expect(t?.closed).toBe(true);
     expect(t?.text).toBe('done\n');
+  });
+
+  it('没有任何输出的已关闭终端直接移除，不留下空白黑色面板', () => {
+    const { live } = feed([opened(), closed()]);
+    expect(live.terminals.has(ptySessionId)).toBe(false);
   });
 
   it('turn.end 不清 PTY 会话 —— 它跨 turn 存活，这是与 message/calls 唯一的形状差异', () => {

@@ -3,8 +3,8 @@ import { dirname, join } from 'node:path';
 import type {
   Config,
   ConfigPatch,
-  PolicyRule,
   PolicyRuleSet as PolicyRuleSetType,
+  ProviderConfig,
 } from '@xm/contracts';
 import {
   Config as ConfigSchema,
@@ -12,8 +12,8 @@ import {
   findPlaintextSecrets,
   mergeConfigLayers,
 } from '@xm/contracts';
-import type { PolicyEnv, XmPaths } from '@xm/kernel';
-import { composeRules, tightenOnly } from '@xm/kernel';
+import type { XmPaths } from '@xm/kernel';
+import { tightenOnly } from '@xm/kernel';
 
 /**
  * 配置加载。
@@ -79,7 +79,7 @@ export const DEFAULT_CONFIG: ConfigPatch = {
   model: { main: 'anthropic/claude-opus-5' },
   providers: {},
   prices: {},
-  permission: { tier: 'balanced', rules: [] },
+  permission: { rules: [] },
   tools: { disabled: [] },
   logging: { level: 'info', redact: true },
 };
@@ -158,63 +158,38 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
   };
 }
 
-export interface AppendUserRuleOptions {
+export interface PersistProviderConfigOptions {
   readonly paths: XmPaths;
-  /** 红线所需的环境事实。构造期闸门要用（见下） */
-  readonly env: PolicyEnv;
-  readonly rule: PolicyRule;
+  readonly providerId: string;
+  readonly provider: ProviderConfig;
 }
 
 /**
- * 把一条规则追加进**用户级**配置文件 —— 「永久授权」的落盘点。
- *
- * ── 三条不能省的 ──
- *
- * **一、落盘前先过构造期闸门。** `composeRules()` 会对新的整份规则集断言一遍
- * （命令类能力不许用 target 匹配、红线不许建在没有规范化契约的 target 上）。
- * 在**写下来的那一刻**炸掉，是这类问题唯一的治法——否则它下次启动才失败，
- * 而那时用户早忘了自己点过什么。路线图对这一段的要求就是这一句。
- *
- * **二、原子写。** 读—改—写一份配置文件，中途断电会留下半截 JSON，
- * 而那会让下次启动整份配置退回内置默认——包括用户的模型设置。
- * 临时文件与目标同目录（跨设备 rename 不是原子的）。
- *
- * **三、同 id 覆盖而不是重复追加。** 授权规则的 id 里带着 requestId，本来就不会重复；
- * 但用户可能对同一个目标反复授权，那时留一条比留十条清楚。
- *
- * ⚠️ 这条写入**不经过 PolicyEngine**——它不是工具调用，是用户在 UI 上的直接操作，
- * 与审计库的写入同理。红线保护的是"模型让工具去改这些文件"那条路。
+ * 用户主动录入密钥后，把对应 Provider 的 SecretRef 原子写回用户配置。
+ * 只允许不存在的文件从空对象开始；损坏或无权限的配置绝不覆盖。
  */
-export async function appendUserRule(options: AppendUserRuleOptions): Promise<void> {
+export async function persistProviderConfig(options: PersistProviderConfigOptions): Promise<void> {
   const file = join(options.paths.config, 'config.json');
-  const current = await readJson(file);
-  const permission = isRecord(current.permission) ? current.permission : {};
-  const existing = PolicyRuleSet.safeParse(permission.rules);
-  const before = existing.success ? existing.data : [];
-
-  const next = [...before.filter((r) => r.id !== options.rule.id), options.rule];
-
-  // 闸门：抛出去，由调用方转成"这次只在本会话生效"的 notice
-  composeRules({ env: options.env, user: next });
-
-  const merged = { ...current, permission: { ...permission, rules: next } };
+  const current = await readJsonForUpdate(file);
+  const providers = isRecord(current.providers) ? current.providers : {};
+  const merged = {
+    ...current,
+    providers: { ...providers, [options.providerId]: options.provider },
+  };
   await writeJsonAtomic(file, merged);
 }
 
-async function readJson(file: string): Promise<Record<string, unknown>> {
+async function readJsonForUpdate(file: string): Promise<Record<string, unknown>> {
   try {
     const parsed: unknown = JSON.parse(await readFile(file, 'utf8'));
-    return isRecord(parsed) ? parsed : {};
-  } catch {
-    /*
-     * 读不到或读不懂就从空对象开始。
-     *
-     * ⚠️ 这会**覆盖掉一份读不懂的配置文件**。取舍：走到这里说明用户刚在 UI 上
-     * 点了"永久允许"，他期待的是这条授权被记住；而一份 JSON 语法坏掉的配置文件
-     * 此刻已经完全没有生效（`loadConfig` 会带着一条 notice 退回内置默认）。
-     * 两害相权，保住用户刚做的决定。
-     */
-    return {};
+    if (!isRecord(parsed)) throw new Error(`${file} 的顶层不是对象，拒绝覆盖。`);
+    return parsed;
+  } catch (e) {
+    if (isNotFound(e)) return {};
+    throw new Error(
+      `无法安全更新 ${file}：现有配置读不到或不是合法 JSON，已保留原文件。${e instanceof Error ? e.message : String(e)}`,
+      { cause: e },
+    );
   }
 }
 
@@ -298,8 +273,12 @@ async function readLayer(file: string, problems: ConfigProblem[]): Promise<Confi
   let raw: string;
   try {
     raw = await readFile(file, 'utf8');
-  } catch {
-    // 文件不存在是**绝大多数**情况，不是问题
+  } catch (e) {
+    if (isNotFound(e)) return undefined;
+    problems.push({
+      code: 'config.unreadable',
+      message: `${file} 无法读取，已忽略：${e instanceof Error ? e.message : String(e)}`,
+    });
     return undefined;
   }
 
@@ -318,6 +297,9 @@ async function readLayer(file: string, problems: ConfigProblem[]): Promise<Confi
     return undefined;
   }
 }
+
+const isNotFound = (error: unknown): boolean =>
+  typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 
 /** `"anthropic/claude-opus-5"` → `{ provider, model }`。没有斜杠时整串当模型名 */
 export function parseModelRef(ref: string): { provider: string; model: string } {

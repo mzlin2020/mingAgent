@@ -15,19 +15,17 @@ import type { PermissionClaim } from './tool-gateway.js';
  * （`capabilities` 含 `fs.write` / `fs.delete`，且声明了 `pathInputs`）——
  * 与权限判定用的是同一份声明，不需要第二处名单。
  *
- * ── 为什么返回值可以是 undefined ──
+ * ── 为什么结果同时带 record 与 warnings ──
  *
- * "没有需要快照的东西"是正常结果，不是失败：写一个还不存在的新文件、
- * 或者一个声明了 `fs.write` 却本次没碰到文件的调用。这时不该落一条指向空内容的
- * `checkpoint.created`——那会让还原点列表里全是噪音，真正能回退的那几个反而找不到。
+ * "没有需要快照的东西"是正常结果；目录与超大文件则是已知不支持、允许继续但必须告警。
+ * 真正的 I/O 失败直接 reject，由运行时停止破坏性操作。
  */
 export interface Checkpointer {
   /**
    * 在工具执行**之前**建立还原点。
    *
-   * 抛错意味着还原点建不起来。调用方（`turn.ts`）**不因此中止执行**，
-   * 而是记一条 notice：一次快照失败不该让用户的任务停下，但他必须知道
-   * "这一步没有退路"。这与"降级可以、不告诉用户不行"是同一条纪律。
+   * 抛错意味着本应建立的还原点因 I/O/完整性问题失败，调用方必须停止执行。
+   * 已知不支持的目录或超大文件通过 warnings 表达，调用方告警后继续。
    */
   before(
     tool: RegisteredTool,
@@ -41,7 +39,14 @@ export interface Checkpointer {
      * 从能力声明换成了主张。
      */
     claims: readonly PermissionClaim[],
-  ): Promise<CheckpointRecord | undefined>;
+  ): Promise<CheckpointBeforeResult | undefined>;
+}
+
+export interface CheckpointBeforeResult {
+  /** 至少有一个真实可恢复对象时才存在。 */
+  readonly record?: CheckpointRecord;
+  /** 已知无法快照但允许继续的目标，例如目录或超过上限的大文件。 */
+  readonly warnings: readonly string[];
 }
 
 export interface CheckpointRecord {

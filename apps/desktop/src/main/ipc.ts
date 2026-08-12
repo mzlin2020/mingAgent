@@ -100,6 +100,7 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
       secretBackend: s.secretBackend,
       hasApiKey: s.hasApiKey,
       configProblems: s.configProblems.map((p) => ({ code: p.code, message: p.message })),
+      security: s.security,
     };
   });
 

@@ -6,6 +6,7 @@ import type { EventStore, SealedEvent } from '@xm/kernel';
 import {
   EVENT_STORE_CONTRACT,
   SeqConflictError,
+  StoreCorruptionError,
   StoreVersionError,
   WriteLeaseError,
   sealEvent,
@@ -103,6 +104,19 @@ describe('SqliteEventStore 专属行为', () => {
     raw.close();
 
     expect(() => new SqliteEventStore({ path })).toThrow(StoreVersionError);
+  });
+
+  it('🔴 schema 版本元数据损坏 → 拒绝打开，不进入 NaN 迁移路径', async () => {
+    const path = tmpDbPath();
+    const store = new SqliteEventStore({ path });
+    await store.close();
+
+    const { default: Database } = await import('better-sqlite3');
+    const raw = new Database(path);
+    raw.prepare(`UPDATE meta SET value = '2oops' WHERE key = 'schema_version'`).run();
+    raw.close();
+
+    expect(() => new SqliteEventStore({ path })).toThrow(StoreCorruptionError);
   });
 
   /**

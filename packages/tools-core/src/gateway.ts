@@ -1,7 +1,5 @@
-import { realpath as realpathCb } from 'node:fs';
 import { lookup as dnsLookupNode } from 'node:dns/promises';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
-import { promisify } from 'node:util';
+import { isAbsolute, join, resolve } from 'node:path';
 import { isPathCapability, targetKindOf } from '@xm/contracts';
 import type {
   PermissionClaim,
@@ -15,18 +13,8 @@ import {
   analyzeArgv,
   claimsOfCapabilities,
   normalizeHostTarget,
-  normalizePathTarget,
 } from '@xm/kernel';
-
-/**
- * **必须是 `.native`。**
- *
- * `fs.promises.realpath` 是 JS 实现，它解符号链接，但**解不了 Windows 的 8.3 短名**——
- * 而 ADR-0024 关闭 ADR-0018 遗留时写的正是"realpath.native 顺带把短名展开成长名"。
- * 文档里写着 `.native`、代码里用的是另一个，这条遗留就只是看起来被关掉了。
- * （`fs/promises` 上没有 `.native`，所以从回调版 promisify 过来。）
- */
-const realpath = promisify(realpathCb.native);
+import { asInputRecord, canonicalPath, resolveDeepPath } from './gateway-path.js';
 
 /**
  * 路径能力网关的 Node 实现（ADR-0024）。
@@ -120,7 +108,7 @@ export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway =
       );
     }
 
-    const record = asRecord(input, tool.descriptor.name);
+    const record = asInputRecord(input, tool.descriptor.name);
     const out: Record<string, unknown> = { ...record };
     let target = '';
 
@@ -135,7 +123,7 @@ export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway =
         );
       }
 
-      const resolved = canonical(await resolveDeep(resolve(cwd, raw)), tool.descriptor.name, field);
+      const resolved = canonicalPath(await resolveDeepPath(resolve(cwd, raw)), tool.descriptor.name, field);
       out[field] = resolved;
       // 第一个声明的字段就是判权用的 target（`pathInputs` 按判权重要性排序）
       if (target === '') target = resolved;
@@ -187,7 +175,7 @@ async function resolveCommand(
     );
   }
 
-  const record = asRecord(input, name);
+  const record = asInputRecord(input, name);
   const rawArgv = record[fields.argv];
   if (!Array.isArray(rawArgv) || rawArgv.some((a) => typeof a !== 'string')) {
     throw new GatewayError(`工具 ${name} 的入参 "${fields.argv}" 应当是一个字符串数组。`, {
@@ -197,7 +185,8 @@ async function resolveCommand(
   }
 
   const cwdField = fields.cwd === undefined ? undefined : record[fields.cwd];
-  const cwd = await resolveCwd(cwdField, options.cwd ?? ctx.cwd, name);
+  const toolCwd = cwdField === undefined ? fields.resolveCwd?.(record, ctx) : undefined;
+  const cwd = await resolveCwd(cwdField, toolCwd ?? options.cwd ?? ctx.cwd, name);
   const argv = (rawArgv as string[]).map((a) => expandHome(a, options.home));
 
   const analysis = analyzeArgv(argv);
@@ -215,7 +204,7 @@ async function resolveCommand(
     const expanded = expandHome(claim.target.raw, options.home);
     claims.push({
       capability: claim.capability,
-      target: canonical(await resolveDeep(resolve(cwd, expanded)), name, fields.argv),
+      target: canonicalPath(await resolveDeepPath(resolve(cwd, expanded)), name, fields.argv),
     });
   }
 
@@ -233,7 +222,7 @@ async function resolveCwd(raw: unknown, fallback: string, tool: string): Promise
     });
   }
   const candidate = typeof raw === 'string' && raw !== '' ? resolve(fallback, raw) : fallback;
-  return canonical(await resolveDeep(candidate), tool, 'cwd');
+  return canonicalPath(await resolveDeepPath(candidate), tool, 'cwd');
 }
 
 /**
@@ -279,7 +268,7 @@ async function resolveHost(
     );
   }
 
-  const record = asRecord(input, name);
+  const record = asInputRecord(input, name);
   const hostCapabilities = tool.descriptor.capabilities.filter((c) => targetKindOf(c) === 'host');
   const lookup = options.dnsLookup ?? defaultDnsLookup;
   const claims: PermissionClaim[] = [];
@@ -404,98 +393,3 @@ const dedupeClaims = (claims: readonly PermissionClaim[]): readonly PermissionCl
     return true;
   });
 };
-
-/**
- * 把 realpath 出来的**平台原生**路径，变成内核判定用的那个坐标系里的字符串。
- *
- * ── 为什么不是"算出 target 就够了" ──
- *
- * ADR-0024 的要害是"判定看到的那个路径，必须就是工具打开的那个路径"。
- * 而 `evaluate()` 拿到 target 之后还会再规范化一次（正斜杠、盘符大写）。
- * 于是在 Windows 上，如果这里回写的是 `C:\work\a.md` 而判定比的是 `C:/work/a.md`，
- * 事件流里记的、授权里存的、规则里写的就又变成了三个不同的字符串——
- * 「本会话都允许」下一次照样弹框，而没有任何地方看得出为什么。
- *
- * 所以这里就把它归到最终形态：**入参、target、事件、授权，从这一行起是同一个串**。
- * Node 的 fs API 在 Windows 上一律接受正斜杠，所以回写正斜杠不影响任何工具。
- * POSIX 上这一步是恒等变换——它改变的只有 Windows 的行为。
- *
- * `\\?\` 前缀（长路径形态，`realpath.native` 在某些卷上会返回它）必须先摘掉：
- * 内核会把它当成一个以 `/` 开头的 POSIX 路径，规范化成 `/?/C:/...`，那是个匹配不上
- * 任何规则的怪串——**一条静默失效的红线，比一条报错的红线危险得多**。
- */
-function canonical(nativePath: string, tool: string, field: string): string {
-  const stripped = nativePath.replace(/^\\\\\?\\(UNC\\)?/, (_m, unc: string | undefined) =>
-    unc === undefined ? '' : '\\\\',
-  );
-
-  /*
-   * UNC（`\\server\share\...`）**当场拒绝**，不是"尽力而为"。
-   *
-   * 内核的归一没有 UNC 契约：`\\server\share\x` 会被当成一个以 `/` 开头的 POSIX 路径，
-   * 归一成 `/server/share/x`。那个串有两个问题，每个单独都足以拒绝——
-   *   · 拿它去执行，Windows 会解析成**当前盘的根目录**下，与用户说的不是一个地方；
-   *   · 拿它去判定，它和一条写给 POSIX 的 `/server/**` 规则形状完全相同。
-   *
-   * 与 8.3 短名同一个处置：判不了就明确地判不了，不给一层看起来能用的假防线。
-   */
-  if (/^[\\/]{2}/.test(stripped)) {
-    throw new GatewayError(
-      `工具 ${tool} 的入参 "${field}" 指向一个 UNC 网络路径（${nativePath}）。` +
-        `路径归一还没有 UNC 契约，判定会落在错误的坐标系上，因此这里直接拒绝。`,
-      { tool, field, path: nativePath },
-    );
-  }
-
-  const normalized = normalizePathTarget(stripped);
-  if (!normalized.ok) {
-    throw new GatewayError(
-      `工具 ${tool} 的入参 "${field}" 解析出的路径 "${nativePath}" 无法规范化：` +
-        normalized.reason,
-      { tool, field, path: nativePath },
-    );
-  }
-  return normalized.value;
-}
-
-/**
- * realpath 一个可能还不存在的路径。
- *
- * 向上找到最深的存在祖先并解析它，再把剩余段原样拼回去。
- * 每一段都不做任何"聪明"的处理——`..` 在这里已经被 `resolve()` 消解过，
- * 而剩余段按定义是不存在的，没有链接可解。
- */
-async function resolveDeep(absolute: string): Promise<string> {
-  const rest: string[] = [];
-  let cursor = absolute;
-
-  for (;;) {
-    try {
-      const real = await realpath(cursor);
-      return rest.length === 0 ? real : join(real, ...rest.reverse());
-    } catch {
-      const parent = dirname(cursor);
-      if (parent === cursor) {
-        /*
-         * 走到了根还是解析不了。这在正常的文件系统上几乎不可能发生
-         * （根一定存在），所以它更可能意味着权限问题或路径畸形——
-         * 无论哪种，**都不是可以按未解析路径继续判定的理由**。
-         */
-        throw new GatewayError(`无法解析路径 "${absolute}"：向上到根都不存在或不可访问。`, {
-          path: absolute,
-        });
-      }
-      rest.push(cursor.slice(parent.length).replaceAll(sep, ''));
-      cursor = parent;
-    }
-  }
-}
-
-function asRecord(input: unknown, toolName: string): Record<string, unknown> {
-  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
-    throw new GatewayError(`工具 ${toolName} 的入参不是一个对象，无法从中取出路径字段。`, {
-      tool: toolName,
-    });
-  }
-  return input as Record<string, unknown>;
-}

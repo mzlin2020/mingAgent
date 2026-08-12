@@ -182,6 +182,16 @@ export const StatusResult = z.object({
   secretBackend: z.enum(['keychain', 'encrypted-file', 'plaintext-unavailable']),
   hasApiKey: z.boolean(),
   configProblems: z.array(z.object({ code: z.string(), message: z.string() })),
+  security: z.object({
+    boundary: z.literal('host-autonomous-protected-core'),
+    osSandbox: z.literal(false),
+    protectedResources: z.array(z.string()),
+    enabledTools: z.array(z.string()),
+    disabledTools: z.array(z.string()),
+    unavailableTools: z.array(z.string()),
+    terminalMode: z.literal('controlled-argv-no-stdin'),
+    logRedaction: z.literal(true),
+  }),
 });
 
 /**

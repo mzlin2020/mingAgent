@@ -30,9 +30,9 @@ import type {
  * （`spec.capabilities`），加一道检查不需要新的基础设施。
  */
 export const EMPTY_CAPABILITIES_ALLOWLIST: Readonly<Record<string, string>> = {
-  'shell.session.write': 'ADR-0031（会话内容结构性不判权，见 ADR-0031/0032 的代价说明）',
-  'shell.session.resize': 'ADR-0031（同上）',
-  'shell.session.close': 'ADR-0031（同上）',
+  'shell.session.status': 'ADR-0040（只读查询当前会话所属终端的有界状态）',
+  'shell.session.resize': 'ADR-0040（只改变当前会话所属终端显示尺寸）',
+  'shell.session.close': 'ADR-0040（只关闭当前会话所属终端）',
   /*
    * `demo.echo` 是这条纪律建立之前就存在的一个更早的例子（M0-b，`packages/
    * runtime/src/tools/demo.ts`）——本轮复审 ADR-0032 说"全项目只有 PTY 的三个
@@ -174,8 +174,6 @@ export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
       // 配置里禁用的工具一律不可用，且这条**优先于**工具自己的判断——
       // 用户关掉一个工具的意思是关掉，不是"由工具自己决定要不要听"
       if (ctx.disabledTools.includes(spec.name)) return false;
-      // 平台不具备该工具所需的任一能力 → 不暴露（ADR-0007）
-      if (spec.capabilities.some((c) => !ctx.platformCapabilities.includes(c))) return false;
       return spec.available?.(ctx) ?? true;
     },
   };
@@ -207,6 +205,12 @@ export class ToolRegistry {
 
   get(name: string): RegisteredTool | undefined {
     return this.#tools.get(name);
+  }
+
+  /** 分发阶段再次检查可用性，不能只靠“没放进提示词”。 */
+  getAvailable(name: string, ctx: ToolAvailabilityContext): RegisteredTool | undefined {
+    const tool = this.#tools.get(name);
+    return tool?.available(ctx) === true ? tool : undefined;
   }
 
   has(name: string): boolean {

@@ -127,7 +127,7 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
         args,
         cwd: input.cwd ?? ctx.cwd,
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        env: childEnv(options),
+        env: shellChildEnv(options),
         os: options.os,
         signal: ctx.signal,
       });
@@ -142,7 +142,7 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
   });
 
 /** 子进程能看到的环境。白名单之外的一律不给 */
-function childEnv(options: ShellExecOptions): Record<string, string> {
+export function shellChildEnv(options: ShellExecOptions): Record<string, string> {
   const source = options.env ?? process.env;
   const allowed = [...ENV_ALLOWLIST, ...(options.extraEnv ?? [])];
   const out: Record<string, string> = {};
@@ -203,7 +203,7 @@ function runCommand(input: RunInput): Promise<RunOutcome> {
       bytes += chunk.byteLength;
       if (bytes > MAX_OUTPUT_BYTES) {
         clipped = true;
-        killTree(child.pid, input.os);
+        killProcessTree(child.pid, input.os);
         return;
       }
       if (into === 'out') stdout += text;
@@ -219,12 +219,12 @@ function runCommand(input: RunInput): Promise<RunOutcome> {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      killTree(child.pid, input.os);
+      killProcessTree(child.pid, input.os);
     }, input.timeoutMs);
 
     const onAbort = (): void => {
       interrupted = true;
-      killTree(child.pid, input.os);
+      killProcessTree(child.pid, input.os);
     };
     input.signal.addEventListener('abort', onAbort);
 
@@ -263,7 +263,7 @@ function runCommand(input: RunInput): Promise<RunOutcome> {
  * POSIX：`kill(-pid)` 打的是**进程组**，先 TERM 给一次体面退出的机会，
  * 还在就 KILL。Windows 上没有进程组，只能靠 `taskkill /T /F`。
  */
-function killTree(pid: number | undefined, os: OsFamily): void {
+export function killProcessTree(pid: number | undefined, os: OsFamily): void {
   if (pid === undefined) return;
 
   if (os === 'windows') {

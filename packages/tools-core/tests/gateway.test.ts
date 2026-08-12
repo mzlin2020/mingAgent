@@ -79,7 +79,12 @@ afterAll(async () => {
 
 describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
   it('工作区内指向外部文件的链接，解析成外部的真实路径', async () => {
-    await symlink(join(outside, 'id_rsa'), join(root, 'looks-innocent.txt'));
+    try {
+      await symlink(join(outside, 'id_rsa'), join(root, 'looks-innocent.txt'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw error;
+    }
 
     const resolved = await nodeToolGateway().resolve(
       tool(),
@@ -93,7 +98,8 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
   });
 
   it('穿过符号链接目录的路径同样被解析', async () => {
-    await symlink(outside, join(root, 'link-dir'));
+    // Windows 无需 Developer Mode 也能建 junction；其它平台将 type 当作目录链接处理。
+    await symlink(outside, join(root, 'link-dir'), 'junction');
     const resolved = await nodeToolGateway().resolve(
       tool(),
       { path: 'link-dir/id_rsa' },
@@ -103,7 +109,7 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
   });
 
   it('🔴 没有网关时，同一条规则拦不住它 —— 这就是网关存在的全部理由', () => {
-    const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: '/tmp/xm-data' };
+    const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: '/tmp/xm-data', configDir: '/tmp/xm-config' };
     const deny: PolicyRuleSet = [
       {
         id: 'user.no-secrets',
@@ -280,7 +286,13 @@ describe('命令分支', () => {
 
   it('🔴 符号链接照样解开 —— 与路径工具走的是同一段代码', async () => {
     const link = join(root, 'link-to-secret');
-    await symlink(join(outside, 'id_rsa'), link).catch(() => undefined);
+    const linked = await symlink(join(outside, 'id_rsa'), link)
+      .then(() => true)
+      .catch((error: unknown) => {
+        if (error instanceof Error && 'code' in error && error.code === 'EPERM') return false;
+        throw error;
+      });
+    if (!linked) return;
     const claims = await claimsOf(['cat', 'link-to-secret']);
     expect(claims).toContainEqual({
       capability: 'fs.read',
@@ -354,6 +366,27 @@ describe('命令分支', () => {
   it('cwd 入参会被 realpath 并回写', async () => {
     const r = await nodeToolGateway().resolve(shell(), { argv: ['ls'], cwd: 'src' }, ctx(root));
     expect((r.input as { cwd: string }).cwd).toBe(await realOf(join(root, 'src')));
+  });
+
+  it('工具提供的默认 cwd 同时用于命令判权和实际执行', async () => {
+    const terminalCwd = join(root, 'src');
+    const r = await nodeToolGateway().resolve(
+      shell({
+        commandInputs: {
+          argv: 'argv',
+          cwd: 'cwd',
+          resolveCwd: () => terminalCwd,
+        },
+      }),
+      { argv: ['rm', 'a.ts'] },
+      ctx(outside),
+    );
+
+    expect((r.input as { cwd: string }).cwd).toBe(await realOf(terminalCwd));
+    expect(r.claims).toContainEqual({
+      capability: 'fs.delete',
+      target: await realOf(join(terminalCwd, 'a.ts')),
+    });
   });
 });
 

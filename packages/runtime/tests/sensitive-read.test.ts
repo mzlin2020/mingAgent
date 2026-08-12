@@ -86,7 +86,7 @@ const realNative = promisify(realpathCb.native);
 beforeEach(async () => {
   dir = await realNative(await mkdtemp(join(tmpdir(), 'xm-sensitive-')));
   // 把临时目录当成用户的家目录：敏感路径的规则全部相对它计算
-  ENV = { home: dir, appRoot: '/repo', dataDir: join(dir, '.xiaoming') };
+  ENV = { home: dir, appRoot: '/repo', dataDir: join(dir, '.xiaoming'), configDir: join(dir, '.config') };
   await mkdir(join(dir, '.ssh'), { recursive: true });
   await writeFile(join(dir, '.ssh', 'id_rsa'), SECRET);
   await writeFile(join(dir, '.env'), `API_KEY=${SECRET}`);
@@ -118,7 +118,12 @@ describe('🔴 私钥读不出来', () => {
    * 而这里验的是"网关 + 这批新规则"合起来仍然成立。
    */
   it('🔴 工作区里一个指向私钥的符号链接：同样拒绝', async () => {
-    await symlink(join(dir, '.ssh', 'id_rsa'), join(dir, 'notes.txt'));
+    try {
+      await symlink(join(dir, '.ssh', 'id_rsa'), join(dir, 'notes.txt'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') return;
+      throw error;
+    }
     const h = await harness();
     const all = await h.read('notes.txt');
 

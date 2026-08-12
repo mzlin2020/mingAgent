@@ -42,6 +42,7 @@ export const EVENT_SPECS = {
     durability: 'persisted',
     version: 1,
   },
+  'provider.status': { schema: P.ProviderStatusPayload, durability: 'transient', version: 1 },
 
   // ── 工具 ──
   'tool.start': { schema: P.ToolStartPayload, durability: 'persisted', version: 1 },
@@ -57,6 +58,16 @@ export const EVENT_SPECS = {
   'shell.session.output': {
     schema: P.ShellSessionOutputPayload,
     durability: 'transient',
+    version: 1,
+  },
+  'shell.session.command.started': {
+    schema: P.ShellSessionCommandStartedPayload,
+    durability: 'persisted',
+    version: 1,
+  },
+  'shell.session.command.finished': {
+    schema: P.ShellSessionCommandFinishedPayload,
+    durability: 'persisted',
     version: 1,
   },
   'shell.session.closed': {

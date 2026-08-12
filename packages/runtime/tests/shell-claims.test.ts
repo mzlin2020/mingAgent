@@ -90,7 +90,12 @@ beforeEach(async () => {
   await mkdir(join(home, '.ssh'), { recursive: true });
   await writeFile(join(home, '.ssh', 'id_rsa'), 'PRIVATE\n');
   await writeFile(join(dir, 'ok.txt'), 'fine\n');
-  ENV = { home, appRoot: '/repo', dataDir: join(home, '.xiaoming') };
+  ENV = {
+    home,
+    appRoot: join(dir, 'repo'),
+    dataDir: join(home, '.xiaoming'),
+    configDir: join(home, '.config', 'xiaoming'),
+  };
 });
 
 afterEach(async () => {
@@ -140,6 +145,18 @@ describe('🔴 M1-d DoD：rm -rf ~ 被拦，而且四种写法判定一致', () 
 });
 
 describe('🔴 已有的规则自动覆盖命令', () => {
+  it.each([
+    ['runtime data', (root: string) => ['cat', join(root, '.xiaoming', 'events.db')]],
+    ['user config and secrets', (root: string) => ['cat', join(root, '.config', 'xiaoming', 'secrets.json')]],
+    ['security source', () => ['rm', join(ENV.appRoot, 'packages', 'runtime', 'src', 'turn.ts')]],
+  ])('analyzable commands cannot touch protected %s', async (_label, argvFor) => {
+    const { exec } = await harness();
+    const all = await exec(argvFor(home));
+    expect(ended(all)[0]?.ok).toBe(false);
+    expect(decisions(all)[0]?.ruleId).toMatch(/^red\.(private-|self-modify-)/);
+    expect(started(all)).toHaveLength(0);
+  });
+
   it('cat 私钥撞上 ADR-0025 的读取 deny —— 一条新规则都没写', async () => {
     const { exec } = await harness();
     const all = await exec(['cat', join(home, '.ssh', 'id_rsa')]);

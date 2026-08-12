@@ -3,7 +3,6 @@ import { join } from 'node:path';
 import type { BlobRef, Config, ContentBlock, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
 import type {
-  ModelProvider,
   OrphanedTurn,
   PlatformPort,
   RuleLayer,
@@ -23,32 +22,37 @@ import type { ConfigProblem } from '@xm/platform';
 import {
   loadConfig,
   nodePlatform,
-  parseModelRef,
+  persistProviderConfig,
   unavailableSecretStore,
   withCapabilities,
 } from '@xm/platform';
-import { AnthropicProvider, OpenAICompatibleProvider } from '@xm/providers';
 import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
+import type { ProviderStreamStatus } from '@xm/providers';
 import type { TurnDeps } from '@xm/runtime';
 import {
   EventBus,
-  ScriptedProvider,
   SessionRuntime,
   abandonOrphanedTurn,
   autoTitleSession,
-  echoTool,
-  fakeDeleteTool,
   resumeTurn,
   runTurn,
   scanForOrphanedSessions,
   synthesizeInterruption,
 } from '@xm/runtime';
-import { PtySessionManager, coreTools, nodeCheckpointer, nodeToolGateway, shellSessionTools } from '@xm/tools-core';
+import type { PtySessionEvent } from '@xm/tools-core';
+import { PtySessionManager, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
 import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
+import { productionTools } from './production-tools.js';
+import {
+  configuredModelRef,
+  guessProviderKind,
+  onboardingProvider,
+  openConfiguredProvider,
+} from './provider-service.js';
 
 /**
  * 主进程的装配。
@@ -64,6 +68,31 @@ export interface RuntimeStatus {
   readonly secretBackend: SecretBackend;
   readonly hasApiKey: boolean;
   readonly configProblems: readonly ConfigProblem[];
+  readonly security: {
+    readonly boundary: 'host-autonomous-protected-core';
+    readonly osSandbox: false;
+    readonly protectedResources: readonly string[];
+    readonly enabledTools: readonly string[];
+    readonly disabledTools: readonly string[];
+    readonly unavailableTools: readonly string[];
+    readonly terminalMode: 'controlled-argv-no-stdin';
+    readonly logRedaction: true;
+  };
+}
+
+function recordPtyEvent(runtime: SessionRuntime, event: PtySessionEvent): Promise<unknown> {
+  switch (event.type) {
+    case 'shell.session.opened':
+      return runtime.record(event);
+    case 'shell.session.output':
+      return runtime.record(event);
+    case 'shell.session.command.started':
+      return runtime.record(event);
+    case 'shell.session.command.finished':
+      return runtime.record(event);
+    case 'shell.session.closed':
+      return runtime.record(event);
+  }
 }
 
 export interface Services {
@@ -175,9 +204,6 @@ export async function startServices(): Promise<Services> {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools({ os: platform.os })) tools.register(t);
-  tools.register(echoTool());
-  tools.register(fakeDeleteTool());
 
   /*
    * `home` 是给命令参数里的 `~` 用的（ADR-0026）。内核不许展开（零 I/O），
@@ -230,6 +256,15 @@ export async function startServices(): Promise<Services> {
     // 同一会话只允许一个写者（不变量四）：句柄的生命周期就是租约，缓存住它
     const created = await SessionRuntime.open({ sessionId, store: stores.events, bus });
     runtimes.set(sessionId, created);
+    // PTY handles are process-local. An opened session replayed after restart cannot be reattached.
+    for (const [ptySessionId] of created.state.ptySessions) {
+      if (!ptySessions.has(sessionId, ptySessionId)) {
+        await created.record({
+          type: 'shell.session.closed',
+          payload: { ptySessionId, reason: 'interrupted', tail: '' },
+        });
+      }
+    }
     return created;
   };
 
@@ -245,13 +280,13 @@ export async function startServices(): Promise<Services> {
     os: platform.os,
     emit: (sessionId, event) => {
       runtimeFor(sessionId)
-        .then((runtime) => runtime.record(event))
+        .then((runtime) => recordPtyEvent(runtime, event))
         .catch((err: unknown) => {
           console.error('写入 shell.session 事件失败：', err);
         });
     },
   });
-  for (const t of shellSessionTools(ptySessions)) tools.register(t);
+  for (const tool of productionTools({ os: platform.os, ptySessions })) tools.register(tool);
 
   /**
    * 角色 → 模型引用（docs/08 M3 的"角色路由"在这里落下第一个真实消费者）。
@@ -263,7 +298,7 @@ export async function startServices(): Promise<Services> {
    * 静默失效"不是。`summarize` 保持纯 opt-in。
    */
   const modelRefFor = (role: 'main' | 'summarize'): { provider: string; model: string } =>
-    parseModelRef((role === 'summarize' ? config.model.summarize : undefined) ?? config.model.main);
+    configuredModelRef(config, role);
 
   const modelRef = (): { provider: string; model: string } => modelRefFor('main');
 
@@ -274,34 +309,17 @@ export async function startServices(): Promise<Services> {
    * 直到重启才生效——而"改了配置没反应"是最难自查的一类问题。
    * 造一个实例的成本只是几个字段赋值，没有连接池要复用。
    */
-  const providerFor = async (ref = modelRef()): Promise<ModelProvider | undefined> => {
-    const { provider: providerId, model } = ref;
-    const cfg = config.providers[providerId];
-    if (cfg?.apiKey === undefined) return undefined;
-
-    const apiKey = await secrets.get(cfg.apiKey);
-    if (apiKey === undefined || apiKey === '') return undefined;
-
-    const common = {
-      apiKey,
-      ...(cfg.baseUrl === undefined ? {} : { baseUrl: cfg.baseUrl }),
-      ...(cfg.models.length > 0 ? { models: cfg.models } : {}),
-      // 图片内容块要靠它把 BlobRef 读成字节再编 base64（见 packages/providers/src/blob.ts）
+  const providerFor = async (
+    ref = modelRef(),
+    onStatus?: (status: ProviderStreamStatus) => void | Promise<void>,
+  ) =>
+    openConfiguredProvider({
+      ref,
+      config,
+      secrets,
       blobs: stores.blobs,
-    };
-
-    switch (cfg.kind) {
-      case 'anthropic':
-        return new AnthropicProvider(common);
-      case 'openai':
-      case 'openai-compatible':
-        return new OpenAICompatibleProvider({ ...common, id: providerId });
-      default:
-        // google / ollama 还没实现。**返回 undefined 而不是悄悄换一家**
-        void model;
-        return undefined;
-    }
-  };
+      ...(onStatus === undefined ? {} : { onStatus }),
+    });
 
   /**
    * 会话自动命名（ADR-0038）。**发出去就不管**——命名是后台任务，不该让用户
@@ -348,14 +366,23 @@ export async function startServices(): Promise<Services> {
     demoEcho = '（崩溃恢复续跑，没有新的用户输入）',
   ): Promise<TurnDeps> => {
     const { model } = modelRef();
-    const provider = (await providerFor()) ?? demoProvider(demoEcho);
+    const provider =
+      (await providerFor(modelRef(), async (status) => {
+        await runtime.record({ type: 'provider.status', payload: status });
+      })) ?? onboardingProvider(demoEcho);
 
     return {
       runtime,
       provider,
       tools,
+      toolAvailability: {
+        executor: 'local',
+        platform: platform.capabilities(),
+        disabledTools: config.tools.disabled,
+      },
       layers,
       model: provider.id === 'scripted' ? 'scripted-1' : model,
+      hostOs: platform.os,
       prices: config.prices,
       gateway,
       checkpointer,
@@ -552,13 +579,41 @@ export async function startServices(): Promise<Services> {
       const { provider: providerId, model } = modelRef();
       const provider = await providerFor().catch(() => undefined);
       const cfg = config.providers[providerId];
+      const hasApiKey =
+        cfg?.apiKey === undefined
+          ? false
+          : await secrets
+              .get(cfg.apiKey)
+              .then((value) => value !== undefined)
+              .catch(() => false);
+      const availabilityBase = { cwd: paths.home, executor: 'local' as const, platform: platform.capabilities() };
+      const allTools = tools.descriptors().map((tool) => tool.name);
+      const platformAvailable = tools.descriptors({ ...availabilityBase, disabledTools: [] }).map((tool) => tool.name);
+      const enabledTools = tools
+        .descriptors({ ...availabilityBase, disabledTools: config.tools.disabled })
+        .map((tool) => tool.name);
       return {
         providerReady: provider !== undefined,
         providerId,
         model,
         secretBackend,
-        hasApiKey: cfg?.apiKey !== undefined,
+        hasApiKey,
         configProblems: loaded.problems,
+        security: {
+          boundary: 'host-autonomous-protected-core',
+          osSandbox: false,
+          protectedResources: [
+            '运行数据、事件库、审计库与 checkpoint/blob',
+            '用户配置与密钥存储',
+            '权限引擎、能力网关、密钥与脱敏实现',
+            '运行时判权入口、关键装配与 CI 护栏',
+          ],
+          enabledTools: enabledTools.sort(),
+          disabledTools: allTools.filter((name) => config.tools.disabled.includes(name)).sort(),
+          unavailableTools: allTools.filter((name) => !platformAvailable.includes(name)).sort(),
+          terminalMode: 'controlled-argv-no-stdin',
+          logRedaction: true,
+        },
       };
     },
 
@@ -569,24 +624,26 @@ export async function startServices(): Promise<Services> {
      * 参考项目那个含真实 key 且已提交进 git 的 `config.yaml`，就是因为当时
      * 没有"只写引用"这条路。
      *
-     * 配置在内存里更新即可：写回配置文件是配置中心（M3）的事，而那时这段逻辑
-     * 会整体搬过去。现在写回去反而会把用户手写的注释与格式冲掉。
+     * SecretRef 与密钥必须一起持久化：只把引用留在内存里会导致重启后“密钥存在但找不到”。
+     * 持久化适配器原子替换配置文件，失败时保留原文件，不把损坏配置当作空配置覆盖。
      */
     async setApiKey(providerId: string, key: string): Promise<void> {
       const ref = { $secret: `${providerId}.apiKey` };
       await secrets.set(ref, key);
 
       const existing = config.providers[providerId];
+      const providerConfig = {
+        kind: existing?.kind ?? guessProviderKind(providerId),
+        ...(existing?.baseUrl === undefined ? {} : { baseUrl: existing.baseUrl }),
+        apiKey: ref,
+        models: existing?.models ?? [],
+      } satisfies Config['providers'][string];
+      await persistProviderConfig({ paths, providerId, provider: providerConfig });
       config = {
         ...config,
         providers: {
           ...config.providers,
-          [providerId]: {
-            kind: existing?.kind ?? guessKind(providerId),
-            ...(existing?.baseUrl === undefined ? {} : { baseUrl: existing.baseUrl }),
-            apiKey: ref,
-            models: existing?.models ?? [],
-          },
+          [providerId]: providerConfig,
         },
       };
     },
@@ -603,34 +660,4 @@ export async function startServices(): Promise<Services> {
       await stores.close();
     },
   };
-}
-
-/** 没有配置过这一家时的兜底判断。只在"用户刚录入 key"这一步用得到 */
-const guessKind = (providerId: string): Config['providers'][string]['kind'] =>
-  providerId === 'anthropic' ? 'anthropic' : 'openai-compatible';
-
-/**
- * 没有配好 Provider 时的兜底"模型"。
- *
- * 保留它而不是直接报错，是为了让**没有 key 的人也能把界面跑起来**并看到
- * 该去哪里录入 key。一旦真 Provider 配好，这段代码就再也不会被走到。
- */
-function demoProvider(text: string): ScriptedProvider {
-  return new ScriptedProvider({
-    turns: [
-      {
-        chunks: [
-          {
-            kind: 'text_delta',
-            text: `还没有配置模型 API key，所以这条是本地回显：${text}`,
-          },
-          {
-            kind: 'usage',
-            usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
-          },
-          { kind: 'stop', reason: 'end_turn' },
-        ],
-      },
-    ],
-  });
 }

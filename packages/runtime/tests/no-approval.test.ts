@@ -102,7 +102,7 @@ async function harness() {
    * 与"在工作区里写文件"是同一件事，用例断的就只有红线这一个变量。
    */
   const appRoot = join(dir, 'repo');
-  const ENV: PolicyEnv = { home: '/home/ming', appRoot, dataDir: join(dir, '.xiaoming') };
+  const ENV: PolicyEnv = { home: '/home/ming', appRoot, dataDir: join(dir, '.xiaoming'), configDir: join(dir, '.config') };
   const store = new MemoryEventStore();
   const sessionId = newSessionId();
   const runtime = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });

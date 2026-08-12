@@ -67,7 +67,7 @@ export class UnimplementedSubagentTaintPropagationError extends Error {
  *   五（存储不做发布订阅）—— 广播严格排在 `append` 成功之后
  *   六（落库的事件必须已脱敏）—— 出口只有一个，那里调 `sealEvent()`
  *
- * 瞬态事件（`message.delta` / `tool.progress`）走同一个出口，但**不落库、不占 seq**：
+ * 瞬态事件（`message.delta` / `provider.status` / `tool.progress`）走同一个出口，但**不落库、不占 seq**：
  * 它们复用上一条持久事件的 seq，只是为了让订阅者知道自己挂在哪个位置之后
  * （ADR-0008 / contracts `createEvent` 的 seq 约定）。
  */

@@ -29,9 +29,10 @@ describe('事件注册表', () => {
    * 新增瞬态事件必须显式改这个断言 —— 因为每加一个瞬态事件，
    * "状态完全由持久化流决定"这条不变量的检验面就大一分（ADR-0008）。
    */
-  it('瞬态事件只有 message.delta、tool.progress 与 shell.session.output', () => {
+  it('瞬态事件只有流式增量、Provider 状态、工具进度与终端输出', () => {
     expect([...TRANSIENT_EVENT_TYPES].sort()).toEqual([
       'message.delta',
+      'provider.status',
       'shell.session.output',
       'tool.progress',
     ]);

@@ -34,6 +34,8 @@ export interface PolicyEnv {
    * 否则又是 ADR-0012 ①：规则里的路径和请求里的路径来自两个坐标系。
    */
   readonly dataDir: string;
+  /** 用户级配置与密钥目录。模型工具不得直接读写，由受信的内部适配器管理。 */
+  readonly configDir: string;
 }
 
 /**
@@ -131,10 +133,31 @@ export const redLineRules = (env: PolicyEnv): readonly PolicyRule[] => {
    *     （ADR-0011 ⑨ 已经演示过一次：includeOnly 一行就让两条核心规则失效且输出全绿）
    *
    * 红线要护的从来不是某个文件，是**"改了它就没人拦得住后续改动"的那一组文件**。
-   */
+  */
   ...selfModifyRedLines(appRoot),
+  ...privateRuntimeDataRedLines(env.dataDir, env.configDir),
   ...auditLogRedLines(env.dataDir),
   ];
+};
+
+/** 模型工具不直接碰应用私有状态；内部 Store/SecretStore 不经过 PolicyEngine。 */
+const privateRuntimeDataRedLines = (dataDir: string, configDir: string): PolicyRule[] => {
+  const roots = [
+    { id: 'data', path: normalizedOrThrow(dataDir), why: '会话、审计与还原点数据' },
+    { id: 'config', path: normalizedOrThrow(configDir), why: '用户配置与加密密钥' },
+  ] as const;
+  const capabilities = ['fs.read', 'fs.write', 'fs.delete'] as const;
+
+  return roots.flatMap((root) =>
+    capabilities.map((capability) => ({
+        id: `red.private-${root.id}-${capability.replace('.', '-')}`,
+        effect: 'deny' as const,
+        capability,
+        match: { target: `${root.path}/**` },
+        reason: `直接${capability === 'fs.read' ? '读取' : capability === 'fs.write' ? '写入' : '删除'}${root.why}。这些资源只能由小明内部的受信适配器管理。`,
+        immutable: true,
+      })),
+  );
 };
 
 /**
@@ -186,9 +209,18 @@ const auditLogRedLines = (dataDir: string): PolicyRule[] => {
 /** 修改即等于卸掉后续一切防护的文件。改动只能由人手工进行。 */
 const SELF_MODIFY_PROTECTED: readonly { readonly glob: string; readonly why: string }[] = [
   { glob: 'packages/kernel/src/policy/**', why: '权限判定逻辑与红线清单自身' },
+  { glob: 'packages/kernel/src/tool/registry.ts', why: '工具注册、可用性与空能力声明闸门' },
+  { glob: 'packages/kernel/src/tool/types.ts', why: '工具能力与执行上下文契约' },
   { glob: 'packages/contracts/src/permission/**', why: '能力闭集与策略契约——删一个词条即让相关规则全部失效' },
   { glob: 'packages/contracts/src/config/secret.ts', why: '密钥引用契约' },
   { glob: 'packages/contracts/src/base/redact.ts', why: '日志与审计的统一脱敏出口' },
+  { glob: 'packages/runtime/src/turn.ts', why: '工具判权、还原点与执行的统一入口' },
+  { glob: 'packages/tools-core/src/gateway.ts', why: '路径、命令和网络目标的能力网关' },
+  { glob: 'packages/tools-core/src/checkpoint.ts', why: '破坏性操作的写前还原点' },
+  { glob: 'packages/platform/src/config.ts', why: '用户配置加载与权限规则分层' },
+  { glob: 'packages/platform/src/secret-file.ts', why: '密钥加密文件后端' },
+  { glob: 'apps/desktop/src/main/services.ts', why: '真实工具、策略和存储的生产装配入口' },
+  { glob: 'apps/desktop/src/main/secrets.ts', why: '系统钥匙串密钥后端' },
   { glob: 'scripts/**', why: '工具链与密钥扫描等提交前护栏' },
   { glob: '.dependency-cruiser.cjs', why: '架构依赖护栏' },
   { glob: 'eslint.config.js', why: '静态检查护栏' },
@@ -727,6 +759,7 @@ export const policyEnvFromPaths = (paths: XmPaths): PolicyEnv => ({
   home: paths.home,
   appRoot: paths.appRoot,
   dataDir: paths.data,
+  configDir: paths.config,
 });
 
 export interface ComposeInput {

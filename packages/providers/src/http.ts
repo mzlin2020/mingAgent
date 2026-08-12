@@ -1,6 +1,7 @@
 import type { XmError } from '@xm/contracts';
-import { redact, xmError } from '@xm/contracts';
+import { xmError } from '@xm/contracts';
 import type { AbortLike } from '@xm/kernel';
+import { classifyHttpError, isRetryableStatus, parseRetryAfter, readErrorBody } from './http-errors.js';
 
 /**
  * Provider 的 HTTP 层：取消桥接、退避重试、错误归类。
@@ -27,7 +28,30 @@ export interface HttpDeps {
   readonly maxRetries?: number;
   /** 退避基数（ms）。真实退避是 base * 2^attempt，再加抖动 */
   readonly retryBaseMs?: number;
+  /** 从发起请求到收到首个响应字节的上限。 */
+  readonly firstByteTimeoutMs?: number;
+  /** 首字节之后，相邻响应字节块之间允许的最大空闲时间。 */
+  readonly streamIdleTimeoutMs?: number;
+  /** 瞬态连接状态；用于 UI，不应写入模型回复。 */
+  readonly onStatus?: (status: ProviderStreamStatus) => void | Promise<void>;
 }
+
+export type ProviderStreamStatus =
+  | {
+      readonly phase: 'retrying';
+      readonly attempt: number;
+      readonly maxAttempts: number;
+      readonly delayMs: number;
+      readonly reason: string;
+    }
+  | { readonly phase: 'connected' };
+
+export const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 90_000;
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 45_000;
+
+type ByteReadResult =
+  | { readonly done: false; readonly value: Uint8Array }
+  | { readonly done: true; readonly value: Uint8Array | undefined };
 
 export interface PostSseOptions extends HttpDeps {
   readonly url: string;
@@ -50,31 +74,45 @@ export async function postSse(options: PostSseOptions): Promise<ReadableStream<U
   const sleep = options.sleep ?? defaultSleep;
   const maxRetries = options.maxRetries ?? 3;
   const retryBase = options.retryBaseMs ?? 500;
+  const firstByteTimeoutMs = options.firstByteTimeoutMs ?? DEFAULT_FIRST_BYTE_TIMEOUT_MS;
+  const streamIdleTimeoutMs = options.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 
   let attempt = 0;
   for (;;) {
     const bridge = bridgeAbort(options.signal);
     let response: Response;
+    const firstByteDeadline = Date.now() + firstByteTimeoutMs;
 
     try {
-      response = await doFetch(options.url, {
-        method: 'POST',
-        headers: { ...options.headers, 'content-type': 'application/json' },
-        body: JSON.stringify(options.body),
-        signal: bridge.signal,
-      });
+      response = await withTimeout(
+        doFetch(options.url, {
+          method: 'POST',
+          headers: { ...options.headers, 'content-type': 'application/json' },
+          body: JSON.stringify(options.body),
+          signal: bridge.signal,
+        }),
+        firstByteTimeoutMs,
+        () => {
+          bridge.abort();
+        },
+      );
     } catch (e) {
       bridge.dispose();
-      if (options.signal.aborted) throw new ProviderHttpError(ABORTED);
+      throwIfAborted(options.signal);
       // 网络层失败（DNS、连接重置）：与 5xx 同类，可重试
       const err = new ProviderHttpError(
-        xmError('provider_error', `连接 ${options.providerId} 失败：${describe(e)}`, {
-          retryable: true,
-        }),
+        e instanceof TimeoutMarker
+          ? firstByteTimeoutError(options.providerId, firstByteTimeoutMs)
+          : xmError('provider_error', `连接 ${options.providerId} 失败：${describe(e)}`, {
+              retryable: true,
+            }),
       );
       if (attempt >= maxRetries) throw err;
       attempt += 1;
-      await sleep(backoffMs(retryBase, attempt), options.signal);
+      const delayMs = backoffMs(retryBase, attempt);
+      await notifyRetry(options, attempt, maxRetries, delayMs, err.message);
+      await sleep(delayMs, options.signal);
+      throwIfAborted(options.signal);
       continue;
     }
 
@@ -85,17 +123,52 @@ export async function postSse(options: PostSseOptions): Promise<ReadableStream<U
           xmError('provider_error', `${options.providerId} 返回了 200 但没有响应体。`),
         );
       }
-      /*
-       * **刻意不 dispose。** 监听器要一直活到流被读完为止——
-       * 请求已经返回，但正文才刚开始流式吐出，取消在这一段才最常发生。
-       * 监听器随 bridge.signal 一起被 GC，不会泄漏。
-       */
-      return response.body;
+      const reader = response.body.getReader();
+      let first: ByteReadResult;
+      try {
+        first = await withTimeout(
+          reader.read(),
+          Math.max(1, firstByteDeadline - Date.now()),
+          () => {
+            bridge.abort();
+          },
+        );
+      } catch (e) {
+        void reader.cancel().catch(() => {
+          return undefined;
+        });
+        bridge.dispose();
+        throwIfAborted(options.signal);
+        const err = new ProviderHttpError(
+          e instanceof TimeoutMarker
+            ? firstByteTimeoutError(options.providerId, firstByteTimeoutMs)
+            : xmError('provider_error', `读取 ${options.providerId} 响应失败：${describe(e)}`, {
+                retryable: true,
+              }),
+        );
+        if (attempt >= maxRetries) throw err;
+        attempt += 1;
+        const delayMs = backoffMs(retryBase, attempt);
+        await notifyRetry(options, attempt, maxRetries, delayMs, err.message);
+        await sleep(delayMs, options.signal);
+        throwIfAborted(options.signal);
+        continue;
+      }
+
+      await options.onStatus?.({ phase: 'connected' });
+      return monitoredBody({
+        reader,
+        first,
+        idleTimeoutMs: streamIdleTimeoutMs,
+        providerId: options.providerId,
+        sourceSignal: options.signal,
+        bridge,
+      });
     }
 
     const detail = await readErrorBody(response);
     bridge.dispose();
-    const xm = classify(response.status, detail, options.providerId);
+    const xm = classifyHttpError(response.status, detail, options.providerId);
 
     if (!isRetryableStatus(response.status) || attempt >= maxRetries) {
       throw new ProviderHttpError(xm);
@@ -103,7 +176,10 @@ export async function postSse(options: PostSseOptions): Promise<ReadableStream<U
 
     attempt += 1;
     const retryAfter = parseRetryAfter(response.headers.get('retry-after'));
-    await sleep(Math.max(retryAfter ?? 0, backoffMs(retryBase, attempt)), options.signal);
+    const delayMs = Math.max(retryAfter ?? 0, backoffMs(retryBase, attempt));
+    await notifyRetry(options, attempt, maxRetries, delayMs, xm.message);
+    await sleep(delayMs, options.signal);
+    throwIfAborted(options.signal);
   }
 }
 
@@ -116,6 +192,10 @@ export async function postSse(options: PostSseOptions): Promise<ReadableStream<U
  * 一条端口级约定绑死在某个运行时的实现细节上。
  */
 export const abortedBy = (signal: AbortLike): boolean => signal.aborted;
+
+function throwIfAborted(signal: AbortLike): void {
+  if (signal.aborted) throw new ProviderHttpError(ABORTED);
+}
 
 // ── 取消桥接 ────────────────────────────────────────────────────
 
@@ -130,11 +210,17 @@ export const abortedBy = (signal: AbortLike): boolean => signal.aborted;
  * 那时下一个 chunk 是三十秒之后——用户点了停止，屏幕上的光标继续闪三十秒。
  * 转发给真 signal 之后，取消会让 fetch 的正文读取当场抛错，SSE 循环立刻退出。
  */
-function bridgeAbort(signal: AbortLike): { signal: AbortSignal; dispose: () => void } {
+function bridgeAbort(signal: AbortLike): { signal: AbortSignal; abort: () => void; dispose: () => void } {
   const controller = new AbortController();
   if (signal.aborted) {
     controller.abort();
-    return { signal: controller.signal, dispose: () => undefined };
+    return {
+      signal: controller.signal,
+      abort: () => {
+        controller.abort();
+      },
+      dispose: () => undefined,
+    };
   }
   const onAbort = (): void => {
     controller.abort();
@@ -142,10 +228,103 @@ function bridgeAbort(signal: AbortLike): { signal: AbortSignal; dispose: () => v
   signal.addEventListener('abort', onAbort);
   return {
     signal: controller.signal,
+    abort: () => {
+      controller.abort();
+    },
     dispose: () => {
       signal.removeEventListener('abort', onAbort);
     },
   };
+}
+
+class TimeoutMarker extends Error {}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => void): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new TimeoutMarker());
+          onTimeout();
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function monitoredBody(input: {
+  readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  readonly first: ByteReadResult;
+  readonly idleTimeoutMs: number;
+  readonly providerId: string;
+  readonly sourceSignal: AbortLike;
+  readonly bridge: { readonly abort: () => void; readonly dispose: () => void };
+}): ReadableStream<Uint8Array> {
+  const first = input.first;
+  let hasFirst = true;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = hasFirst
+          ? first
+          : await withTimeout(input.reader.read(), input.idleTimeoutMs, () => {
+              input.bridge.abort();
+            });
+        hasFirst = false;
+        if (next.done) {
+          input.bridge.dispose();
+          controller.close();
+          return;
+        }
+        controller.enqueue(next.value);
+      } catch (e) {
+        input.bridge.dispose();
+        if (input.sourceSignal.aborted) throw new ProviderHttpError(ABORTED);
+        if (e instanceof TimeoutMarker) {
+          throw new ProviderHttpError(
+            xmError(
+              'timeout',
+              `${input.providerId} 的响应流已连续 ${String(Math.ceil(input.idleTimeoutMs / 1000))} 秒没有数据，已停止本次请求。`,
+              { retryable: true },
+            ),
+          );
+        }
+        throw e;
+      }
+    },
+    async cancel(reason) {
+      input.bridge.abort();
+      input.bridge.dispose();
+      await input.reader.cancel(reason);
+    },
+  });
+}
+
+const firstByteTimeoutError = (providerId: string, timeoutMs: number): XmError =>
+  xmError(
+    'timeout',
+    `等待 ${providerId} 首个响应数据超过 ${String(Math.ceil(timeoutMs / 1000))} 秒。`,
+    { retryable: true },
+  );
+
+async function notifyRetry(
+  options: PostSseOptions,
+  retryNumber: number,
+  maxRetries: number,
+  delayMs: number,
+  reason: string,
+): Promise<void> {
+  await options.onStatus?.({
+    phase: 'retrying',
+    attempt: retryNumber + 1,
+    maxAttempts: maxRetries + 1,
+    delayMs,
+    reason,
+  });
 }
 
 /** 退避期间也要能被取消——否则"停止"要等一次退避睡醒 */
@@ -166,77 +345,7 @@ const defaultSleep = (ms: number, signal: AbortLike): Promise<void> =>
     signal.addEventListener('abort', onAbort);
   });
 
-// ── 错误归类 ────────────────────────────────────────────────────
-
 const ABORTED = xmError('aborted', '已停止。', { retryable: false });
-
-const isRetryableStatus = (status: number): boolean => status === 429 || status >= 500;
-
-/**
- * HTTP 状态码 → `ErrorCode`。
- *
- * 分得细是有用的：`ErrorCode` 那份闭集的注释写着「三者的用户处置完全不同」，
- * 这里同理——401 要用户去换 key，429 要等，413/context_overflow 要压缩上下文，
- * 500 只需要重试。全归成 `provider_error` 的话，UI 只能显示"失败了"。
- */
-function classify(status: number, body: string, providerId: string): XmError {
-  const brief = body === '' ? '' : `：${body.slice(0, 500)}`;
-
-  if (status === 401 || status === 403) {
-    return xmError('provider_error', `${providerId} 拒绝了这个 API key（HTTP ${String(status)}）${brief}`, {
-      retryable: false,
-      detail: { status },
-    });
-  }
-  if (status === 429) {
-    return xmError('rate_limited', `${providerId} 限流（HTTP 429）${brief}`, { detail: { status } });
-  }
-  if (status === 413 || looksLikeContextOverflow(body)) {
-    return xmError('context_overflow', `上下文超出模型上限${brief}`, {
-      retryable: false,
-      detail: { status },
-    });
-  }
-  if (status >= 500) {
-    return xmError('provider_error', `${providerId} 服务端错误（HTTP ${String(status)}）${brief}`, {
-      detail: { status },
-    });
-  }
-  return xmError('provider_error', `${providerId} 拒绝了请求（HTTP ${String(status)}）${brief}`, {
-    retryable: false,
-    detail: { status },
-  });
-}
-
-const looksLikeContextOverflow = (body: string): boolean =>
-  /context[_ ]length|too many tokens|maximum context|prompt is too long/i.test(body);
-
-/**
- * 错误正文**必须过 redact**。
- *
- * 看起来多此一举——key 在请求头里，不会出现在响应里。但错误正文经常把请求原样回显，
- * 而我们送出去的 body 里有工具入参、文件路径、有时是模型刚从环境里读到的东西。
- * 这一串会进 `XmError.message`，而 `XmError` 会进事件流、进审计、进 UI。
- * `redact` 的定位是"尽力而为的统一出口"，这里正是它该在的地方之一。
- */
-async function readErrorBody(response: Response): Promise<string> {
-  try {
-    const text = await response.text();
-    return typeof redact(text) === 'string' ? (redact(text) as string) : '';
-  } catch {
-    return '';
-  }
-}
-
-/** `Retry-After` 可以是秒数，也可以是 HTTP 日期 */
-function parseRetryAfter(raw: string | null): number | undefined {
-  if (raw === null || raw.trim() === '') return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
-  const at = Date.parse(raw);
-  if (Number.isNaN(at)) return undefined;
-  return Math.max(0, at - Date.now());
-}
 
 /** 指数退避 + 抖动。抖动是为了避免多个会话在同一毫秒一起重试 */
 const backoffMs = (base: number, attempt: number): number =>

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -69,6 +69,17 @@ describe('加密文件后端', () => {
   it('取一个没存过的键返回 undefined —— "还没配置"是正常状态，不是错误', async () => {
     const store = fileSecretStore({ file: file(), passphrase: 'pw' });
     expect(await store.get({ $secret: 'never-set' })).toBeUndefined();
+  });
+
+  it('损坏或类型错误的密钥文件显式报错，且 set 不会覆盖原文件', async () => {
+    await writeFile(file(), '{broken');
+    const store = fileSecretStore({ file: file(), passphrase: 'pw' });
+    await expect(store.get({ $secret: 'k' })).rejects.toBeInstanceOf(SecretUnavailableError);
+    await expect(store.set({ $secret: 'k' }, 'new')).rejects.toBeInstanceOf(SecretUnavailableError);
+    expect(await readFile(file(), 'utf8')).toBe('{broken');
+
+    await writeFile(file(), JSON.stringify({ k: { salt: 1, iv: 'a', tag: 'b', data: 'c' } }));
+    await expect(store.list()).rejects.toBeInstanceOf(SecretUnavailableError);
   });
 
   it('delete 幂等；list 只给键名', async () => {

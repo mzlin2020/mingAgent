@@ -60,7 +60,8 @@ const fail = (msg) => {
 };
 
 try {
-  const platform = nodePlatform({ appRoot: APP_ROOT, dataDir });
+  // 红线演练使用隔离的临时主目录，避免 smoke 依赖或触碰运行者的真实主目录。
+  const platform = nodePlatform({ appRoot: APP_ROOT, dataDir, home: workspace });
   const paths = platform.paths();
   const stores = await openStores(paths);
   const layers = builtinLayers(policyEnvFromPaths(paths));
@@ -224,7 +225,14 @@ try {
       runtime,
       provider: new ScriptedProvider({
         turns: [
-          { chunks: [...toolCall(newCallId(), 'shell.exec', { argv: ['echo', 'hello-xm'] }), { kind: 'stop', reason: 'tool_use' }] },
+          {
+            chunks: [
+              ...toolCall(newCallId(), 'shell.exec', {
+                argv: [process.execPath, '-e', 'process.stdout.write("hello-xm")'],
+              }),
+              { kind: 'stop', reason: 'tool_use' },
+            ],
+          },
           { chunks: [{ kind: 'text_delta', text: '好。' }, { kind: 'stop', reason: 'end_turn' }] },
         ],
       }),

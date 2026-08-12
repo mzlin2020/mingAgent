@@ -8,7 +8,13 @@ import tseslint from 'typescript-eslint';
  */
 export default tseslint.config(
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/*.tsbuildinfo', '**/fixtures/**/*.json'],
+    ignores: [
+      '**/coverage/**',
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/*.tsbuildinfo',
+      '**/fixtures/**/*.json',
+    ],
   },
 
   js.configs.recommended,

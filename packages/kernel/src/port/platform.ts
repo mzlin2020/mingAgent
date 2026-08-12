@@ -38,6 +38,8 @@ export type SecretBackend =
 
 export interface PlatformCapabilities {
   readonly secrets: SecretBackend;
+  /** 当前执行环境能否创建 node-pty/ConPTY 终端。 */
+  readonly shellSession: boolean;
   readonly screenCapture: boolean;
   /** Wayland 上多半是 false（ADR-0007 Tier 3：可能长期缺失） */
   readonly inputInjection: boolean;

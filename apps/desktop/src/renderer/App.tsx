@@ -16,6 +16,7 @@ import { LiveCalls, LiveMessage } from './components/live-views.js';
 import { MessageStream } from './components/message-stream.js';
 import { SessionTabs } from './components/session-tabs.js';
 import { TerminalPanel } from './components/terminal-panel.js';
+import { SecurityView } from './components/security-view.js';
 import { api } from './bridge.js';
 import { cn } from './lib/cn.js';
 import { COLUMN } from './lib/layout.js';
@@ -127,7 +128,9 @@ export function App(): ReactNode {
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
       >
-        {shellView === 'home' || currentId === undefined ? (
+        {shellView === 'security' ? (
+          <SecurityView />
+        ) : shellView === 'home' || currentId === undefined ? (
           <HomeView />
         ) : (
           <div className={cn(COLUMN, 'flex flex-col gap-6 py-6')}>

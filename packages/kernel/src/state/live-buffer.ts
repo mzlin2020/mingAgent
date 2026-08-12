@@ -7,7 +7,7 @@ import type { CallId, MessageId, PtySessionId, XmEvent } from '@xm/contracts';
  *
  * 两条各自完全正确的约束，合起来产生了一个洞（docs/09 G6）：
  *
- *   · ADR-0008：瞬态事件（`message.delta` / `tool.progress`）在 `reduce` 里**必须是
+ *   · ADR-0008：瞬态事件（`message.delta` / `provider.status` / `tool.progress`）在 `reduce` 里**必须是
  *              空操作**，不得改变状态的任何一位。
  *   · ADR-0015：渲染层**不持有第二份状态**，消息流全部由 `reduce()` 算出。
  *
@@ -73,6 +73,16 @@ export interface LiveMessage {
   readonly text: string;
   /** 已到达的思考增量拼接 */
   readonly thinking: string;
+  /** Provider 自动重试的瞬态状态；收到首字节或任意内容增量后清除。 */
+  readonly providerStatus: LiveProviderStatus | undefined;
+}
+
+export interface LiveProviderStatus {
+  readonly phase: 'retrying';
+  readonly attempt: number;
+  readonly maxAttempts: number;
+  readonly delayMs: number;
+  readonly reason: string;
 }
 
 export interface LiveCall {
@@ -110,9 +120,30 @@ export function applyLive(buffer: LiveBuffer, e: XmEvent): LiveBuffer {
         ...buffer,
         message:
           e.payload.role === 'assistant'
-            ? { messageId: e.payload.messageId, text: '', thinking: '' }
+            ? { messageId: e.payload.messageId, text: '', thinking: '', providerStatus: undefined }
             : undefined,
       };
+
+    case 'provider.status': {
+      const m = buffer.message;
+      if (m === undefined) return buffer;
+      if (e.payload.phase === 'connected') {
+        return { ...buffer, message: { ...m, providerStatus: undefined } };
+      }
+      return {
+        ...buffer,
+        message: {
+          ...m,
+          providerStatus: {
+            phase: 'retrying',
+            attempt: e.payload.attempt ?? 1,
+            maxAttempts: e.payload.maxAttempts ?? 1,
+            delayMs: e.payload.delayMs ?? 0,
+            reason: e.payload.reason ?? '连接失败',
+          },
+        },
+      };
+    }
 
     case 'message.delta': {
       // 没有 start 就来的 delta 一律丢弃：它属于某条我们没看见开头的消息，
@@ -124,8 +155,8 @@ export function applyLive(buffer: LiveBuffer, e: XmEvent): LiveBuffer {
         ...buffer,
         message:
           e.payload.kind === 'thinking'
-            ? { ...m, thinking: m.thinking + e.payload.text }
-            : { ...m, text: m.text + e.payload.text },
+            ? { ...m, thinking: m.thinking + e.payload.text, providerStatus: undefined }
+            : { ...m, text: m.text + e.payload.text, providerStatus: undefined },
       };
     }
 
@@ -178,7 +209,9 @@ export function applyLive(buffer: LiveBuffer, e: XmEvent): LiveBuffer {
       const t = buffer.terminals.get(e.payload.ptySessionId);
       if (t === undefined) return buffer;
       const terminals = new Map(buffer.terminals);
-      terminals.set(e.payload.ptySessionId, { ...t, closed: true });
+      const text = t.text === '' ? e.payload.tail : t.text;
+      if (text === '') terminals.delete(e.payload.ptySessionId);
+      else terminals.set(e.payload.ptySessionId, { ...t, text, closed: true });
       return { ...buffer, terminals };
     }
 
@@ -190,4 +223,4 @@ export function applyLive(buffer: LiveBuffer, e: XmEvent): LiveBuffer {
 /** 缓冲里有没有值得显示的东西。UI 用它决定要不要渲染在途区域 */
 export const hasLive = (buffer: LiveBuffer): boolean =>
   buffer.calls.size > 0 ||
-  (buffer.message !== undefined && (buffer.message.text !== '' || buffer.message.thinking !== ''));
+  buffer.message !== undefined;

@@ -49,6 +49,10 @@ export function sampleEvents(): XmEvent[] {
       payload: { messageId, blockIndex: 0, kind: 'text', text: '增量' },
     },
     {
+      type: 'provider.status',
+      payload: { phase: 'retrying', attempt: 2, maxAttempts: 4, delayMs: 500, reason: '限流' },
+    },
+    {
       type: 'message.end',
       payload: {
         message: { id: messageId, role: 'assistant', ts: 1, blocks: [{ type: 'text', text: '好' }] },
@@ -80,7 +84,15 @@ export function sampleEvents(): XmEvent[] {
       type: 'shell.session.opened',
       payload: { ptySessionId, cwd: '/w', cols: 80, rows: 24 },
     },
+    {
+      type: 'shell.session.command.started',
+      payload: { ptySessionId, argv: ['node', '--version'], cwd: '/w', timeoutMs: 1000 },
+    },
     { type: 'shell.session.output', payload: { ptySessionId, chunk: '$ ' } },
+    {
+      type: 'shell.session.command.finished',
+      payload: { ptySessionId, exitCode: 0, reason: 'exited', tail: '$ ' },
+    },
     {
       type: 'shell.session.closed',
       payload: { ptySessionId, exitCode: 0, reason: 'exited', tail: '$ ' },
@@ -162,7 +174,10 @@ export function sampleEvents(): XmEvent[] {
       sessionId,
       // 瞬态事件不占 seq 空间（见 kernel/state/reduce.ts）
       seq:
-        r.type === 'message.delta' || r.type === 'tool.progress' || r.type === 'shell.session.output'
+        r.type === 'message.delta' ||
+        r.type === 'provider.status' ||
+        r.type === 'tool.progress' ||
+        r.type === 'shell.session.output'
           ? Math.max(seq, 1)
           : ++seq,
       ts: 1_754_300_000_000 + seq,

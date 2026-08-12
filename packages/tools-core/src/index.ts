@@ -15,6 +15,8 @@ export * from './fs-list.js';
 export * from './fs-write.js';
 export * from './shell-exec.js';
 export * from './pty-session.js';
+export * from './pty-executable.js';
+export * from './pty-tools.js';
 export * from './web-fetch.js';
 
 import type { RegisteredTool } from '@xm/kernel';

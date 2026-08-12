@@ -4,6 +4,7 @@ import { registerIpc } from './ipc.js';
 import type { Services } from './services.js';
 import { startServices } from './services.js';
 import { assertStorageWorks } from './self-check.js';
+import { secureNavigation } from './navigation-security.js';
 
 /**
  * Electron 主进程入口。
@@ -53,6 +54,7 @@ function createWindow(): BrowserWindow {
       preload: fileURLToPath(new URL('../preload/index.cjs', import.meta.url)),
     },
   });
+  secureNavigation(win.webContents);
 
   if (isDev) {
     void win.loadURL(DEV_SERVER);

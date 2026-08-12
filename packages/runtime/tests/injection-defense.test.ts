@@ -23,6 +23,7 @@ const ENV = {
   home: '/home/ming',
   appRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
+  configDir: '/home/ming/.config/xiaoming',
 };
 
 /** 声明 net.fetch —— 这一条声明就是污点的全部来源，工具不需要多填任何字段 */

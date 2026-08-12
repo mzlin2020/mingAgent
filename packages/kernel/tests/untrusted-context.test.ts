@@ -141,6 +141,7 @@ describe('端到端：污点接上判定，docs/06 §9 的验收项', () => {
     home: '/home/ming',
     appRoot: '/repo',
     dataDir: '/home/ming/.local/share/xiaoming',
+    configDir: '/home/ming/.config/xiaoming',
   };
   const RULES = builtinRules(ENV);
 

@@ -17,7 +17,7 @@ import { EventBus, SessionRuntime, runTurn, textInput } from '@xm/runtime';
  * 所以正确的形状是两条事件：先 `message.end`（带已到达的部分），再 `message.interrupted`。
  */
 
-const ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.local/share/xiaoming' };
+const ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.local/share/xiaoming', configDir: '/home/ming/.config/xiaoming' };
 
 /**
  * 吐几个 chunk 之后就**永远挂住**的 Provider —— 模型正卡在长思考里的那种情况。

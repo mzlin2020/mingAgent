@@ -93,6 +93,16 @@ export const MessageInterruptedPayload = z.looseObject({
   reason: z.enum(['aborted', 'crash']),
 });
 
+/** [T] Provider 连接状态：只服务当前在途 UI，不进入会话历史。 */
+export const ProviderStatusPayload = z.looseObject({
+  phase: z.enum(['retrying', 'connected']),
+  /** retrying 时表示即将发起的尝试序号（从 2 开始）。 */
+  attempt: z.number().int().positive().optional(),
+  maxAttempts: z.number().int().positive().optional(),
+  delayMs: z.number().int().nonnegative().optional(),
+  reason: z.string().optional(),
+});
+
 // ── 工具 ──────────────────────────────────────────────────────────
 
 export const ToolStartPayload = z.looseObject({
@@ -154,10 +164,24 @@ export const ShellSessionOutputPayload = z.looseObject({
   chunk: z.string(),
 });
 
+export const ShellSessionCommandStartedPayload = z.looseObject({
+  ptySessionId: PtySessionId,
+  argv: z.array(z.string()).min(1),
+  cwd: z.string(),
+  timeoutMs: z.number().int().positive(),
+});
+
+export const ShellSessionCommandFinishedPayload = z.looseObject({
+  ptySessionId: PtySessionId,
+  exitCode: z.number().int().optional(),
+  reason: z.enum(['exited', 'timeout', 'killed']),
+  tail: z.string(),
+});
+
 export const ShellSessionClosedPayload = z.looseObject({
   ptySessionId: PtySessionId,
   exitCode: z.number().int().optional(),
-  reason: z.enum(['exited', 'killed', 'idle_timeout']),
+  reason: z.enum(['exited', 'killed', 'idle_timeout', 'interrupted']),
   /**
    * 截断后的回放尾巴（定长环形缓冲，超限直接丢弃更早的内容）。
    *

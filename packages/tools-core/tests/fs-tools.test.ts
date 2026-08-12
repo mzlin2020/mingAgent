@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ResultBlock, ToolProgress } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
-import type { RegisteredTool, ToolContext } from '@xm/kernel';
+import type { BlobStore, RegisteredTool, ToolContext } from '@xm/kernel';
 import { MemoryBlobStore, defineTool } from '@xm/kernel';
 import {
   coreTools,
@@ -108,7 +108,12 @@ describe('fs.list', () => {
 
   it('符号链接被标出来 —— 它的判权目标可能落在目录之外', async () => {
     await writeFile(join(dir, 'real.txt'), 'x');
-    await symlink(join(dir, 'real.txt'), join(dir, 'link.txt'));
+    try {
+      await symlink(join(dir, 'real.txt'), join(dir, 'link.txt'));
+    } catch (e) {
+      if (typeof e === 'object' && e !== null && 'code' in e && e.code === 'EPERM') return;
+      throw e;
+    }
     expect(await run(fsListTool(), { path: dir })).toMatch(/link\.txt\s+→ 符号链接/);
   });
 
@@ -188,9 +193,9 @@ describe('写前还原点', () => {
       [{ capability: 'fs.write', target }],
     );
 
-    expect(record?.kind).toBe('fs');
-    expect(record?.ref).toMatch(/^sha256:[a-f0-9]{64}:3$/);
-    expect(record?.label).toContain('3 字节');
+    expect(record?.record?.kind).toBe('fs');
+    expect(record?.record?.ref).toMatch(/^sha256:[a-f0-9]{64}:3$/);
+    expect(record?.record?.label).toContain('3 字节');
   });
 
   it('新建文件也留痕 —— 回退等于"删掉它"，不记就无从知道该删还是该恢复', async () => {
@@ -200,7 +205,7 @@ describe('写前还原点', () => {
       ctx(),
       [{ capability: 'fs.write', target: join(dir, 'brand-new.md') }],
     );
-    expect(record?.label).toContain('原本不存在');
+    expect(record?.record?.label).toContain('原本不存在');
   });
 
   it('只读工具不建还原点', async () => {
@@ -229,7 +234,7 @@ describe('写前还原点', () => {
         { capability: 'fs.delete', target },
       ],
     );
-    expect(record?.label).toContain('3 字节');
+    expect(record?.record?.label).toContain('3 字节');
   });
 
   it('目录快照做不了，而且说得出来 —— 绝不假装存过', async () => {
@@ -239,7 +244,8 @@ describe('写前还原点', () => {
       ctx(),
       [{ capability: 'fs.delete', target: dir }],
     );
-    expect(record?.label).toContain('没有还原点');
+    expect(record?.record).toBeUndefined();
+    expect(record?.warnings.join('；')).toContain('没有还原点');
   });
 
   it('🔴 判据来自这次调用的主张，不是一份工具名单', async () => {
@@ -263,6 +269,47 @@ describe('写前还原点', () => {
       { capability: 'fs.write', target },
     ]);
     expect(record).toBeDefined();
+  });
+
+  it('🔴 已存在目标读不到时失败关闭，不冒充“原本不存在”', async () => {
+    const denied = Object.assign(new Error('denied'), { code: 'EACCES' });
+    const target = join(dir, 'private.md');
+    await expect(
+      nodeCheckpointer({
+        blobs: blobs(),
+        statFile: (() => Promise.reject(denied)) as typeof import('node:fs/promises').stat,
+      }).before(fsWriteTool(), { path: target, content: 'NEW' }, ctx(), [
+        { capability: 'fs.write', target },
+      ]),
+    ).rejects.toThrow('denied');
+  });
+
+  it('large files continue with an explicit warning and no fake checkpoint', async () => {
+    const target = join(dir, 'large.bin');
+    await writeFile(target, 'x');
+    const result = await nodeCheckpointer({
+      blobs: blobs(),
+      readFileBytes: (() =>
+        Promise.resolve(Buffer.alloc(8 * 1024 * 1024 + 1))) as unknown as typeof import('node:fs/promises').readFile,
+    }).before(fsWriteTool(), { path: target, content: 'NEW' }, ctx(), [
+      { capability: 'fs.write', target },
+    ]);
+    expect(result?.record).toBeUndefined();
+    expect(result?.warnings.join(' ')).toContain('超过快照上限');
+  });
+
+  it('blob persistence failure for an existing file rejects execution', async () => {
+    const target = join(dir, 'blob-fail.md');
+    await writeFile(target, 'OLD');
+    const failedBlobs = {
+      put: () => Promise.reject(new Error('blob unavailable')),
+      get: () => Promise.resolve(undefined),
+    } as unknown as BlobStore;
+    await expect(
+      nodeCheckpointer({ blobs: failedBlobs }).before(fsWriteTool(), { path: target, content: 'NEW' }, ctx(), [
+        { capability: 'fs.write', target },
+      ]),
+    ).rejects.toThrow('blob unavailable');
   });
 });
 

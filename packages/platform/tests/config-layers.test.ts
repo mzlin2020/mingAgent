@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PolicyRule } from '@xm/contracts';
-import type { PolicyEnv, XmPaths } from '@xm/kernel';
-import { appendUserRule, loadConfig } from '@xm/platform';
+import type { XmPaths } from '@xm/kernel';
+import { loadConfig, persistProviderConfig } from '@xm/platform';
 
 /**
  * ── 权限规则的分层加载与落盘（ADR-0023）──
@@ -24,7 +24,6 @@ import { appendUserRule, loadConfig } from '@xm/platform';
 let home: string;
 let project: string;
 let paths: XmPaths;
-let env: PolicyEnv;
 
 const configFile = (): string => join(paths.config, 'config.json');
 
@@ -40,8 +39,8 @@ const rule = (over: Partial<PolicyRule> & Pick<PolicyRule, 'id'>): PolicyRule =>
  * ⚠️ `realpath.native`，不是裸的 `mkdtemp`。
  *
  * Windows 上 `os.tmpdir()` 给的是 8.3 短名（`C:\Users\RUNNER~1\AppData\...`），
- * 而内核对短名**失败关闭**：`appendUserRule` 里那道构造期闸门会在 `builtinRules(env)`
- * 就抛出来，五条用例全红，且报的错与它们要测的东西毫无关系。
+ * 而内核对短名**失败关闭**：构造规则层时会在 `builtinRules(env)` 就抛出来，
+ * 五条用例全红，且报的错与它们要测的东西毫无关系。
  *
  * 生产路径上这一步在 `resolvePaths()` 里（platform/paths.ts 的 `resolveWindowsShortName`），
  * 而这个文件手工拼 `XmPaths`，绕过了它。绕过平台层自己的路径解析、又去测平台层的行为，
@@ -60,7 +59,6 @@ beforeEach(async () => {
     cache: join(home, 'cache'),
     logs: join(home, 'logs'),
   };
-  env = { home, appRoot: '/repo', dataDir: paths.data };
   await mkdir(paths.config, { recursive: true });
 });
 
@@ -136,61 +134,42 @@ describe('分层加载', () => {
   });
 });
 
-describe('🔴 永久授权落盘', () => {
-  it('写进去之后，重新加载还在 —— 「重启后仍然生效」这句话的全部内容', async () => {
-    const grant = rule({
-      id: 'grant.always.abc',
-      match: { target: join(home, 'work', 'README.md') },
-    });
-    await appendUserRule({ paths, env, rule: grant });
+describe('🔴 Provider SecretRef 落盘', () => {
+  const anthropic = {
+    kind: 'anthropic' as const,
+    apiKey: { $secret: 'anthropic.apiKey' },
+    models: [],
+  };
 
-    const loaded = await loadConfig({ paths });
-    expect(loaded.permissionRules.user).toEqual([grant]);
+  it('写进去之后重新加载仍能找到 SecretRef', async () => {
+    await persistProviderConfig({ paths, providerId: 'anthropic', provider: anthropic });
+    expect((await loadConfig({ paths })).config.providers.anthropic?.apiKey).toEqual(
+      anthropic.apiKey,
+    );
   });
 
-  it('保住文件里其余的内容 —— 只动 permission.rules', async () => {
+  it('保住文件里其余内容，只更新目标 provider', async () => {
     await writeUser({
       model: { main: 'x/y' },
-      providers: { anthropic: { kind: 'anthropic', apiKey: { $secret: 'anthropic.apiKey' }, models: [] } },
+      providers: { other: { kind: 'ollama', models: ['m'] } },
     });
-    await appendUserRule({ paths, env, rule: rule({ id: 'grant.always.abc' }) });
+    await persistProviderConfig({ paths, providerId: 'anthropic', provider: anthropic });
 
     const raw = JSON.parse(await readFile(configFile(), 'utf8')) as Record<string, unknown>;
     expect((raw.model as { main: string }).main).toBe('x/y');
-    expect(raw.providers).toBeDefined();
+    expect((raw.providers as Record<string, unknown>).other).toBeDefined();
   });
 
-  it('同 id 覆盖而不是重复追加', async () => {
-    const a = rule({ id: 'grant.always.abc', match: { target: '/a' } });
-    const b = rule({ id: 'grant.always.abc', match: { target: '/b' } });
-    await appendUserRule({ paths, env, rule: a });
-    await appendUserRule({ paths, env, rule: b });
-
-    const loaded = await loadConfig({ paths });
-    expect(loaded.permissionRules.user).toEqual([b]);
-  });
-
-  it('🔴 落盘前过构造期闸门 —— 在写下来的那一刻炸，而不是下次启动才失败', async () => {
+  it('🔴 损坏的配置绝不被录入动作覆盖', async () => {
+    await writeFile(configFile(), '{broken', 'utf8');
     await expect(
-      appendUserRule({
-        paths,
-        env,
-        // 红线仍然不许建立在命令 target 上（ADR-0026 决策四保留了 ADR-0020 的这一半）
-        rule: rule({
-          id: 'grant.always.bad',
-          capability: 'shell.exec',
-          immutable: true,
-          match: { target: 'rm -rf /*' },
-        }),
-      }),
-    ).rejects.toThrow(/命令类能力/);
-
-    // 而且**什么都没写下去**
-    await expect(readFile(configFile(), 'utf8')).rejects.toThrow();
+      persistProviderConfig({ paths, providerId: 'anthropic', provider: anthropic }),
+    ).rejects.toThrow(/已保留原文件/);
+    expect(await readFile(configFile(), 'utf8')).toBe('{broken');
   });
 
   it('写入是原子的：不留临时文件', async () => {
-    await appendUserRule({ paths, env, rule: rule({ id: 'grant.always.abc' }) });
+    await persistProviderConfig({ paths, providerId: 'anthropic', provider: anthropic });
     const { readdir } = await import('node:fs/promises');
     expect((await readdir(paths.config)).filter((f) => f.includes('.tmp'))).toHaveLength(0);
   });

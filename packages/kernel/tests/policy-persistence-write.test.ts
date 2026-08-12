@@ -18,7 +18,7 @@ import { builtinLayers, composeRules, evaluate, persistencePathRules } from '@xm
  */
 
 const HOME = '/home/ming';
-const ENV: PolicyEnv = { home: HOME, appRoot: '/repo', dataDir: '/home/ming/.xiaoming' };
+const ENV: PolicyEnv = { home: HOME, appRoot: '/repo', dataDir: '/home/ming/.xiaoming', configDir: '/home/ming/.config/xiaoming' };
 
 const ask = (capability: Capability, target: string): PermissionRequest => ({
   requestId: newRequestId(),
