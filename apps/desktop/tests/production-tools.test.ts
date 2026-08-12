@@ -9,8 +9,13 @@ describe('desktop production tool assembly', () => {
       emit: () => undefined,
       spawnPty: () => { throw new Error('not used'); },
     });
-    const names = productionTools({ os: 'linux', ptySessions: manager }).map((tool) => tool.descriptor.name);
+    const names = productionTools({
+      os: 'linux',
+      ptySessions: manager,
+      updateTodos: () => Promise.resolve(),
+    }).map((tool) => tool.descriptor.name);
     expect(names.some((name) => name.startsWith('demo.'))).toBe(false);
+    expect(names).toContain('todo.update');
     expect(names).toContain('shell.session.run');
     expect(names).not.toContain('shell.session.write');
   });

@@ -12,7 +12,7 @@ import { z } from 'zod';
 export const TodoStatus = z.enum(['pending', 'in_progress', 'completed']);
 export type TodoStatus = z.infer<typeof TodoStatus>;
 
-export const Todo = z.object({
+const todoShape = () => ({
   /** 模型自行分配，会话内唯一即可，不做 UUID 要求 */
   id: z.string().min(1),
   /** 祈使句形式："修复登录超时" */
@@ -21,4 +21,9 @@ export const Todo = z.object({
   /** 进行时形式："正在修复登录超时"，供 UI 展示当前动作 */
   activeForm: z.string().optional(),
 });
+
+export const Todo = z.object(todoShape());
 export type Todo = z.infer<typeof Todo>;
+
+/** 工具入参必须 strict；与持久事件的 Todo 复用同一字段源，避免两份字段定义分叉。 */
+export const TodoInput = z.strictObject(todoShape());

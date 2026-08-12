@@ -27,6 +27,10 @@ export function turnAvailabilityContext(
 export function buildTurnRequest(input: TurnRequestInput): ModelRequest {
   const availability = turnAvailabilityContext(input);
   const host = input.hostOs ?? '当前主机';
+  const tools = input.tools.descriptors(availability);
+  const todoGuidance = tools.some((tool) => tool.name === 'todo.update')
+    ? `\n预计需要至少三个实质步骤时，用 todo.update 维护简短清单并随进展更新；简单任务不要创建清单。`
+    : '';
   return {
     model: input.model,
     system: [
@@ -36,11 +40,12 @@ export function buildTurnRequest(input: TurnRequestInput): ModelRequest {
           `你是小明，本地自主通用 Agent。目标是实际完成用户任务。\n` +
           `已知运行平台：${host}；当前工作目录：${input.runtime.state.cwd}。不要重复探测这些信息。\n` +
           `执行型任务应优先执行：先完成用户明确要求的最小可用结果，再验证；除非用户要求，不自行扩展功能。\n` +
-          `避免在思考中完整起草大段文件内容，应通过可用工具直接写入。只有完成或明确受阻时才结束回合。`,
+          `避免在思考中完整起草大段文件内容，应通过可用工具直接写入。只有完成或明确受阻时才结束回合。` +
+          todoGuidance,
       },
     ],
     messages: [...input.runtime.state.messages],
-    tools: input.tools.descriptors(availability),
+    tools,
     maxOutputTokens: Math.min(
       MAIN_MAX_OUTPUT_TOKENS,
       input.providerMaxOutputTokens ?? MAIN_MAX_OUTPUT_TOKENS,

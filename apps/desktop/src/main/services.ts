@@ -286,7 +286,21 @@ export async function startServices(): Promise<Services> {
         });
     },
   });
-  for (const tool of productionTools({ os: platform.os, ptySessions })) tools.register(tool);
+  for (const tool of productionTools({
+    os: platform.os,
+    ptySessions,
+    updateTodos: async ({ sessionId, todos }) => {
+      const runtime = await runtimeFor(sessionId);
+      const turnId = runtime.state.activeTurn?.turnId;
+      await runtime.record({
+        type: 'todo.updated',
+        payload: { todos: [...todos] },
+        ...(turnId === undefined ? {} : { turnId }),
+      });
+    },
+  })) {
+    tools.register(tool);
+  }
 
   /**
    * 角色 → 模型引用（docs/08 M3 的"角色路由"在这里落下第一个真实消费者）。

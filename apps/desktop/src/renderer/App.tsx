@@ -16,6 +16,7 @@ import { LiveCalls, LiveMessage } from './components/live-views.js';
 import { MessageStream } from './components/message-stream.js';
 import { SessionTabs } from './components/session-tabs.js';
 import { TerminalPanel } from './components/terminal-panel.js';
+import { TodoPanel } from './components/todo-panel.js';
 import { SecurityView } from './components/security-view.js';
 import { api } from './bridge.js';
 import { cn } from './lib/cn.js';
@@ -96,7 +97,7 @@ export function App(): ReactNode {
     const el = scrollRef.current;
     if (el === null || !stickToBottom.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [session?.messages, live, shellView]);
+  }, [session?.messages, session?.todos, live, shellView]);
 
   const inChat = shellView === 'chat' && currentId !== undefined;
 
@@ -139,6 +140,7 @@ export function App(): ReactNode {
             <NoticeBanner />
             <UntrustedBanner />
             <MessageStream messages={session?.messages ?? []} />
+            <TodoPanel todos={session?.todos ?? []} />
             <LiveMessage />
             <LiveCalls />
             <TerminalPanel />

@@ -40,11 +40,13 @@ import {
   EventBus,
   ScriptedProvider,
   SessionRuntime,
+  TODO_UPDATE,
   demoTargetOf,
   echoTool,
   fakeDeleteTool,
   runTurn,
   textInput,
+  todoUpdateTool,
 } from '../packages/runtime/dist/index.js';
 
 // fileURLToPath 而不是 `.pathname`：后者在 Windows 上是 `/D:/a/...` 这种带
@@ -81,9 +83,21 @@ try {
   const tools = new ToolRegistry();
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
+  tools.register(
+    todoUpdateTool(async ({ sessionId: target, todos }) => {
+      if (target !== sessionId) throw new Error('todo.update 写到了错误会话');
+      const turnId = runtime.state.activeTurn?.turnId;
+      await runtime.record({
+        type: 'todo.updated',
+        payload: { todos: [...todos] },
+        ...(turnId === undefined ? {} : { turnId }),
+      });
+    }),
+  );
   for (const t of coreTools({ os: platform.os })) tools.register(t);
 
   const echoCall = newCallId();
+  const todoCall = newCallId();
   const denyCall = newCallId();
 
   const provider = new ScriptedProvider({
@@ -95,6 +109,9 @@ try {
           { kind: 'tool_call_start', id: echoCall, name: DEMO_ECHO },
           { kind: 'tool_call_delta', id: echoCall, argsJson: '{"text":"你好，小明"}' },
           { kind: 'tool_call_end', id: echoCall },
+          ...toolCall(todoCall, TODO_UPDATE, {
+            todos: [{ id: 'smoke', content: '完成 headless 冒烟', status: 'in_progress' }],
+          }),
           { kind: 'tool_call_start', id: denyCall, name: DEMO_FAKE_DELETE },
           { kind: 'tool_call_delta', id: denyCall, argsJson: JSON.stringify({ path: paths.home }) },
           { kind: 'tool_call_end', id: denyCall },
@@ -303,6 +320,9 @@ try {
 
   if (types.includes('message.delta') || types.includes('tool.progress')) {
     fail('瞬态事件落库了（ADR-0008）');
+  }
+  if (!types.includes('todo.updated') || replayed.todos[0]?.id !== 'smoke') {
+    fail('todo.update 没有贯穿工具调用→事件落库→重开放回放');
   }
   if (!seen.some((e) => e.type === 'message.delta')) fail('总线上没有 message.delta，流式没生效');
 

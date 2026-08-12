@@ -30,6 +30,7 @@ import type {
  * （`spec.capabilities`），加一道检查不需要新的基础设施。
  */
 export const EMPTY_CAPABILITIES_ALLOWLIST: Readonly<Record<string, string>> = {
+  'todo.update': 'ADR-0041（只更新当前会话内的可见任务清单，没有会话外副作用）',
   'shell.session.status': 'ADR-0040（只读查询当前会话所属终端的有界状态）',
   'shell.session.resize': 'ADR-0040（只改变当前会话所属终端显示尺寸）',
   'shell.session.close': 'ADR-0040（只关闭当前会话所属终端）',

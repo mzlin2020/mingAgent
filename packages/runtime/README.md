@@ -1,5 +1,7 @@
 # `@xm/runtime`
 
+M2-a 新增内建 `todo.update`：工具通过 ADR-0041 的窄 `TodoUpdater` 写入当前会话的 `todo.updated`，不向 `ToolContext` 暴露通用事件写入口。提示词只在该工具实际可用时引导三步以上任务维护清单。
+
 **装配层**：把内核（纯逻辑）、存储（端口实现）、Provider 与工具拼成一个可运行的
 headless 引擎。
 
