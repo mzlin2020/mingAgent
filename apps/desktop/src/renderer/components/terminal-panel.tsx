@@ -103,13 +103,12 @@ function TerminalView({ terminal }: { readonly terminal: LiveTerminal }): ReactN
         深色主题下终端底色和卡片底色只差一点，不描边就看不出终端从哪里开始到哪里结束。
         浅色下这条边框也让那块深色不至于像是"糊上去的"。
       */}
-      <div
-        ref={containerRef}
-        className={cn(
-          'h-64 overflow-hidden rounded-control border border-border bg-terminal-bg p-2',
-          collapsed && 'hidden',
-        )}
-      />
+      <div className={cn('terminal-reveal', collapsed && 'terminal-reveal--collapsed')}>
+        <div
+          ref={containerRef}
+          className="h-64 min-h-0 overflow-hidden rounded-control border border-border bg-terminal-bg p-2"
+        />
+      </div>
     </Card>
   );
 }

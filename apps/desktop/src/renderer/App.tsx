@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AppMenu } from './components/app-menu.js';
 import {
@@ -8,18 +8,17 @@ import {
   SetupBanner,
   TurnErrorBanner,
   UntrustedBanner,
-  UsageBadge,
 } from './components/banners.js';
 import { Composer } from './components/composer.js';
 import { HomeView } from './components/home-view.js';
-import { LiveCalls, LiveMessage } from './components/live-views.js';
+import { LiveMessage } from './components/live-views.js';
 import { MessageStream } from './components/message-stream.js';
 import { SessionTabs } from './components/session-tabs.js';
-import { TerminalPanel } from './components/terminal-panel.js';
-import { TodoPanel } from './components/todo-panel.js';
-import { CheckpointPanel } from './components/checkpoint-panel.js';
 import { DiffReviewPanel } from './components/diff-review-panel.js';
 import { SecurityView } from './components/security-view.js';
+import { WorkbenchPanel } from './components/workbench-panel.js';
+import { Button } from './components/ui.js';
+import { PanelRightIcon } from './components/icons.js';
 import { api } from './bridge.js';
 import { cn } from './lib/cn.js';
 import { COLUMN } from './lib/layout.js';
@@ -38,6 +37,7 @@ export function App(): ReactNode {
   const refreshStatus = useUi((s) => s.refreshStatus);
   const refreshOrphanedSessions = useUi((s) => s.refreshOrphanedSessions);
   const applyEvent = useUi((s) => s.applyEvent);
+  const [workbenchOpen, setWorkbenchOpen] = useState(false);
 
   useEffect(() => {
     void refreshSessions();
@@ -64,6 +64,7 @@ export function App(): ReactNode {
 
   useEffect(() => {
     stickToBottom.current = true;
+    setWorkbenchOpen(false);
   }, [currentId]);
 
   /*
@@ -99,21 +100,41 @@ export function App(): ReactNode {
     const el = scrollRef.current;
     if (el === null || !stickToBottom.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [session?.messages, session?.todos, live, shellView]);
+  }, [session?.messages, live.message, shellView]);
 
   const inChat = shellView === 'chat' && currentId !== undefined;
+  const hasWorkbenchContent = session !== undefined && (
+    session.todos.length > 0 ||
+    session.checkpoints.length > 0 ||
+    session.runningCalls.size > 0 ||
+    live.terminals.size > 0
+  );
 
   return (
     <div className="flex h-screen flex-col bg-canvas text-fg">
       {/*
         顶栏坐在页面底色上，不再自己顶一层 surface —— 选中的 tab 才用 surface。
         上一版两者同色，选中态在顶栏上等于看不见（见 `session-tabs.tsx`）。
-        定高 44px：汉堡 / Home / tabs / 用量落在同一条基线上。
+        定高 44px：汉堡 / Home / tabs / 工作区开关落在同一条基线上。
       */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <AppMenu />
         <SessionTabs />
-        <div className="flex shrink-0 items-center gap-3">{inChat && <UsageBadge />}</div>
+        <div className="flex shrink-0 items-center gap-2">
+          {inChat && hasWorkbenchContent && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className={cn(workbenchOpen && 'bg-surface-2 text-fg')}
+              aria-label={workbenchOpen ? '隐藏工作区' : '显示工作区'}
+              aria-expanded={workbenchOpen}
+              title={workbenchOpen ? '隐藏工作区' : '显示工作区'}
+              onClick={() => { setWorkbenchOpen((value) => !value); }}
+            >
+              <PanelRightIcon />
+            </Button>
+          )}
+        </div>
       </header>
 
       {error !== undefined && (
@@ -127,44 +148,53 @@ export function App(): ReactNode {
         而输入区在滚动区之外。不预留就会出现"有滚动条时消息栏比输入框往左偏 3px"——
         肉眼说不出哪里不对，但两条本该对齐的竖线一直差着一点。两边都留，居中才与输入区一致。
       */}
-      <div
-        ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]"
-      >
-        {shellView === 'security' ? (
-          <SecurityView />
-        ) : shellView === 'home' || currentId === undefined ? (
-          <HomeView />
-        ) : (
-          <div className={cn(COLUMN, 'flex flex-col gap-6 py-6')}>
-            <SetupBanner />
-            <SessionConflictBanner />
-            <NoticeBanner />
-            <UntrustedBanner />
-            <MessageStream messages={session?.messages ?? []} />
-            <TodoPanel todos={session?.todos ?? []} />
-            {session !== undefined && (
-              <DiffReviewPanel sessionId={session.id} proposals={session.editProposals} />
-            )}
-            {session !== undefined && (
-              <CheckpointPanel sessionId={session.id} checkpoints={session.checkpoints} />
-            )}
-            <LiveMessage />
-            <LiveCalls />
-            <TerminalPanel />
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div
+            ref={scrollRef}
+            className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable_both-edges]"
+          >
+            <div key={`${shellView}:${currentId ?? ''}`} className="ui-view-enter">
+              {shellView === 'security' ? (
+                <SecurityView />
+              ) : shellView === 'home' || currentId === undefined ? (
+                <HomeView />
+              ) : (
+                <div className={cn(COLUMN, 'flex flex-col gap-6 py-6')}>
+                  <SetupBanner />
+                  <SessionConflictBanner />
+                  <NoticeBanner />
+                  <UntrustedBanner />
+                  <MessageStream messages={session?.messages ?? []} />
+                  <LiveMessage />
+                  {session !== undefined && (
+                    <DiffReviewPanel sessionId={session.id} proposals={session.editProposals} />
+                  )}
+                </div>
+              )}
+            </div>
           </div>
+
+          {inChat && (
+            <>
+              <div className={cn(COLUMN, 'flex shrink-0 flex-col gap-2 pb-2 empty:hidden')}>
+                <InterruptedSessionBanner />
+                <TurnErrorBanner />
+              </div>
+              <Composer disabled={busy} running={session?.status === 'running'} />
+            </>
+          )}
+        </div>
+
+        {inChat && hasWorkbenchContent && (
+          <WorkbenchPanel
+            sessionId={session.id}
+            todos={session.todos}
+            checkpoints={session.checkpoints}
+            open={workbenchOpen}
+          />
         )}
       </div>
-
-      {inChat && (
-        <>
-          <div className={cn(COLUMN, 'flex shrink-0 flex-col gap-2 pb-2 empty:hidden')}>
-            <InterruptedSessionBanner />
-            <TurnErrorBanner />
-          </div>
-          <Composer disabled={busy} running={session?.status === 'running'} />
-        </>
-      )}
     </div>
   );
 }

@@ -36,7 +36,9 @@ export function Disclosure({
         <Chevron />
         <span className="min-w-0 flex-1 truncate">{label}</span>
       </summary>
-      {children}
+      <div className="disclosure-content">
+        <div className="disclosure-content__inner">{children}</div>
+      </div>
     </details>
   );
 }

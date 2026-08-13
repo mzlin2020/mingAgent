@@ -139,6 +139,8 @@ html,
 body,
 #root {
   height: 100%;
+  width: 100%;
+  overflow: hidden;
 }
 
 body {
@@ -206,6 +208,142 @@ body {
 
 *::-webkit-scrollbar-thumb:hover {
   background-color: color-mix(in srgb, var(--color-muted) 48%, transparent);
+}
+
+@keyframes soft-view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes soft-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(3px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ui-view-enter {
+  animation: soft-view-enter 180ms var(--ease-out-soft);
+}
+
+.ui-card-enter {
+  animation: soft-card-enter 150ms var(--ease-out-soft);
+}
+
+.ui-expand {
+  transform-origin: top;
+  animation: soft-view-enter 150ms var(--ease-out-soft);
+}
+
+/* `<details>` 默认直接显隐内容；grid 行让高度、透明度和箭头在同一节奏内过渡。 */
+.disclosure-content {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 180ms var(--ease-out-soft),
+    opacity 130ms var(--ease-out-soft);
+}
+
+details:not([open]) > .disclosure-content {
+  display: grid;
+}
+
+details[open] > .disclosure-content {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.disclosure-content__inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.terminal-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition:
+    grid-template-rows 200ms var(--ease-out-soft),
+    opacity 150ms var(--ease-out-soft),
+    margin 200ms var(--ease-out-soft);
+}
+
+.terminal-reveal--collapsed {
+  grid-template-rows: 0fr;
+  margin-top: -0.375rem;
+  opacity: 0;
+}
+
+/*
+ * 工作区在常规窗口中与聊天并排；窄窗口中改为右侧覆盖层，避免把正文和输入框挤成细条。
+ * 它仍然是同一个组件和同一份状态，只改变布局方式。
+ */
+.workspace-panel {
+  width: 380px;
+  overflow: hidden;
+  border-left: 1px solid var(--color-border);
+  opacity: 1;
+  transform: translateX(0);
+  transition:
+    width 220ms var(--ease-out-soft),
+    border-color 160ms var(--ease-out-soft),
+    opacity 160ms var(--ease-out-soft),
+    transform 220ms var(--ease-out-soft);
+}
+
+.workspace-panel[data-open='false'] {
+  width: 0;
+  border-left-color: transparent;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(0);
+}
+
+.workspace-panel__inner {
+  width: 380px;
+}
+
+@media (max-width: 900px) {
+  .workspace-panel {
+    position: absolute;
+    inset-block: 0;
+    right: 0;
+    z-index: 20;
+    width: min(380px, calc(100% - 48px));
+    box-shadow: var(--shadow-pop);
+  }
+
+  .workspace-panel[data-open='false'] {
+    width: min(380px, calc(100% - 48px));
+    box-shadow: none;
+    transform: translateX(100%);
+  }
+
+  .workspace-panel__inner {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /**

@@ -53,7 +53,7 @@ export function Button({
       type="button"
       className={cn(
         'inline-flex shrink-0 items-center justify-center rounded-control font-medium',
-        'transition-colors active:translate-y-px',
+        'transition-[color,background-color,border-color,transform,box-shadow] active:translate-y-px',
         'disabled:pointer-events-none disabled:opacity-45',
         BUTTON_SIZE[size],
         BUTTON_VARIANT[variant],
@@ -102,7 +102,7 @@ export function Card({
   return (
     <div
       className={cn(
-        'rounded-card border p-3.5 text-body',
+        'ui-card-enter rounded-card border p-3.5 text-body',
         tone === 'accent' && 'border-accent bg-surface',
         tone === 'danger' && 'border-danger-border bg-danger-bg',
         tone === 'default' && 'border-border bg-surface',
