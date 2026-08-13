@@ -29,7 +29,8 @@ headless 引擎。
 ## 不负责什么
 
 - **electron**。`apps/cli`（M3）与 headless 冒烟都要用本包。
-- 真实 Provider、真实工具集、SecretStore、审批 UI（M1）。
+- Provider/工具/SecretStore 的具体适配器与桌面 UI。真实 Provider 在 `@xm/providers`，基础工具在
+  `@xm/tools-core`，密钥与 Electron 装配在 `apps/desktop`；Runtime 只依赖端口和注册后的工具。
 - 并行调度、递归/可写子 Agent、后台无人值守（M3/M4）。M2-i 只提供串行、有限、只读探索。
 
 ## 三条容易被破坏的约束
@@ -48,8 +49,8 @@ UI 上多出来一条永远回放不出来的消息，是那种用户报"它自�
 一个工具声明多个能力时逐个判定，**任一被拒即整体拒绝**。反过来（任一放行即放行）
 会让"同时声明 fs.read 和 fs.delete 的工具"靠 fs.read 蒙混过关。
 
-`ask` 的应答者 `decide` **没有默认值**：headless 下没人能点"允许"，
-默认放行会把整条闸门变成摆设。没传就等同于拒绝，冒烟里有一条用例锁着它。
+策略判定只有 `allow | deny`，不存在 `decide` 应答者或挂起审批。无规则命中时放行；任一主张
+命中红线或拒绝规则时整次工具调用不执行，并成对记录 `permission.request/decision` 作为审计依据。
 
 ## headless 冒烟
 

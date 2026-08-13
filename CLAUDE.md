@@ -116,7 +116,8 @@ target 规范化失败关闭(0) → 红线跨层最先判(1) → 分层求值，
 
 **八、密钥只从 SecretStore 来。** 配置层刻意**不接环境变量**——接上就等于给了一条
 "把 key 塞进 env"的合法路径，而 `shell.exec` 会把整个环境原样交给子进程。
-配置分层：内置默认 < `${paths.config}/config.json` < `${cwd}/.xiaoming/config.json`；
+配置加载器支持：内置默认 < `${paths.config}/config.json` < 传入 cwd 的 `.xiaoming/config.json`；
+当前桌面装配只在启动时以 `app.getPath('home')` 加载一次，尚不会随会话工作区切换重载项目配置。
 `permission.rules` 走分层而非合并（ADR-0023）。ADR-0039 之后 `config.json` 的
 `permission.rules` 是**唯一**的用户侧权限入口（`permission.tier` 已删），
 项目层只能收紧（`tightenOnly`）——那个文件躺在别人的仓库里。

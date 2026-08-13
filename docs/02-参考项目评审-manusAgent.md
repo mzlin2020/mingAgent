@@ -12,13 +12,17 @@
 
 `domain/external/*.py` 定义协议（`LLM` / `Sandbox` / `Browser` / `Task` / `MessageQueue` / `FileStorage` / `SearchEngine` / `JSONParser`），`infrastructure/external/**` 提供实现，`interfaces/service_dependencies.py` 集中装配。domain 层禁止 import infrastructure。
 
-**继承方式**：这就是小明"一切皆插件"的基础。改进点是把"集中装配"从**手写依赖注入**升级为**注册表 + 清单驱动的动态装配**，否则每加一个 Provider 都要改装配文件，扩展性到不了要求的高度。
+**继承方式**：这就是小明"一切皆插件"的基础。M0–M2 已以 Ports & Adapters 和桌面端集中装配
+落地；“注册表 + 清单驱动的动态装配”仍是 M3 插件宿主目标，当前 Provider/工具生产装配仍是
+显式代码，不能把目标形态写成现状。
 
 ### 1.2 事件驱动的 UI 契约（★★★★★）
 
 `domain/models/event.py` 用 Pydantic 判别联合定义了 `plan / title / step / message / tool / wait / error / done` 八类事件，前端按类型分发渲染。这个抽象非常正确——**Agent 的输出天然是事件流而不是文本流**。
 
-**继承方式**：保留判别联合事件模型，但用 Zod 定义在共享的 `@xm/contracts` 包中，前后端共用同一份类型（消灭参考项目里 `normalizeEvent` 那种手工转换）。事件类型要扩展：`thinking`（推理过程）、`usage`（token/成本）、`permission`（审批请求）、`checkpoint`（还原点）、`subagent`（子 Agent 生命周期）。
+**继承方式**：已落地。共享 `@xm/contracts` 用 Zod 定义事件判别联合，前后端共用同一份类型；
+当前包含 thinking delta、usage、策略审计事件、checkpoint 创建/恢复、编辑提案和 subagent 生命周期。
+权限事件只记录策略拒绝，不代表仍有审批 UI。
 
 ### 1.3 工具集（ToolSet）+ 声明式 Schema（★★★★☆）
 
@@ -64,7 +68,8 @@
 
 `filtered_message["tool_calls"] = message.get("tool_calls")[:1]`，并且 OpenAI 侧显式 `parallel_tool_calls=False`。读 5 个文件要 5 个来回。
 
-→ **小明**：支持并行工具调用。**只读工具并发执行，写操作串行且需要按依赖排序**；由工具自身声明 `concurrency: 'parallel' | 'exclusive'`，由调度器决定编排。
+→ **小明**：契约已允许工具声明 `concurrency` 与资源；截至 M2，主 Turn 和子 Agent 仍按顺序分发，
+通用并行 Scheduler 尚未实现。目标仍是只读工具按资源安全并发、写操作串行并按依赖排序。
 
 ### 2.3 任务注册表在进程内存 —— 无法恢复
 
@@ -76,7 +81,9 @@
 
 `sessions` 单表用 JSONB 存 `events` / `files` / `memories`，每次追加事件都要读出整行、改、写回。会话越长，单次写入成本越高，是 O(n²) 的增长。
 
-→ **小明**：`events` 独立表，append-only，`(session_id, seq)` 主键；`messages` / `checkpoints` / `usage` 分表；会话视图由事件 reduce 或物化视图得到。写入恒定 O(1)。
+→ **小明**：已采用 `events` append-only 表与 `(session_id, seq)` 主键；消息、checkpoint、usage、
+todo 和编辑提案都由事件 `reduce()`，没有各自的真相表。`sessions` 只作摘要投影，快照只作可删的
+回放缓存；工作区索引是可重建派生库。
 
 ### 2.5 重量级外部依赖 —— 与桌面产品形态冲突
 
@@ -93,7 +100,9 @@ PostgreSQL + Redis + 腾讯云 COS + Docker + Nginx，五个外部依赖才能�
 > 具体是哪个文件、哪个仓库，本文刻意不写。指出位置对论证没有任何增益，
 > 却会把这份评审本身变成一个指向可用凭据的路标。
 
-→ **小明**：所有凭据存操作系统钥匙串（macOS Keychain / Windows Credential Manager，经 Electron `safeStorage` 或 `keytar`）。配置文件里只存**引用**（如 `apiKeyRef: "keychain://anthropic/default"`）。仓库内置 secret 扫描的 pre-commit 钩子。
+→ **小明**：桌面端用 Electron `safeStorage` 调用 macOS Keychain / Windows DPAPI / Linux
+libsecret，并把与本机账户绑定的密文写入配置目录；不引入已归档的 keytar。配置里只存
+`{"$secret":"anthropic.apiKey"}` 引用，仓库有自有 secret 扫描 pre-commit 钩子。
 
 ### 2.7 静默过滤模型幻觉参数 —— 掩盖问题
 
@@ -117,19 +126,22 @@ CLAUDE.md 明确写了："消息附件只把沙箱文件路径拼进上下文，
 
 `shell_execute` 不等命令结束就返回，模型拿到的可能是上一条命令的回显，要配合 `shell_wait_process` / `shell_read_output` 才对。
 
-→ **小明**：终端会话模型要正确：`exec`（同步执行，返回 exit code + stdout/stderr + 是否截断）与 `session`（PTY 长会话，流式输出，支持交互与后台）两条清晰路径，超时策略显式。绝不返回语义模糊的结果。
+→ **小明**：已分成 `shell.exec`（等待结束，返回 exit code + stdout/stderr + 截断信息）与受控
+`shell.session`。后者没有原始 stdin，只用 `run(argv)` 启动一个在途程序，`status` 读取有界尾部；
+暂不支持 REPL、全屏交互或任意后台输入。
 
-### 2.11 无权限与审批机制 —— 桌面端不可接受
+### 2.11 无安全判定与恢复机制 —— 桌面端不可接受
 
 参考项目跑在容器里，隐含"容器内随便搞"的假设。小明跑在**用户真实的电脑上**，同样的假设等于把家门钥匙交给一个会被网页内容诱导的模型。
 
-→ **小明**：见 [06-安全与权限模型](./06-安全与权限模型.md)。这是产品能不能用的前提，不是可选项。
+→ **小明**：见 [06-安全与权限模型](./06-安全与权限模型.md)。现行方案不是增加审批框，而是
+`allow | deny` 策略、不可覆盖红线、能力网关、写前 checkpoint 和事件审计。
 
 ### 2.12 上下文管理过于粗糙
 
 `compact_memory()` 只是简单压缩；没有 token 预算核算，没有分层摘要，没有按需检索。
 
-→ **小明**：分层上下文（近期原文 + 中期摘要 + 长期检索）+ token 预算器 + 前缀稳定以命中 prompt 缓存。
+→ **小明**：M2-h 已完成近期原文 + 持久摘要、token 预算器和稳定前缀；跨会话长期记忆/检索仍属 M5。
 
 ### 2.13 无成本与用量核算
 
@@ -141,7 +153,8 @@ CLAUDE.md 明确写了："消息附件只把沙箱文件路径拼进上下文，
 
 `AgentTaskRunner._handle_tool_event()` 里针对每种工具类型手工塞展示内容（截图、console、文件内容），CLAUDE.md 承认"新增工具类型需要同时改这里和前端 tool-use/"。加一个工具要改三处。
 
-→ **小明**：工具**自带渲染契约**——工具结果里声明 `display: { kind, payload }`，UI 按 `kind` 查渲染器注册表。新增工具只改工具自己；插件可自带渲染器。
+→ **小明**：工具描述符和结果已有 `DisplayHint`，内建 todo/diff/checkpoint/terminal 视图已经消费各自
+投影；通用渲染器注册表与插件自带渲染器仍属 M3，当前不能声称新增任意工具都无需改 UI。
 
 ### 2.15 SSE + anyio cancel scope 的坑
 

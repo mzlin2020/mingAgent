@@ -24,7 +24,7 @@ M2-i 在生产装配中注册 `agent.explore`，按 `config.model.subagent → m
 ```bash
 pnpm --filter @xm/desktop dev       # Vite + tsup watch + Electron
 pnpm --filter @xm/desktop build     # 三段产物 + 存在性检查
-pnpm --filter @xm/desktop package   # electron-builder --dir（不签名，M0-b）
+pnpm --filter @xm/desktop package   # electron-builder --dir（不签名）
 ```
 
 ## 结构
@@ -44,7 +44,7 @@ pnpm --filter @xm/desktop package   # electron-builder --dir（不签名，M0-b�
 而 preload 是页面唯一能间接触达的代码。
 
 **二、preload 的表面积就是隔离的缺口大小。**
-它只转发四个具名调用，不校验、不解析、不缓存、不聚合，也不 import zod 或 `@xm/*`
+它只转发显式列出的具名调用，不校验、不解析、不缓存、不聚合，也不 import zod 或 `@xm/*`
 （depcruise 规则 `preload-必须保持薄`）。**不提供 `invoke(channel, args)` 这种通用入口**——
 那等于把整个 IPC 表面暴露给页面，窄接口就只剩一个说法。
 
@@ -54,11 +54,12 @@ pnpm --filter @xm/desktop package   # electron-builder --dir（不签名，M0-b�
 开发时热重载会让两边错开，而"事件形状悄悄变了"的表现是 UI 静默少一块。
 
 失败一律是返回值 `{ ok: false, code, message }`，不跨 IPC 抛异常——
-Electron 会把异常序列化成一个丢了 `code` 的字符串，而 UI 要靠 `code` 说出
-"改策略 / 重新审批 / 改系统权限"这三句不同的话。
+Electron 会把异常序列化成一个丢了 `code` 的字符串，而 UI 要靠 `code` 区分
+“策略拒绝 / 输入或状态错误 / 系统能力不可用”等不同处置。
 
 **四、渲染层没有第二份状态。**
-消息列表、运行中的工具、待审批的权限全由 `@xm/kernel` 的 `reduce()` 从事件流算出，
+消息列表、运行中的工具、todo、编辑提案、checkpoint 与不可信状态全由 `@xm/kernel` 的
+`reduce()` 从事件流算出，
 跟主进程用的是同一个纯函数。只要 UI 自己维护一份 `messages` 数组，
 它就会和回放出来的那份慢慢分叉，表现是"刷新一下内容就变了"。
 
@@ -83,15 +84,15 @@ Electron 会把异常序列化成一个丢了 `code` 的字符串，而 UI 要�
 `electron-builder.yml` 里的 `asarUnpack` 就是为第二样准备的：
 `.node` 走 `require()` 加载真实路径，而 asar 里的路径不是真实路径。
 
-## 已知缺口
+## 当前构建边界
 
-**没有在真机上启动过。** 本轮的开发环境缺 GUI 系统库（libatk / libgtk），
-且没有安装它们的权限，所以 `electron .` 起不来。已经验证的是：三段产物能构建、
-`electron-builder --dir` 能打包、`.node` 确实被 asarUnpack 出来了。
+截至 2026-08-13，renderer/main/preload 三段生产构建均通过，`pnpm verify` 与 M2 同链路 dist
+smoke 也已通过。`electron-builder --dir` 在本机解压 Electron 后遇到 Windows 对
+`win-unpacked.tmp/resources/default_app.asar` 的外部文件锁，失败发生在应用文件打包前；因此
+本轮不宣称产出了可分发安装目录。详情见 [M2 体验报告](../../docs/experience/m2/体验报告.md)。
 
-"能启动"这一格由 CI 的 `desktop` job 补：三平台各跑一次 `XM_SMOKE=1 electron .`，
-Linux 上加 `xvfb-run`。它跑的是**打包产物**，与 `scripts/smoke-headless.mjs`
-（Node、源码树）互补——后者看不见打包问题。需要有远端仓库后才能实跑。
+`XM_SMOKE=1 electron .` 的桌面启动检查与 `scripts/smoke-headless.mjs` 互补：前者发现窗口、preload
+和打包问题，后者验证纯 Node 的发布产物与完整 Agent 链路。
 
 ## 相关文档
 

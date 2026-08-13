@@ -35,6 +35,8 @@
 ## 代码现状（2026-08-13）
 
 **M2 已于 2026-08-13 全部完成并通过总验收。** `pnpm verify`、M2-b 至 M2-i 的同链路 dist smoke 和 Electron renderer/main/preload 三段生产构建均通过；完整证据见 [M2 体验报告](./experience/m2/体验报告.md)、[ADR-0049](./adr/0049-M2-i串行只读子Agent.md) 与 [M2 阶段划分](./M2-阶段划分.md)。
+下一阶段是 **M3「能扩展」**；插件宿主、MCP、Skill 加载器、通用渲染器注册表与正式 CLI
+均尚未实现，不能从已有的 manifest/descriptor 契约推断运行时已经支持它们。
 
 权限模型已在 2026-08-11 收敛为「红线 + 拒绝清单」：没有审批 UI、权限档位、会话授权或
 `ask` 判定。规则未命中时默认放行；红线、内置拒绝规则和用户配置的 `deny` 仍会阻断操作。
@@ -45,7 +47,7 @@
 | [`packages/contracts`](../packages/contracts/README.md) | 唯一契约来源：Zod schema、事件、工具、权限、模型与配置 |
 | [`packages/kernel`](../packages/kernel/README.md) | 纯逻辑、零 I/O；全部端口在此定义 |
 | [`packages/platform`](../packages/platform/README.md) | `PlatformPort` 的 Node 实现（[ADR-0014](./adr/0014-数据目录与平台路径.md)） |
-| [`packages/storage`](../packages/storage/README.md) | SQLite 事件存储 + 文件 blob（[ADR-0013](./adr/0013-存储引擎选型与EventStore端口.md)） |
+| [`packages/storage`](../packages/storage/README.md) | SQLite 事件存储 + 文件 Blob + 编辑提案 + 可重建 FTS/符号索引 |
 | [`packages/providers`](../packages/providers/) | Anthropic 与 OpenAI-compatible 的流式适配器 |
 | [`packages/tools-core`](../packages/tools-core/) | 文件、命令、PTY、网页抓取与能力网关 |
 | [`packages/runtime`](../packages/runtime/README.md) | 会话运行时、事件总线、Turn 循环、崩溃恢复与自动命名 |
