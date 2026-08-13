@@ -18,6 +18,7 @@ export * from './index-search.js';
 export * from './fs-read.js';
 export * from './fs-list.js';
 export * from './fs-write.js';
+export * from './search-fallback.js';
 export * from './search-text.js';
 export * from './shell-exec.js';
 export * from './pty-session.js';
@@ -54,6 +55,11 @@ export interface CoreToolsOptions {
   readonly extraEnv?: readonly string[];
   /** M2-g 的可重建工作区索引；未提供时不注册索引增强工具。 */
   readonly index?: import('@xm/kernel').WorkspaceIndex;
+  /**
+   * 索引后台增量刷新的取消源——应用级信号，**不是**某一次工具调用的 signal。
+   * 传错会让后台刷新在 turn 结束时被取消，索引永远停在半成品（ADR-0051）。
+   */
+  readonly backgroundSignal?: import('@xm/kernel').AbortLike;
 }
 
 export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
@@ -63,6 +69,13 @@ export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
   textSearchTool(),
   shellExecTool(options),
   ...gitTools(options),
-  ...(options.index === undefined ? [] : indexSearchTools({ index: options.index })),
+  ...(options.index === undefined
+    ? []
+    : indexSearchTools({
+        index: options.index,
+        ...(options.backgroundSignal === undefined
+          ? {}
+          : { backgroundSignal: options.backgroundSignal }),
+      })),
   webFetchTool(),
 ];

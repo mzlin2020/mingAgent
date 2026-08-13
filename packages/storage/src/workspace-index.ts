@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { dirname, extname, join } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as Db } from 'better-sqlite3';
@@ -10,6 +10,7 @@ import type {
   WorkspaceIndex,
   WorkspaceIndexRefresh,
   WorkspaceIndexState,
+  WorkspaceQuery,
 } from '@xm/kernel';
 import { extractSymbols, supportsSymbols } from './tree-symbols.js';
 
@@ -20,24 +21,34 @@ const TEXT_EXTENSIONS = new Set([
   '.tsx', '.txt', '.yaml', '.yml',
 ]);
 
-export async function openWorkspaceIndex(path: string): Promise<WorkspaceIndex> {
+export interface WorkspaceIndexOptions {
+  /** ripgrep 可执行名。测试用一个必然启动不了的名字来覆盖纯 Node 枚举那条路径。 */
+  readonly ripgrep?: string;
+}
+
+export async function openWorkspaceIndex(
+  path: string,
+  options: WorkspaceIndexOptions = {},
+): Promise<WorkspaceIndex> {
   await mkdir(dirname(path), { recursive: true });
   const existed = await exists(path);
   try {
-    return new SqliteWorkspaceIndex(path);
+    return new SqliteWorkspaceIndex(path, options);
   } catch (error) {
     if (!existed) throw error;
     await removeDatabase(path);
-    return new SqliteWorkspaceIndex(path);
+    return new SqliteWorkspaceIndex(path, options);
   }
 }
 
 class SqliteWorkspaceIndex implements WorkspaceIndex {
   readonly #db: Db;
   readonly #refreshing = new Map<string, Promise<WorkspaceIndexRefresh>>();
+  readonly #ripgrep: string;
   #closed = false;
 
-  constructor(path: string) {
+  constructor(path: string, options: WorkspaceIndexOptions = {}) {
+    this.#ripgrep = options.ripgrep ?? 'rg';
     const db = new Database(path);
     try {
       db.pragma('journal_mode = WAL');
@@ -69,16 +80,16 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     return pending;
   }
 
-  searchText(root: string, query: string, limit: number): readonly IndexedTextMatch[] {
+  searchText({ root, query, limit, pathPrefix }: WorkspaceQuery): readonly IndexedTextMatch[] {
     const expression = `"${query.replaceAll('"', '""')}"`;
     const rows = this.#db.prepare(`
       SELECT files.path AS path, files.content AS content
       FROM file_fts JOIN files
         ON files.root = file_fts.root AND files.path = file_fts.path
-      WHERE file_fts MATCH ? AND file_fts.root = ?
+      WHERE file_fts MATCH ? AND file_fts.root = ? AND files.path LIKE ? ESCAPE '\\'
       ORDER BY files.path
       LIMIT ?
-    `).all(expression, root, limit) as { path: string; content: string }[];
+    `).all(expression, root, likePrefix(pathPrefix), limit) as { path: string; content: string }[];
     const matches: IndexedTextMatch[] = [];
     for (const row of rows) {
       for (const match of occurrences(row.path, row.content, query)) {
@@ -89,15 +100,15 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     return matches;
   }
 
-  searchSymbols(root: string, query: string, limit: number): readonly IndexedSymbol[] {
+  searchSymbols({ root, query, limit, pathPrefix }: WorkspaceQuery): readonly IndexedSymbol[] {
     const pattern = `%${escapeLike(query)}%`;
     return this.#db.prepare(`
       SELECT path, name, kind, line, column, signature
       FROM symbols
-      WHERE root = ? AND name LIKE ? ESCAPE '\\'
+      WHERE root = ? AND name LIKE ? ESCAPE '\\' AND path LIKE ? ESCAPE '\\'
       ORDER BY CASE WHEN lower(name) = lower(?) THEN 0 ELSE 1 END, name, path, line
       LIMIT ?
-    `).all(root, pattern, query, limit) as IndexedSymbol[];
+    `).all(root, pattern, likePrefix(pathPrefix), query, limit) as IndexedSymbol[];
   }
 
   async close(): Promise<void> {
@@ -108,7 +119,16 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
   }
 
   async #refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh> {
-    this.#setState(root, 'building');
+    /*
+     * 已经 ready 的索引在增量刷新期间保持 ready（ADR-0051）。
+     *
+     * 原来无条件置 building，配上"查询后台触发刷新"就成了一个来回摆：查一次 → 置
+     * building → 下一次查询看到不是 ready → 退回文本搜索 → 又触发一次刷新。
+     * building 的本意是"还没有可用索引"，而不是"正在更新"——一份已建好的索引在增量
+     * 更新期间仍然可用，结果最多稍旧，这正是 ADR-0047 明说可以接受的。
+     */
+    const buildingFirstTime = this.state(root) !== 'ready';
+    if (buildingFirstTime) this.#setState(root, 'building');
     const errors: string[] = [];
     let indexed = 0;
     let unchanged = 0;
@@ -118,7 +138,7 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
         this.#setState(root, 'stale');
         return { state: 'stale', indexed, unchanged, removed, errors };
       }
-      const paths = await listFiles(root, signal);
+      const paths = await listFiles(root, signal, this.#ripgrep);
       const existing = new Map(
         (this.#db.prepare('SELECT path, mtime_ms, size FROM files WHERE root = ?').all(root) as
           { path: string; mtime_ms: number; size: number }[])
@@ -156,9 +176,15 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
         this.#remove(root, path);
         removed += 1;
       }
-      const state = errors.length === 0 ? 'ready' : 'stale';
-      this.#setState(root, state);
-      return { state, indexed, unchanged, removed, errors };
+      /*
+       * 扫描跑完就是 ready，即使个别文件读不了（ADR-0051）。
+       *
+       * 原来是 `errors.length === 0 ? 'ready' : 'stale'`：一个权限不足的文件、一条断掉的
+       * 符号链接，就能让整库永久 stale，此后每次查询都 fallback 并再触发一次全量重扫——
+       * 一个稳定的重扫循环。逐文件错误照旧回传给调用方，但它不是整库的健康状态。
+       */
+      this.#setState(root, 'ready');
+      return { state: 'ready', indexed, unchanged, removed, errors };
     } catch (error) {
       errors.push(error instanceof Error ? error.message : String(error));
       this.#setState(root, signal.aborted ? 'stale' : 'failed');
@@ -235,22 +261,45 @@ const SCHEMA = `
   );
 `;
 
-async function listFiles(root: string, signal: AbortLike): Promise<readonly string[]> {
-  return new Promise<readonly string[]>((done, reject) => {
-    const child = spawn('rg', [
+/**
+ * 枚举工作区里要索引的文件。
+ *
+ * ripgrep 优先——它顺带把 `.gitignore` 也遵守了，这是纯 Node 遍历给不了的。但它**不能是
+ * 前提**：普通用户机器上多半没有 rg，而 M2-g 原来在这里直接 reject，于是索引根本建不起来
+ * （ADR-0051）。启动不了就退到 Node 遍历，只按固定名单排除依赖/构建目录。
+ */
+async function listFiles(
+  root: string,
+  signal: AbortLike,
+  executable: string,
+): Promise<readonly string[]> {
+  const viaRipgrep = await ripgrepFiles(root, signal, executable);
+  return viaRipgrep ?? walkFiles(root, signal);
+}
+
+/** rg 不可用时返回 undefined；rg 自身报错（不是启动失败）仍然抛，那是真问题。 */
+function ripgrepFiles(
+  root: string,
+  signal: AbortLike,
+  executable: string,
+): Promise<readonly string[] | undefined> {
+  return new Promise<readonly string[] | undefined>((done, reject) => {
+    const child = spawn(executable, [
       '--files', '--hidden', '--null',
       '--glob', '!.git/**', '--glob', '!node_modules/**', '--glob', '!dist/**',
       '--glob', '!coverage/**', '--glob', '!release/**',
     ], { cwd: root, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     const chunks: Buffer[] = [];
     let stderr = '';
+    let spawnFailed = false;
     const abort = (): void => { child.kill(); };
     signal.addEventListener('abort', abort);
     child.stdout.on('data', (chunk: Buffer) => { chunks.push(chunk); });
     child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
-    child.on('error', reject);
+    child.on('error', () => { spawnFailed = true; });
     child.on('close', (code) => {
       signal.removeEventListener('abort', abort);
+      if (spawnFailed) { done(undefined); return; }
       if (signal.aborted) { done([]); return; }
       if (code !== 0) { reject(new Error(`rg --files 失败（${String(code)}）：${stderr.trim()}`)); return; }
       done(
@@ -262,6 +311,37 @@ async function listFiles(root: string, signal: AbortLike): Promise<readonly stri
       );
     });
   });
+}
+
+/** 排除名单与 rg 那条路径对齐；额外跳过隐藏目录，因为没有 `.gitignore` 兜底。 */
+const SKIP_DIRECTORIES = new Set([
+  '.git', 'node_modules', 'dist', 'coverage', 'release', 'build', 'out', 'target', '__pycache__',
+]);
+
+async function walkFiles(root: string, signal: AbortLike): Promise<readonly string[]> {
+  const found: string[] = [];
+  const pending = [''];
+  while (pending.length > 0) {
+    if (signal.aborted) return found;
+    const relative = pending.pop() ?? '';
+    let children;
+    try {
+      children = await readdir(join(root, relative), { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const child of children) {
+      const path = relative === '' ? child.name : `${relative}/${child.name}`;
+      // 不跟随符号链接：一个指回上层的链接足以让遍历打转
+      if (child.isSymbolicLink()) continue;
+      if (child.isDirectory()) {
+        if (!SKIP_DIRECTORIES.has(child.name) && !child.name.startsWith('.')) pending.push(path);
+      } else if (child.isFile()) {
+        found.push(path);
+      }
+    }
+  }
+  return found;
 }
 
 function occurrences(path: string, content: string, query: string): readonly IndexedTextMatch[] {
@@ -291,6 +371,10 @@ function occurrences(path: string, content: string, query: string): readonly Ind
   }
   return matches;
 }
+
+/** 相对前缀 → LIKE 模式。省略时匹配全部；`%`/`_`/`\` 先转义，避免模型的路径变成通配符。 */
+const likePrefix = (prefix: string | undefined): string =>
+  prefix === undefined || prefix === '' ? '%' : `${escapeLike(prefix)}%`;
 
 const isTextPath = (path: string): boolean => TEXT_EXTENSIONS.has(extname(path).toLowerCase());
 const isAborted = (signal: AbortLike): boolean => signal.aborted;

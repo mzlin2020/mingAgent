@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process';
 import { relative } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
-import type { AbortLike, RegisteredTool } from '@xm/kernel';
+import type { AbortLike, RegisteredTool, ToolContext } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
+import { nodeTextSearch } from './search-fallback.js';
 
 export const SEARCH_TEXT = 'search.text';
 
@@ -57,11 +58,16 @@ export const textSearchTool = (options: TextSearchOptions = {}): RegisteredTool 
         signal: ctx.signal,
       });
 
+      /*
+       * ripgrep 缺失不再是"搜索不可用"（ADR-0051）。
+       *
+       * M2-b 原来在这里直接报"请安装 ripgrep"。报错是显式的，但普通 Windows / macOS
+       * 用户机器上根本没有 rg，于是整条检索能力开箱即废——而 search.symbol /
+       * search.indexed 的退路也指向这里，一起哑掉。改为退到纯 Node 实现，
+       * 并在结果里标明 source 与忽略规则差异，而不是假装两条路径完全等价。
+       */
       if (outcome.spawnError !== undefined) {
-        yield result(
-          `ripgrep 不可用，无法启动 ${options.executable ?? 'rg'}：${outcome.spawnError}。` +
-            '请确认当前平台已安装 ripgrep，或配置可执行文件路径。',
-        );
+        yield* nodeFallbackResult(input, ctx, options, outcome.spawnError);
         return;
       }
       if (outcome.interrupted) {
@@ -94,6 +100,49 @@ export const textSearchTool = (options: TextSearchOptions = {}): RegisteredTool 
       );
     },
   });
+
+async function* nodeFallbackResult(
+  input: z.infer<typeof Input>,
+  ctx: ToolContext,
+  options: TextSearchOptions,
+  spawnError: string,
+): AsyncIterable<ToolProgress> {
+  const outcome = await nodeTextSearch({
+    pattern: input.pattern,
+    path: input.path,
+    cwd: ctx.cwd,
+    globs: input.glob ?? [],
+    caseSensitive: input.caseSensitive,
+    context: input.context ?? 0,
+    maxResults: input.maxResults,
+    signal: ctx.signal,
+  });
+
+  const banner =
+    `[source: node-fallback；未能启动 ${options.executable ?? 'rg'}：${spawnError}。` +
+    '退路不读 .gitignore，只跳过隐藏项与 node_modules/dist/build/out/coverage/release/' +
+    'target/vendor/__pycache__；不跟随符号链接；正则按 JavaScript 语法解析。' +
+    '安装 ripgrep 可获得完整忽略规则与更好性能。]';
+
+  if (outcome.patternError !== undefined) {
+    yield result(`${banner}\n正则表达式无法解析：${outcome.patternError}`);
+    return;
+  }
+  if (outcome.interrupted) {
+    yield result(`${banner}\n搜索已中断。`);
+    return;
+  }
+  if (outcome.matches === 0) {
+    yield result(`${banner}\n没有匹配。`);
+    return;
+  }
+  const limitNote = outcome.limited
+    ? `\n[已达 ${String(input.maxResults)} 条上限，可能还有更多匹配；请缩小 path/glob/pattern。]`
+    : '';
+  yield result(
+    `找到 ${String(outcome.matches)} 条匹配。\n${outcome.lines.join('\n')}${limitNote}\n${banner}`,
+  );
+}
 
 interface RunInput {
   readonly executable: string;

@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AbortLike, WorkspaceIndex } from '@xm/kernel';
-import { openWorkspaceIndex } from '../src/index.js';
+import { openWorkspaceIndex, type WorkspaceIndexOptions } from '../src/index.js';
 
 const roots: string[] = [];
 const indexes: WorkspaceIndex[] = [];
@@ -11,6 +12,16 @@ afterEach(async () => {
   await Promise.all(indexes.splice(0).map((index) => index.close()));
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
+
+const hasRipgrep = spawnSync('rg', ['--version'], { stdio: 'ignore' }).status === 0;
+/*
+ * 主用例组刻意走**纯 Node 枚举**那条路径（ADR-0051）。
+ *
+ * 索引原来只能靠 `rg --files` 枚举文件，宿主没有 rg 就整个建不起来——而这套测试当时
+ * 全都假定 rg 在，于是"没有 rg 时索引不可用"这件事一次也没被测到。现在把不依赖
+ * `.gitignore` 的行为都钉在退路上（它才是普通用户开箱即得的），rg 特有的忽略规则单测。
+ */
+const nodeWalk: WorkspaceIndexOptions = { ripgrep: 'xm-ripgrep-definitely-missing' };
 
 describe('M2-g workspace index', () => {
   it('冷启动用 FTS5 建全文索引，并由 tree-sitter 提取真实符号', async () => {
@@ -20,11 +31,11 @@ describe('M2-g workspace index', () => {
     const refreshed = await index.refresh(fixture.root, neverAborts);
     expect(refreshed).toMatchObject({ state: 'ready', indexed: 3, removed: 0, errors: [] });
 
-    expect(index.searchSymbols(fixture.root, 'hello', 10)).toEqual([
+    expect(symbols(index, fixture.root, 'hello')).toEqual([
       expect.objectContaining({ name: 'helloWorld', kind: 'function', path: 'src/a.ts', line: 2 }),
     ]);
-    expect(index.searchSymbols(fixture.root, 'FakeComment', 10)).toEqual([]);
-    expect(index.searchText(fixture.root, 'shared needle', 10)).toEqual([
+    expect(symbols(index, fixture.root, 'FakeComment')).toEqual([]);
+    expect(text(index, fixture.root, 'shared needle')).toEqual([
       expect.objectContaining({ path: 'README.md', line: 1 }),
       expect.objectContaining({ path: 'src/a.ts', line: 3 }),
     ]);
@@ -33,7 +44,7 @@ describe('M2-g workspace index', () => {
     await index.close();
   });
 
-  it('增量跳过未变文件，并收敛修改、删除、重命名与 ignore 规则变化', async () => {
+  it('增量跳过未变文件，并收敛修改、删除与重命名', async () => {
     const fixture = await workspace();
     const index = await opened(fixture.database);
     await index.refresh(fixture.root, neverAborts);
@@ -43,26 +54,61 @@ describe('M2-g workspace index', () => {
     const future = new Date(Date.now() + 2000);
     await utimes(join(fixture.root, 'src', 'a.ts'), future, future);
     await rename(join(fixture.root, 'README.md'), join(fixture.root, 'GUIDE.md'));
-    await writeFile(join(fixture.root, '.ignore'), 'ignored.ts\n');
-    await writeFile(join(fixture.root, 'ignored.ts'), 'export function ignoredSymbol() {}\n');
 
     const changed = await index.refresh(fixture.root, neverAborts);
     expect(changed).toMatchObject({ state: 'ready', indexed: 2, removed: 1 });
-    expect(index.searchSymbols(fixture.root, 'renamed', 10)).toHaveLength(1);
-    expect(index.searchSymbols(fixture.root, 'helloWorld', 10)).toHaveLength(0);
-    expect(index.searchSymbols(fixture.root, 'ignoredSymbol', 10)).toHaveLength(0);
-    expect(index.searchText(fixture.root, 'shared needle', 10).map((item) => item.path)).toEqual(['GUIDE.md']);
-
-    await writeFile(join(fixture.root, '.ignore'), '');
-    await index.refresh(fixture.root, neverAborts);
-    expect(index.searchSymbols(fixture.root, 'ignoredSymbol', 10)).toHaveLength(1);
+    expect(symbols(index, fixture.root, 'renamed')).toHaveLength(1);
+    expect(symbols(index, fixture.root, 'helloWorld')).toHaveLength(0);
+    expect(text(index, fixture.root, 'shared needle').map((item) => item.path)).toEqual(['GUIDE.md']);
 
     await writeFile(join(fixture.root, 'src', 'a.ts'), Buffer.from([0, 1, 2, 3]));
     const later = new Date(Date.now() + 4000);
     await utimes(join(fixture.root, 'src', 'a.ts'), later, later);
     expect(await index.refresh(fixture.root, neverAborts)).toMatchObject({ state: 'ready', removed: 1 });
-    expect(index.searchSymbols(fixture.root, 'renamed', 10)).toHaveLength(0);
-    expect(index.searchText(fixture.root, 'changed needle', 10)).toHaveLength(0);
+    expect(symbols(index, fixture.root, 'renamed')).toHaveLength(0);
+    expect(text(index, fixture.root, 'changed needle')).toHaveLength(0);
+    await index.close();
+  });
+
+  it('pathPrefix 只收窄结果，不另建一份索引', async () => {
+    const fixture = await workspace();
+    const index = await opened(fixture.database);
+    await index.refresh(fixture.root, neverAborts);
+
+    expect(text(index, fixture.root, 'shared needle', 'src').map((item) => item.path)).toEqual([
+      'src/a.ts',
+    ]);
+    expect(symbols(index, fixture.root, 'hello', 'src')).toHaveLength(1);
+    expect(symbols(index, fixture.root, 'hello', 'docs')).toHaveLength(0);
+    // 前缀里的 `%` 是字面量，不是通配符
+    expect(text(index, fixture.root, 'shared needle', '%')).toHaveLength(0);
+    await index.close();
+  });
+
+  it('单个文件读不了时整库仍然 ready，只把它记进 errors', async () => {
+    const fixture = await workspace();
+    const unreadable = join(fixture.root, 'src', 'locked.ts');
+    await writeFile(unreadable, 'export function lockedSymbol(): void {}\n');
+    await chmod(unreadable, 0o000);
+    const stillReadable = await readFile(unreadable).then(
+      () => true,
+      () => false,
+    );
+    if (stillReadable) {
+      // root 或 Windows 上改权限拦不住读取，这条断言就没有被验证的对象
+      await chmod(unreadable, 0o644);
+      return;
+    }
+
+    const index = await opened(fixture.database);
+    const refreshed = await index.refresh(fixture.root, neverAborts);
+    await chmod(unreadable, 0o644);
+
+    expect(refreshed.errors).toHaveLength(1);
+    expect(refreshed.errors[0]).toContain('locked.ts');
+    // 旧行为是 errors 非空即 stale —— 一个读不了的文件就让每次查询都 fallback 并全量重扫
+    expect(refreshed.state).toBe('ready');
+    expect(index.state(fixture.root)).toBe('ready');
     await index.close();
   });
 
@@ -80,6 +126,20 @@ describe('M2-g workspace index', () => {
     expect(indexNames(await readFile(fixture.database))).toContain('SQLite');
     await repaired.close();
   });
+
+  it.runIf(hasRipgrep)('有 ripgrep 时额外遵守 .ignore / .gitignore 规则', async () => {
+    const fixture = await workspace();
+    const index = await opened(fixture.database, {});
+    await writeFile(join(fixture.root, '.ignore'), 'ignored.ts\n');
+    await writeFile(join(fixture.root, 'ignored.ts'), 'export function ignoredSymbol() {}\n');
+    await index.refresh(fixture.root, neverAborts);
+    expect(symbols(index, fixture.root, 'ignoredSymbol')).toHaveLength(0);
+
+    await writeFile(join(fixture.root, '.ignore'), '');
+    await index.refresh(fixture.root, neverAborts);
+    expect(symbols(index, fixture.root, 'ignoredSymbol')).toHaveLength(1);
+    await index.close();
+  });
 });
 
 async function workspace(): Promise<{ root: string; database: string }> {
@@ -96,6 +156,11 @@ async function workspace(): Promise<{ root: string; database: string }> {
   return { root, database: join(data, 'workspace-index.sqlite') };
 }
 
+const symbols = (index: WorkspaceIndex, root: string, query: string, pathPrefix?: string) =>
+  index.searchSymbols({ root, query, limit: 10, ...(pathPrefix === undefined ? {} : { pathPrefix }) });
+const text = (index: WorkspaceIndex, root: string, query: string, pathPrefix?: string) =>
+  index.searchText({ root, query, limit: 10, ...(pathPrefix === undefined ? {} : { pathPrefix }) });
+
 const neverAborts: AbortLike = {
   aborted: false,
   addEventListener: () => undefined,
@@ -104,8 +169,8 @@ const neverAborts: AbortLike = {
 const aborted: AbortLike = { ...neverAborts, aborted: true };
 const indexNames = (bytes: Uint8Array): string => new TextDecoder().decode(bytes.subarray(0, 16));
 
-async function opened(path: string): Promise<WorkspaceIndex> {
-  const index = await openWorkspaceIndex(path);
+async function opened(path: string, options: WorkspaceIndexOptions = nodeWalk): Promise<WorkspaceIndex> {
+  const index = await openWorkspaceIndex(path, options);
   indexes.push(index);
   return index;
 }

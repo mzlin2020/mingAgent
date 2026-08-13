@@ -26,11 +26,28 @@ export interface IndexedSymbol {
   readonly signature: string;
 }
 
+/**
+ * 查询范围。
+ *
+ * `root` 是**工作区身份**，由装配层给出（会话 cwd），不由模型选；`pathPrefix` 才是模型
+ * 可以指定的子目录过滤（相对 `root`，`/` 分隔）。
+ *
+ * 两者分开是 ADR-0051 的核心：原来把模型给的 `path` 直接当 root，模型查一次子目录就会
+ * 另建一整份索引（含全文副本），而装配层预热用的又是会话 cwd，两个 key 对不上，
+ * 预热出来的索引永远命中不到。
+ */
+export interface WorkspaceQuery {
+  readonly root: string;
+  readonly query: string;
+  readonly limit: number;
+  readonly pathPrefix?: string;
+}
+
 /** 可重建工作区索引端口；实现含 I/O，但契约保持纯数据。 */
 export interface WorkspaceIndex {
   state(root: string): WorkspaceIndexState;
   refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh>;
-  searchText(root: string, query: string, limit: number): readonly IndexedTextMatch[];
-  searchSymbols(root: string, query: string, limit: number): readonly IndexedSymbol[];
+  searchText(query: WorkspaceQuery): readonly IndexedTextMatch[];
+  searchSymbols(query: WorkspaceQuery): readonly IndexedSymbol[];
   close(): Promise<void>;
 }

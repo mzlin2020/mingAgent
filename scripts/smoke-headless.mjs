@@ -531,7 +531,7 @@ try {
     seen.find((event) => event.type === 'tool.end' && event.payload.callId === callId)?.payload.forModel,
   );
   const indexWorkflowPassed =
-    resultText(coldSymbolCall).includes('ripgrep-fallback') &&
+    resultText(coldSymbolCall).includes('text-fallback') &&
     resultText(readySymbolCall).includes('tree-sitter-index') &&
     resultText(readySymbolCall).includes('smokeSymbol') &&
     resultText(indexedTextCall).includes('fts5-index') &&

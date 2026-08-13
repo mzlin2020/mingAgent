@@ -335,6 +335,7 @@ export async function startServices(): Promise<Services> {
   for (const tool of productionTools({
     os: platform.os,
     index: stores.index,
+    backgroundSignal: background.signal,
     ptySessions,
     updateTodos: async ({ sessionId, todos }) => {
       const runtime = await runtimeFor(sessionId);

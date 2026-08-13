@@ -20,6 +20,11 @@ describe('desktop production tool assembly', () => {
         searchSymbols: () => [],
         close: () => Promise.resolve(),
       },
+      backgroundSignal: {
+        aborted: false,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+      },
       ptySessions: manager,
       updateTodos: () => Promise.resolve(),
       expandResults: {
