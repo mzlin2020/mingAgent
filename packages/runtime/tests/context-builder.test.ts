@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { ModelChunk } from '@xm/contracts';
 import { newMessageId, newSessionId, newTurnId } from '@xm/contracts';
+import type { EventStore } from '@xm/kernel';
 import { MemoryBlobStore, MemoryEventStore, ToolRegistry } from '@xm/kernel';
 import {
   ContextBuilder,
@@ -61,6 +62,69 @@ async function addCompletedTurn(runtime: SessionRuntime, index: number): Promise
 }
 
 describe('M2-h ContextBuilder', () => {
+  it('回合切片增量扫描：重复构建不重放已消费事件，结果逐字节相同', async () => {
+    const inner = new MemoryEventStore();
+    /*
+     * 原实现每次 Provider 请求都从 seq 1 全量重放；一个 turn 内每次工具往返各一次，
+     * 代价随会话长度呈 O(n²)。这里数的是实际读到的事件条数（ADR-0048 补记）。
+     */
+    let eventsRead = 0;
+    let counting = false;
+    const store: EventStore = {
+      listSessions: () => inner.listSessions(),
+      readSnapshot: (target) => inner.readSnapshot(target),
+      writeSnapshot: (target, snapshot) => inner.writeSnapshot(target, snapshot),
+      openForWrite: (target) => inner.openForWrite(target),
+      rebuildSummaries: () => inner.rebuildSummaries(),
+      close: () => inner.close(),
+      read: (target, options) =>
+        (async function* () {
+          for await (const event of inner.read(target, options)) {
+            if (counting) eventsRead += 1;
+            yield event;
+          }
+        })(),
+    };
+
+    const sessionId = newSessionId();
+    const runtime = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });
+    await runtime.record({
+      type: 'session.created',
+      payload: { cwd: '/workspace', modelRef: 'scripted/scripted-1' },
+    });
+    for (let index = 0; index < 6; index += 1) await addCompletedTurn(runtime, index);
+    counting = true;
+
+    const deps = {
+      runtime,
+      provider: new ScriptedProvider({
+        capabilities: { maxContext: 200_000, maxOutput: 1_000 },
+        turns: [],
+      }),
+      tools: new ToolRegistry(),
+      layers: [],
+      model: 'scripted-1',
+      hostOs: 'linux' as const,
+    };
+
+    const first = await new ContextBuilder(deps).build(newTurnId());
+    const afterFirst = eventsRead;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    const second = await new ContextBuilder(deps).build(newTurnId());
+    // 第二次没有新事件可读，因此一条也不该重放
+    expect(eventsRead).toBe(afterFirst);
+    expect(JSON.stringify(second.messages)).toBe(JSON.stringify(first.messages));
+
+    // 新回合只增量消费它自己的那几条事件
+    await addCompletedTurn(runtime, 6);
+    const third = await new ContextBuilder(deps).build(newTurnId());
+    expect(eventsRead - afterFirst).toBeLessThan(afterFirst);
+    expect(JSON.stringify(third.messages)).toContain('旧轮次-6-用户约束');
+
+    await runtime.close();
+  });
+
   it('在 75% 阈值压缩一次，持久复用摘要并保留近期原文', async () => {
     const store = new MemoryEventStore();
     const blobs = new MemoryBlobStore(sha256);

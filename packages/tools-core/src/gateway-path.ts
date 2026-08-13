@@ -26,7 +26,7 @@ export function canonicalPath(nativePath: string, tool: string, field: string): 
   return normalized.value;
 }
 
-/** Resolve symlinks/junctions through the deepest existing ancestor. */
+/** 从最深的已存在祖先起解析符号链接与 junction。 */
 export async function resolveDeepPath(absolute: string): Promise<string> {
   const rest: string[] = [];
   let cursor = absolute;

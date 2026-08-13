@@ -1,5 +1,5 @@
 import type { Message, ModelRequest, TurnId } from '@xm/contracts';
-import type { Compaction, ModelProvider } from '@xm/kernel';
+import type { Compaction, ModelProvider, SessionState } from '@xm/kernel';
 import { costOf, emptySessionState, lookupPrice, readBlob, reduce } from '@xm/kernel';
 import type { SessionRuntime } from './session-runtime.js';
 import {
@@ -252,26 +252,50 @@ async function buildProjection(
   };
 }
 
-async function collectTurnSlices(runtime: SessionRuntime): Promise<readonly TurnSlice[]> {
-  let state = emptySessionState(runtime.sessionId);
-  let active: { fromSeq: number; messageIndex: number } | undefined;
-  const slices: TurnSlice[] = [];
+interface SliceScan {
+  /** 已经消费到的最大 seq */
+  lastSeq: number;
+  state: SessionState;
+  active: { fromSeq: number; messageIndex: number } | undefined;
+  slices: TurnSlice[];
+}
 
-  for await (const event of runtime.read()) {
+/**
+ * 回合切片的增量扫描缓存（ADR-0048 补记）。
+ *
+ * 原实现每次 Provider 请求都把整条事件流重放一遍。一个 turn 内每次工具往返各一次，
+ * 于是代价随会话长度呈 O(n²) ——而 M2 的目标恰恰是"长会话里写代码"。
+ *
+ * 缓存挂在 SessionRuntime 实例上（WeakMap），只增量消费 `lastSeq` 之后的新事件。
+ * 它是**可丢派生物**：丢了就从事件重建，结果逐字节相同；事件语义、压缩语义都没有变。
+ */
+const sliceScans = new WeakMap<SessionRuntime, SliceScan>();
+
+async function collectTurnSlices(runtime: SessionRuntime): Promise<readonly TurnSlice[]> {
+  let scan = sliceScans.get(runtime);
+  if (scan === undefined) {
+    scan = { lastSeq: 0, state: emptySessionState(runtime.sessionId), active: undefined, slices: [] };
+    sliceScans.set(runtime, scan);
+  }
+
+  for await (const event of runtime.read({ fromSeq: scan.lastSeq + 1 })) {
+    // 同一条事件重复消费会把 messageIndex 算错，宁可当场停下也不产出错切片
+    if (event.seq <= scan.lastSeq) continue;
     if (event.type === 'turn.start') {
-      active = { fromSeq: event.seq, messageIndex: state.messages.length };
+      scan.active = { fromSeq: event.seq, messageIndex: scan.state.messages.length };
     }
-    state = reduce(state, event);
-    if (event.type === 'turn.end' && active !== undefined) {
-      slices.push({
-        fromSeq: active.fromSeq,
+    scan.state = reduce(scan.state, event);
+    scan.lastSeq = event.seq;
+    if (event.type === 'turn.end' && scan.active !== undefined) {
+      scan.slices.push({
+        fromSeq: scan.active.fromSeq,
         toSeq: event.seq,
-        messages: state.messages.slice(active.messageIndex),
+        messages: scan.state.messages.slice(scan.active.messageIndex),
       });
-      active = undefined;
+      scan.active = undefined;
     }
   }
-  return slices;
+  return scan.slices;
 }
 
 function summaryRequest(model: string, messages: readonly Message[], maxOutputTokens: number): ModelRequest {

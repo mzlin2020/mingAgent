@@ -55,7 +55,7 @@ export async function openConfiguredProvider(input: {
 export const guessProviderKind = (providerId: string): Config['providers'][string]['kind'] =>
   providerId === 'anthropic' ? 'anthropic' : 'openai-compatible';
 
-/** Local onboarding fallback; it is a provider, not a model-visible production tool. */
+/** 本地引导用的兜底 Provider——它是 Provider，不是模型可见的生产工具。 */
 export function onboardingProvider(text: string): ScriptedProvider {
   return new ScriptedProvider({
     turns: [

@@ -4,7 +4,7 @@ export interface NavigationWebContents {
   getURL(): string;
 }
 
-/** Keep the renderer on its application document and deny all renderer-created windows. */
+/** 把渲染层钉在它自己的应用文档上，并拒绝渲染层创建的一切新窗口。 */
 export function secureNavigation(webContents: NavigationWebContents): void {
   webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   webContents.on('will-navigate', (event, url) => {

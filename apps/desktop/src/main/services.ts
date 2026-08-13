@@ -302,7 +302,7 @@ export async function startServices(): Promise<Services> {
     runtimes.set(sessionId, created);
     refreshIndex(created.state.cwd);
     await recoverInterruptedSubagents(created, stores.events);
-    // PTY handles are process-local. An opened session replayed after restart cannot be reattached.
+    // PTY 句柄是进程内的：重启后回放出来的会话拿不回原来的终端，只能重新开。
     for (const [ptySessionId] of created.state.ptySessions) {
       if (!ptySessions.has(sessionId, ptySessionId)) {
         await created.record({

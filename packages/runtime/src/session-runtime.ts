@@ -7,7 +7,7 @@ import type {
   XmEventType,
 } from '@xm/contracts';
 import { createEvent, isPersistedType } from '@xm/contracts';
-import type { EventStore, SessionState, SessionWriter } from '@xm/kernel';
+import type { EventStore, ReadOptions, SessionState, SessionWriter } from '@xm/kernel';
 import {
   deserializeSessionState,
   emptySessionState,
@@ -295,8 +295,13 @@ export class SessionRuntime {
     await this.#writer.close();
   }
 
-  /** 供诊断：把当前会话的事件重新读一遍。**不是**状态的来源，状态在 `#state` */
-  read(): AsyncIterable<PersistedEvent> {
-    return this.#store.read(this.sessionId);
+  /**
+   * 供诊断：把当前会话的事件重新读一遍。**不是**状态的来源，状态在 `#state`。
+   *
+   * `options.fromSeq` 让调用方只取增量。ContextBuilder 靠它把"每次请求全量回放"
+   * 降成"只读新事件"（ADR-0048 补记）——语义不变，只是不必每次都从头读。
+   */
+  read(options?: ReadOptions): AsyncIterable<PersistedEvent> {
+    return this.#store.read(this.sessionId, options);
   }
 }

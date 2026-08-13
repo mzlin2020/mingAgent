@@ -255,7 +255,7 @@ export class PtySessionManager {
       try {
         pty.kill();
       } catch {
-        // The process tree helper may have completed first.
+        // 进程树清理可能已经先一步完成了。
       }
       this.#emit(entry.xmSessionId, {
         type: 'shell.session.command.finished',
@@ -348,7 +348,7 @@ export class PtySessionManager {
         try {
           pty.kill();
         } catch {
-          // The process tree helper may have completed first.
+          // 进程树清理可能已经先一步完成了。
         }
         this.#emit(entry.xmSessionId, {
           type: 'shell.session.command.finished',

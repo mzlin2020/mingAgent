@@ -3,7 +3,7 @@ import { newCheckpointId } from '@xm/contracts';
 import type { PermissionClaim, RegisteredTool, ToolContext } from '@xm/kernel';
 import type { TurnDeps } from './turn-types.js';
 
-/** Failures throw and stop execution; known unsupported snapshots emit explicit warnings. */
+/** 失败即抛出并中止执行；已知不支持的快照类型只发显式告警。 */
 export async function recordTurnCheckpoint(
   deps: TurnDeps,
   turnId: TurnId,

@@ -3,7 +3,7 @@ import type { RegisteredTool } from '@xm/kernel';
 import { truncateResult } from '@xm/kernel';
 import type { TurnDeps } from './turn-types.js';
 
-/** Enforce result limits centrally; tools cannot opt out of truncation. */
+/** 结果上限统一在这里施加；工具无法选择不被截断。 */
 export async function capToolResult(
   deps: TurnDeps,
   blocks: readonly ResultBlock[],
