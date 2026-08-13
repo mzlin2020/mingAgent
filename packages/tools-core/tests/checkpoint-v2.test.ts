@@ -55,6 +55,37 @@ describe('Checkpoint v2', () => {
     await expect(readFile(missing)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('内容总量超预算时在落盘前失败关闭，不先写出一堆不可达 blob', async () => {
+    const huge = join(root, 'huge.bin');
+    await writeFile(huge, 'x');
+    let streamed = 0;
+
+    /*
+     * 用假的 stat 报一个 1 GiB 的文件，不真写 1 GiB。旧实现完全不看内容总量：
+     * `rm -rf node_modules` 会把整棵树先流进 BlobStore，几个 GB、几分钟，最后才在
+     * 条目数上限处失败——而已写入的 blob 不回滚，GC 又还没实现（ADR-0043 补记）。
+     */
+    await expect(
+      checkpoint([{ capability: 'fs.delete', target: huge }], {
+        statFile: (() =>
+          Promise.resolve({
+            size: 1024 * 1024 * 1024,
+            isFile: () => true,
+            isDirectory: () => false,
+          })) as unknown as NonNullable<Parameters<typeof nodeCheckpointer>[0]['statFile']>,
+        openFileStream: () => {
+          streamed += 1;
+          return (async function* () {
+            await Promise.resolve();
+            yield new Uint8Array([1]);
+          })();
+        },
+      }),
+    ).rejects.toThrow(/超过 .* 字节上限/u);
+
+    expect(streamed).toBe(0);
+  });
+
   it('父目录目标覆盖子目标，manifest 不保存同一棵树两次', async () => {
     const tree = join(root, 'tree');
     const child = join(tree, 'child.txt');
@@ -132,8 +163,11 @@ describe('Checkpoint v2', () => {
   });
 });
 
-const checkpoint = (claims: readonly PermissionClaim[]) =>
-  nodeCheckpointer({ blobs: store }).before(
+const checkpoint = (
+  claims: readonly PermissionClaim[],
+  options: Partial<Parameters<typeof nodeCheckpointer>[0]> = {},
+) =>
+  nodeCheckpointer({ blobs: store, ...options }).before(
     fsWriteTool(),
     { path: claims[0]!.target, content: 'unused' },
     context(),

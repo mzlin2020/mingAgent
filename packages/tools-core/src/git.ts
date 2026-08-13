@@ -1,5 +1,5 @@
-import { readFile, rm, writeFile, mkdtemp } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { mkdir, readFile, rm, mkdtemp } from 'node:fs/promises';
+import { join } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { OsFamily, RegisteredTool, ToolContext } from '@xm/kernel';
@@ -22,6 +22,15 @@ const StatusInput = z.strictObject({
 export interface GitToolsOptions {
   readonly os: OsFamily;
   readonly env?: Readonly<Record<string, string | undefined>>;
+  /**
+   * 本工具自己的临时文件目录（Trace2 事件流落在这里）。**必填**——装配方手里一定有
+   * `XmPaths`，让它传过来，忘了传就编译不过。
+   *
+   * 不用 `os.tmpdir()`：一是 ADR-0007 不让业务代码碰 `node:os`；二是共享临时目录是
+   * 世界可写的，而这里写的是命令轨迹。更早的实现把它建在用户仓库的 `.git/` 里，
+   * 那更糟——进程崩在 commit 中间会在别人的仓库内部留下 `xm-git-trace-*`（ADR-0046 补记）。
+   */
+  readonly tempDir: string;
 }
 
 export const gitTools = (options: GitToolsOptions): readonly RegisteredTool[] => [
@@ -173,18 +182,20 @@ async function commit(
   if (common !== undefined) return common;
   if (status.conflicted) return failure('conflict', input, ctx, '仓库存在未解决冲突，未提交。');
 
-  const indexPath = await gitPath('index', cwd, options, ctx);
-  if (indexPath === undefined) return failure('command_failed', input, ctx, '无法定位 Git index。');
-  const originalIndex = await readOptional(indexPath);
   const untracked = await runGit(
     ['git', 'ls-files', '--others', '--exclude-standard', '--', ...paths], cwd, options, ctx,
   );
   const untrackedFailure = commonFailure(untracked, input.argv, cwd);
   if (untrackedFailure !== undefined) return untrackedFailure;
+  /*
+   * `git commit --only -- <path>` 看不见未跟踪文件，所以要先给它们建 intent-to-add 条目。
+   * 记下究竟给哪些路径建了，失败时只撤销这几条（见下面的 finally）。
+   */
+  const intentAdded = untracked.stdout.split(/\r?\n/u).filter(Boolean);
 
   let committed = false;
   try {
-    if (untracked.stdout.trim() !== '') {
+    if (intentAdded.length > 0) {
       const intent = await runGit(['git', 'add', '--intent-to-add', '--', ...paths], cwd, options, ctx);
       const intentFailure = commonFailure(intent, input.argv, cwd);
       if (intentFailure !== undefined) return intentFailure;
@@ -200,7 +211,9 @@ async function commit(
     const scope = scopeRun.stdout.split(/\r?\n/u).filter(Boolean);
     if (scope.length === 0) return failure('empty_commit', input, ctx, '所列路径没有可提交改动。');
 
-    const traceDir = await mkdtemp(join(dirname(indexPath), 'xm-git-trace-'));
+    // Trace2 的临时目录放应用自己的目录，不放用户仓库的 `.git/`（见 GitToolsOptions.tempDir）
+    await mkdir(options.tempDir, { recursive: true });
+    const traceDir = await mkdtemp(join(options.tempDir, 'xm-git-trace-'));
     const tracePath = join(traceDir, 'trace.json');
     try {
       const run = await runGit(input.argv, cwd, options, ctx, { GIT_TRACE2_EVENT: tracePath });
@@ -223,7 +236,26 @@ async function commit(
       await rm(traceDir, { recursive: true, force: true });
     }
   } finally {
-    if (!committed) await restoreIndex(indexPath, originalIndex);
+    /*
+     * 失败时只撤销**我们自己加的那几条** intent-to-add 条目（ADR-0046 补记）。
+     *
+     * 原来的做法是：commit 前把 `.git/index` 整个读成字节，失败时原样写回。三个问题——
+     * 写入不原子（没有 temp+rename）、不持 `index.lock`、而且会把这期间**任何人**对索引
+     * 的改动一起抹掉：用户在终端里 `git add` 的东西、pre-commit 钩子里 formatter 补的
+     * `git add`，都会无声消失。小明跑在用户桌面上、用户同时开着终端和 IDE，这不是理论风险。
+     * 而且那次写入完全绕开了策略链与 checkpoint，写的还是 `.git/` 下的文件。
+     *
+     * `git rm --cached` 走 git 自己的加锁，只动指定路径；`--ignore-unmatch` 保证条目
+     * 已经不在时不报错（例如 commit 部分成功）。
+     */
+    if (!committed && intentAdded.length > 0) {
+      await runGit(
+        ['git', 'rm', '--cached', '--force', '--quiet', '--ignore-unmatch', '--', ...intentAdded],
+        cwd,
+        options,
+        ctx,
+      );
+    }
   }
 }
 
@@ -286,6 +318,16 @@ async function runGit(
       }),
       GIT_TERMINAL_PROMPT: '0',
       GIT_OPTIONAL_LOCKS: '0',
+      /*
+       * 固定 C 语言环境（ADR-0046 补记）。
+       *
+       * `commonFailure()` 用英文子串 `not a git repository` 判 not_repository，而
+       * `ENV_ALLOWLIST` 会把宿主的 LANG / LC_ALL 透传给子进程——装了中文 git 的机器上
+       * 那句话是中文的，分类就悄悄退化成 command_failed。ADR-0046 §3 专门批评过
+       * "用某一句本地化 stderr 猜测"，这里先把语言钉死，别让判据浮动。
+       */
+      LC_ALL: 'C',
+      LANG: 'C',
       // 仓库级 core.fsmonitor 可以指向任意可执行 hook；status/diff 的“只读”语义
       // 不能依赖用户或仓库没有配置它。命令行配置环境在本次进程内覆盖仓库配置。
       GIT_CONFIG_COUNT: '1',
@@ -319,30 +361,19 @@ const failure = (
   ok: false, kind, argv: input.argv, cwd: input.cwd ?? ctx.cwd, message, stdout: '', stderr: '',
 });
 
-async function gitPath(name: string, cwd: string, options: GitToolsOptions, ctx: ToolContext): Promise<string | undefined> {
-  const run = await runGit(['git', 'rev-parse', '--git-path', name], cwd, options, ctx);
-  return run.code === 0 ? resolve(cwd, run.stdout.trim()) : undefined;
-}
-
-async function readOptional(path: string): Promise<Uint8Array | undefined> {
-  try { return await readFile(path); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw error;
-  }
-}
-
-async function restoreIndex(path: string, bytes: Uint8Array | undefined): Promise<void> {
-  if (bytes === undefined) await rm(path, { force: true });
-  else await writeFile(path, bytes);
-}
-
 async function failedHook(path: string): Promise<string | undefined> {
   let text: string;
   try { text = await readFile(path, 'utf8'); } catch { return undefined; }
   const hooks = new Map<number, string>();
   for (const line of text.split(/\r?\n/u)) {
     if (line === '') continue;
-    const event = JSON.parse(line) as { event?: string; child_id?: number; child_class?: string; hook_name?: string; code?: number };
+    // 半截 trace 行（进程被杀、缓冲没刷完）不该把整次 commit 打挂——它只是让分类退回通用失败
+    let event: { event?: string; child_id?: number; child_class?: string; hook_name?: string; code?: number };
+    try {
+      event = JSON.parse(line) as typeof event;
+    } catch {
+      continue;
+    }
     if (event.event === 'child_start' && event.child_class === 'hook' && event.child_id !== undefined) hooks.set(event.child_id, event.hook_name ?? 'unknown');
     if (event.event === 'child_exit' && event.child_id !== undefined && event.code !== 0 && hooks.has(event.child_id)) return hooks.get(event.child_id);
   }

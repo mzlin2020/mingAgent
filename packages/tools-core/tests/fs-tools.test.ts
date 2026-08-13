@@ -163,14 +163,14 @@ describe('fs.write', () => {
 
 describe('工具声明', () => {
   it('🔴 每个碰路径的工具都声明了 pathInputs —— 漏了就等于所有路径规则匹配不上', () => {
-    for (const t of coreTools({ os: 'linux' })) {
+    for (const t of coreTools({ os: 'linux', tempDir: tmpdir() })) {
       const touchesPath = t.descriptor.capabilities.some((c) => c.startsWith('fs.'));
       expect(t.pathInputs.length, t.descriptor.name).toBeGreaterThan(touchesPath ? 0 : -1);
     }
   });
 
   it('都声明了资源；共享进程或 Git 工作树状态的工具显式串行', () => {
-    for (const t of coreTools({ os: 'linux' })) {
+    for (const t of coreTools({ os: 'linux', tempDir: tmpdir() })) {
       // shell.exec 是**显式**声明的 exclusive：一条命令能改动的东西无法从入参判断，
       // Git 工具共享 index/HEAD；与同仓库的其它调用并发同样是数据竞争。
       const want = t.descriptor.name === 'shell.exec' || t.descriptor.group === 'git'

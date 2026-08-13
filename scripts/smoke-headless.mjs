@@ -143,7 +143,7 @@ try {
   };
   tools.register(editPreviewTool(editAccess));
   tools.register(editApplyTool(editAccess));
-  for (const t of coreTools({ os: platform.os, index: stores.index })) tools.register(t);
+  for (const t of coreTools({ os: platform.os, index: stores.index, tempDir: join(dataDir, 'tools-tmp') })) tools.register(t);
   tools.register(
     subagentExploreTool(async (request) => {
       const childRead = newCallId();

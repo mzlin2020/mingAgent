@@ -336,6 +336,7 @@ export async function startServices(): Promise<Services> {
     os: platform.os,
     index: stores.index,
     backgroundSignal: background.signal,
+    tempDir: join(paths.cache, 'tools'),
     ptySessions,
     updateTodos: async ({ sessionId, todos }) => {
       const runtime = await runtimeFor(sessionId);
@@ -579,14 +580,23 @@ export async function startServices(): Promise<Services> {
 
     async listSessions(): Promise<ListSessionsResult> {
       const list = await stores.events.listSessions();
-      return list.map((s) => ({
-        sessionId: s.sessionId,
-        createdAt: s.createdAt,
-        updatedAt: s.updatedAt,
-        lastSeq: s.lastSeq,
-        ...(s.title === undefined ? {} : { title: s.title }),
-        status: sessionListStatus(s.sessionId, { running, orphaned: orphanedSessions }),
-      }));
+      /*
+       * 子 Agent 会话不进用户的会话列表（ADR-0049 补记）。
+       *
+       * `agent.explore` 每次派生都建一条真实会话，带 `parentSessionId`。原来这里不过滤，
+       * 于是 Home 列表里会不断堆出「子 Agent：…」——那是内部执行细节，不是用户的对话。
+       * 它们仍然完整落在事件库里，子轨迹照旧可以单独诊断（ADR-0049 §3）。
+       */
+      return list
+        .filter((s) => s.parentSessionId === undefined)
+        .map((s) => ({
+          sessionId: s.sessionId,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+          lastSeq: s.lastSeq,
+          ...(s.title === undefined ? {} : { title: s.title }),
+          status: sessionListStatus(s.sessionId, { running, orphaned: orphanedSessions }),
+        }));
     },
 
     async sendUserMessage(

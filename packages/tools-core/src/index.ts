@@ -53,6 +53,8 @@ export interface CoreToolsOptions {
   readonly os: ShellExecOptions['os'];
   /** 允许透传给子进程的额外环境变量名 */
   readonly extraEnv?: readonly string[];
+  /** 工具自己的临时文件目录（目前只有 Git 的 Trace2 用）。见 `GitToolsOptions.tempDir`。 */
+  readonly tempDir: string;
   /** M2-g 的可重建工作区索引；未提供时不注册索引增强工具。 */
   readonly index?: import('@xm/kernel').WorkspaceIndex;
   /**

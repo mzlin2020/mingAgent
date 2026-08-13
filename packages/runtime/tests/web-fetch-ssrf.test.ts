@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -51,7 +52,7 @@ async function harness({ userRules = [], dnsLookup }: HarnessOptions = {}) {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools({ os: 'linux' })) tools.register(t);
+  for (const t of coreTools({ os: 'linux', tempDir: tmpdir() })) tools.register(t);
 
   const exec = async (url: string): Promise<PersistedEvent[]> => {
     await runTurn(

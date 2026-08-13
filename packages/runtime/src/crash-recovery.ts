@@ -26,6 +26,15 @@ export async function scanForOrphanedSessions(store: EventStore): Promise<readon
   const results: OrphanedSession[] = [];
 
   for (const s of summaries) {
+    /*
+     * 子 Agent 会话不参与孤儿扫描（ADR-0049 补记）。
+     *
+     * 它们的收尾由 `recoverInterruptedSubagents()` 从**父会话**那侧补 `subagent.end`，
+     * 这里再扫一遍等于同一件事两套恢复语义，还会让用户看到一条"某某会话中断了、要恢复吗"
+     * 的提示——而那根本不是他的对话。顺带省掉启动时全量回放每一条历史子会话的开销，
+     * 那个开销随派生次数线性增长。
+     */
+    if (s.parentSessionId !== undefined) continue;
     const snapshot = await store.readSnapshot(s.sessionId);
     let state =
       snapshot === undefined ? emptySessionState(s.sessionId) : deserializeSessionState(snapshot.state);

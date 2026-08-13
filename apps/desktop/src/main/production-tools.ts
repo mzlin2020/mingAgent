@@ -14,6 +14,8 @@ export function productionTools(options: {
   readonly index: WorkspaceIndex;
   /** 应用级后台信号，交给索引的增量刷新用（ADR-0051） */
   readonly backgroundSignal: AbortLike;
+  /** 工具的临时文件目录，走应用自己的 cache 而不是世界可写的系统临时目录 */
+  readonly tempDir: string;
   readonly explore: SubagentExplorer;
 }): readonly RegisteredTool[] {
   return [
@@ -21,6 +23,7 @@ export function productionTools(options: {
       os: options.os,
       index: options.index,
       backgroundSignal: options.backgroundSignal,
+      tempDir: options.tempDir,
     }),
     ...shellSessionTools(options.ptySessions),
     todoUpdateTool(options.updateTodos),

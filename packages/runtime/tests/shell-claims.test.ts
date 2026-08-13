@@ -52,7 +52,7 @@ async function harness(userRules: PolicyRuleSet = []) {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools({ os: 'linux' })) tools.register(t);
+  for (const t of coreTools({ os: 'linux', tempDir: tmpdir() })) tools.register(t);
 
   const exec = async (argv: string[]): Promise<PersistedEvent[]> => {
     await runTurn(

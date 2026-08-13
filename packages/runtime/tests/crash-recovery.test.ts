@@ -187,6 +187,32 @@ describe('崩溃恢复：scanForOrphanedSessions / abandonOrphanedTurn / resumeT
     expect(revived.state.status).toBe('idle');
   });
 
+  it('子 Agent 会话不参与孤儿扫描：收尾由父会话那侧负责', async () => {
+    const store = new MemoryEventStore();
+    const parentSessionId = newSessionId();
+    const childSessionId = newSessionId();
+
+    /*
+     * 一条停在半途的子会话。它看起来完全符合"孤儿"的形状，但收尾归
+     * `recoverInterruptedSubagents()` 从父会话那侧补 `subagent.end`（ADR-0049 §4）。
+     * 这里再报一次，用户就会看到"某某会话中断了、要恢复吗"——而那根本不是他的对话。
+     */
+    const child = await SessionRuntime.open({ sessionId: childSessionId, store, bus: new EventBus() });
+    await child.record({
+      type: 'session.created',
+      payload: { cwd: '/repo', modelRef: 'scripted/scripted-1', parentSessionId, parentCallId: newCallId() },
+    });
+    const childTurnId = newTurnId();
+    await child.record({
+      type: 'turn.start',
+      turnId: childTurnId,
+      payload: { turnId: childTurnId, input: [{ type: 'text', text: '只读探索' }] },
+    });
+    await child.close();
+
+    expect(await scanForOrphanedSessions(store)).toEqual([]);
+  });
+
   it('干净结束的会话不是孤儿：scanForOrphanedSessions 不误报', async () => {
     const store = new MemoryEventStore();
     const sessionId = newSessionId();

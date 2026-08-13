@@ -3,10 +3,48 @@ import { fileURLToPath } from 'node:url';
 import { Language, Parser, type Node } from 'web-tree-sitter';
 import type { IndexedSymbol } from '@xm/kernel';
 
-const RUNTIME_WASM = fileURLToPath(import.meta.resolve('web-tree-sitter/web-tree-sitter.wasm'));
-const GRAMMAR_DIR = dirname(fileURLToPath(import.meta.resolve('@vscode/tree-sitter-wasm')));
-const initialized = Parser.init({ locateFile: () => RUNTIME_WASM });
-const languages = new Map<string, Promise<Language>>();
+/**
+ * WASM 资产的解析与初始化**惰性做**（ADR-0047 补记）。
+ *
+ * 原来这三件事写在模块顶层，也就是 `@xm/storage` 的导入副作用：`import.meta.resolve`
+ * 解析不到就同步抛。而 `tree-symbols` ← `workspace-index` ← `open-store` 是链式导入，
+ * 于是"WASM 没被 electron-builder 打进包"这一件事会让**整个 storage 包（含事件存储）
+ * 导入失败，应用根本起不来**——一个可选的代码智能特性，撑着整个应用的启动。
+ *
+ * 现在初始化只在真正要解析符号时发生，失败就降级：符号提取返回空，FTS 全文与事件存储
+ * 照常。降级只告警一次，不在每个文件上刷屏。
+ */
+let runtime: Promise<{ readonly grammarDir: string } | undefined> | undefined;
+let degradation: string | undefined;
+const languages = new Map<string, Promise<Language> | undefined>();
+
+/**
+ * 符号能力当前的降级原因；`undefined` 表示正常。
+ *
+ * 降级要**说出来**而不是无声返回空数组，但这个包不许 `console`（日志走事件流）。
+ * 所以把原因挂在这里，由 `workspace-index` 在每次 refresh 时取一次，放进
+ * `WorkspaceIndexRefresh.errors` —— 已有的、面向调用方的那条通道。
+ */
+export const symbolDegradation = (): string | undefined => degradation;
+
+function initRuntime(): Promise<{ readonly grammarDir: string } | undefined> {
+  runtime ??= (async () => {
+    try {
+      const wasm = fileURLToPath(import.meta.resolve('web-tree-sitter/web-tree-sitter.wasm'));
+      const grammarDir = dirname(fileURLToPath(import.meta.resolve('@vscode/tree-sitter-wasm')));
+      await Parser.init({ locateFile: () => wasm });
+      return { grammarDir };
+    } catch (error) {
+      noteDegradation('tree-sitter WASM 运行时不可用，符号索引降级为空', error);
+      return undefined;
+    }
+  })();
+  return runtime;
+}
+
+function noteDegradation(message: string, error: unknown): void {
+  degradation ??= `${message}：${error instanceof Error ? error.message : String(error)}`;
+}
 
 const LANGUAGE_BY_EXTENSION: Readonly<Record<string, string>> = {
   '.js': 'javascript',
@@ -42,9 +80,11 @@ export async function extractSymbols(
 ): Promise<readonly IndexedSymbol[]> {
   const languageName = LANGUAGE_BY_EXTENSION[extname(path).toLowerCase()];
   if (languageName === undefined) return [];
-  await initialized;
+  const ready = await initRuntime();
+  if (ready === undefined) return [];
+  const language = await loadLanguage(ready.grammarDir, languageName);
+  if (language === undefined) return [];
   const parser = new Parser();
-  const language = await loadLanguage(languageName);
   parser.setLanguage(language);
   const tree = parser.parse(content);
   if (tree === null) {
@@ -93,13 +133,23 @@ function symbolOf(path: string, node: Node): IndexedSymbol | undefined {
   };
 }
 
-async function loadLanguage(name: string): Promise<Language> {
-  let pending = languages.get(name);
-  if (pending === undefined) {
-    pending = Language.load(join(GRAMMAR_DIR, `tree-sitter-${name}.wasm`));
-    languages.set(name, pending);
+/** 单个 grammar 加载失败只让该语言降级，不影响其它语言与整库索引。 */
+async function loadLanguage(grammarDir: string, name: string): Promise<Language | undefined> {
+  if (!languages.has(name)) {
+    languages.set(
+      name,
+      Language.load(join(grammarDir, `tree-sitter-${name}.wasm`)).catch((error: unknown) => {
+        noteDegradation(`tree-sitter grammar ${name} 加载失败，该语言的符号索引降级为空`, error);
+        languages.set(name, undefined);
+        throw error;
+      }),
+    );
   }
-  return pending;
+  try {
+    return await languages.get(name);
+  } catch {
+    return undefined;
+  }
 }
 
 function oneLine(text: string): string {

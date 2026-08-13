@@ -32,8 +32,8 @@ describe('M2-f Git 生产分发链路', () => {
       payload: { cwd: root, modelRef: 'scripted/git' },
     });
     const tools = new ToolRegistry();
-    tools.register(gitBranchTool({ os: osFamily() }));
-    tools.register(gitCommitTool({ os: osFamily() }));
+    tools.register(gitBranchTool({ os: osFamily(), tempDir: join(tmpdir(), 'xm-git-tools-test') }));
+    tools.register(gitCommitTool({ os: osFamily(), tempDir: join(tmpdir(), 'xm-git-tools-test') }));
     const env: PolicyEnv = {
       home: root,
       appRoot: join(root, 'app'),

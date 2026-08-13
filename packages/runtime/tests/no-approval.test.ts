@@ -112,7 +112,7 @@ async function harness() {
   });
 
   const tools = new ToolRegistry();
-  for (const t of coreTools({ os: 'linux' })) tools.register(t);
+  for (const t of coreTools({ os: 'linux', tempDir: tmpdir() })) tools.register(t);
   tools.register(taintTool());
   tools.register(pushTool());
 

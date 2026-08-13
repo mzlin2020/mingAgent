@@ -12,7 +12,7 @@ import type {
   WorkspaceIndexState,
   WorkspaceQuery,
 } from '@xm/kernel';
-import { extractSymbols, supportsSymbols } from './tree-symbols.js';
+import { extractSymbols, supportsSymbols, symbolDegradation } from './tree-symbols.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const TEXT_EXTENSIONS = new Set([
@@ -183,6 +183,9 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
        * 符号链接，就能让整库永久 stale，此后每次查询都 fallback 并再触发一次全量重扫——
        * 一个稳定的重扫循环。逐文件错误照旧回传给调用方，但它不是整库的健康状态。
        */
+      // 符号能力若已降级（WASM 资产缺失等），从这条既有通道说出来，不是无声返回空符号
+      const degraded = symbolDegradation();
+      if (degraded !== undefined) errors.push(degraded);
       this.#setState(root, 'ready');
       return { state: 'ready', indexed, unchanged, removed, errors };
     } catch (error) {

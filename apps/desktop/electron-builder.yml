@@ -27,6 +27,17 @@ files:
 # 而开发模式下永远不会出现（那时没有 asar）。启动自检就是拦这一类的。
 asarUnpack:
   - '**/node_modules/better-sqlite3/**'
+  # ⚠️ **tree-sitter 的 WASM 也要解包。**
+  #
+  # 与 better-sqlite3 同一个理由，只是换了个加载器：`Parser.init({ locateFile })` 和
+  # `Language.load()` 拿到的是 `import.meta.resolve()` 解析出来的**真实文件路径**，
+  # 而 asar 里的路径不是真实路径。开发模式下没有 asar，所以这类问题只在打包产物上出现。
+  #
+  # 这一条是"别让它坏"，不是"坏了就完蛋"：`tree-symbols.ts` 已经把初始化改成惰性 +
+  # 失败降级（ADR-0047 补记），资产缺失时符号索引返回空，FTS 与事件存储照常工作，
+  # 应用不会起不来。护栏在代码里，这里只是让常态是好的。
+  - '**/node_modules/web-tree-sitter/**'
+  - '**/node_modules/@vscode/tree-sitter-wasm/**'
 
 # 不让 electron-builder 内部再跑一次 @electron/rebuild。
 # ADR-0016 已经实测清楚：better-sqlite3 13 随包发**全平台 N-API 预编译产物**

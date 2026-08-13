@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MemoryBlobStore } from '@xm/kernel';
 import { PtySessionManager } from '@xm/tools-core';
@@ -25,6 +27,7 @@ describe('desktop production tool assembly', () => {
         addEventListener: () => undefined,
         removeEventListener: () => undefined,
       },
+      tempDir: join(tmpdir(), 'xm-desktop-tools-test'),
       ptySessions: manager,
       updateTodos: () => Promise.resolve(),
       expandResults: {
