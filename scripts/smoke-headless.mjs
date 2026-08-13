@@ -423,6 +423,24 @@ try {
     runtime.state.editProposals.at(-1)?.appliedAt !== undefined &&
     runtime.state.checkpoints.some((checkpoint) => checkpoint.callId === editApplyCall);
 
+  /*
+   * 上面那段是从**事件投影**里取的提案，真实模型没有这条捷径——它只能看 tool.end.forModel。
+   * 旧实现在这里就断了：整份提案 JSON 撞上 64KB 截断，第二个文件的 beforeHash 被挖掉，
+   * 于是 edit.apply 永远拼不出合法入参，而这条纵切因为读投影而全程绿着（ADR-0050）。
+   */
+  let editPreviewUsable = false;
+  for await (const event of stores.events.read(runtime.sessionId)) {
+    if (event.type !== 'tool.end' || event.payload.callId !== editPreviewCall) continue;
+    const shown = event.payload.forModel
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+    editPreviewUsable =
+      editProposal !== undefined &&
+      editProposal.files.every(
+        (file) => shown.includes(file.beforeHash) && shown.includes(editProposal.proposalId),
+      );
+  }
+
   // ── 第五段：M2-f status → branch → diff → path-only commit ──
   const gitStatusCall = newCallId();
   const gitBranchCall = newCallId();
@@ -831,6 +849,9 @@ try {
   }
   if (!editApplied || !types.includes('edit.proposed') || !types.includes('edit.applied')) {
     fail('M2-d 没有贯穿 preview → 多文件 apply → 整组 checkpoint → 事件回放');
+  }
+  if (!editPreviewUsable) {
+    fail('edit.preview 给模型看的结果里缺少某个文件的 proposalId/beforeHash，模型无法发起 apply');
   }
   if (!gitWorkflowPassed) {
     fail('M2-f 没有贯穿 status → branch → diff → 显式范围 commit，或夹带了用户既有暂存');

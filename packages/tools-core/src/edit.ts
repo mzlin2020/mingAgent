@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import {
   EditProposal,
@@ -12,6 +12,7 @@ import {
 } from '@xm/contracts';
 import type { RegisteredTool } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
+import { unifiedDiff } from './diff.js';
 import { writeTextAtomic } from './fs-write.js';
 
 export const EDIT_PREVIEW = 'edit.preview';
@@ -52,6 +53,15 @@ export interface EditPreviewFile {
   readonly replacements: readonly EditReplacement[];
 }
 
+/**
+ * 单个可编辑文件的字节上限。
+ *
+ * 比 `fs.read` 的 512 KB 宽：读取可以按 offset 分段，精确编辑不行——它必须拿到全文
+ * 才能算命中数和 afterHash。但仍然要有上限：`edit.preview` 一次最多 100 个文件，
+ * 没有上限时一个失手的 path 就能把整份大文件（乃至一批）拉进主进程内存。
+ */
+const MAX_EDIT_FILE_BYTES = 2 * 1024 * 1024;
+
 export async function createEditProposal(
   input: readonly EditPreviewFile[],
   signal?: { readonly aborted: boolean },
@@ -60,6 +70,7 @@ export async function createEditProposal(
   const files = [];
   for (const [fileIndex, file] of input.entries()) {
     if (signal?.aborted === true) throw new Error('编辑预览已取消。');
+    await assertEditableSize(file.path);
     const beforeBytes = await readFile(file.path);
     const before = decodeUtf8(beforeBytes, file.path);
     let after = before;
@@ -100,12 +111,40 @@ export const editPreviewTool = (access: EditProposalAccess): RegisteredTool =>
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const proposal = await createEditProposal(input.files, ctx.signal);
       await access.save(ctx.sessionId, proposal);
-      yield {
-        kind: 'result',
-        forModel: [{ type: 'text', text: JSON.stringify(proposal) }],
-      };
+      yield { kind: 'result', forModel: [{ type: 'text', text: previewEnvelope(proposal) }] };
     },
   });
+
+/**
+ * 模型可见的预览结果（ADR-0050）。
+ *
+ * 以前这里是 `JSON.stringify(proposal)`——整份提案，含每个文件的完整 diff 和每条替换的
+ * 逐份 diff 副本。它必然撞上统一结果截断（默认 64 KB、middle 策略），而被挖掉的正是中段：
+ * 第二个文件之后的 `beforeHash` 全没了，`edit.apply` 因此永远拼不出合法入参。
+ *
+ * 现在的形状把**应用所必需的最小信息**（proposalId + 每个文件的 path/beforeHash）放在最前面
+ * 且逐行自足，diff 放在后面。即使 diff 段被截断，apply 需要的东西也一定还在；被截掉的部分
+ * 仍可通过 `result.expand` 按范围取回。完整提案照旧完整落 `edit.proposed` 事件供 UI 消费。
+ */
+function previewEnvelope(proposal: Proposal): string {
+  const rows = proposal.files.map((file, index) => {
+    const hunks = file.hunks?.length ?? 1;
+    return (
+      `${String(index + 1)}. ${file.path.replaceAll('\\', '/')}\n` +
+      `   beforeHash=${file.beforeHash}\n` +
+      `   afterHash=${file.afterHash}\n` +
+      `   ${String(file.replacements.length)} 处替换，${String(hunks)} 个改动块`
+    );
+  });
+  const diffs = proposal.files
+    .map((file) => (file.diff === '' ? `（${file.path} 内容无变化）` : file.diff))
+    .join('\n\n');
+  return (
+    `编辑提案 ${proposal.proposalId} 已生成，尚未写盘。\n` +
+    `调用 edit.apply 时须原样传回该 proposalId，以及下面每一项的 path 与 beforeHash。\n\n` +
+    `${rows.join('\n')}\n\n── diff ──\n${diffs}`
+  );
+}
 
 export const editApplyTool = (
   access: EditProposalAccess,
@@ -207,24 +246,15 @@ const countOccurrences = (text: string, needle: string): number => {
   return count;
 };
 
-function unifiedDiff(path: string, before: string, after: string): string {
-  const oldLines = diffLines(before);
-  const newLines = diffLines(after);
-  const name = path.replaceAll('\\', '/');
-  return [
-    `--- a/${name}`,
-    `+++ b/${name}`,
-    `@@ -1,${String(oldLines.length)} +1,${String(newLines.length)} @@`,
-    ...oldLines.map((line) => `-${line}`),
-    ...newLines.map((line) => `+${line}`),
-  ].join('\n');
+async function assertEditableSize(path: string): Promise<void> {
+  const info = await stat(path);
+  if (info.size > MAX_EDIT_FILE_BYTES) {
+    throw new Error(
+      `${path} 共 ${String(info.size)} 字节，超过精确编辑上限 ${String(MAX_EDIT_FILE_BYTES)} 字节。`,
+    );
+  }
 }
 
-const diffLines = (text: string): string[] => {
-  const lines = text.split('\n');
-  if (text.endsWith('\n')) lines.pop();
-  return lines;
-};
 const decodeUtf8 = (bytes: Uint8Array, path: string): string => {
   try {
     return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);

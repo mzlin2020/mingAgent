@@ -11,6 +11,7 @@
 export * from './gateway.js';
 export * from './checkpoint.js';
 export * from './checkpoint-restore.js';
+export * from './diff.js';
 export * from './edit.js';
 export * from './git.js';
 export * from './index-search.js';

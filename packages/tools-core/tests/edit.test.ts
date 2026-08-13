@@ -4,8 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { newSessionId, type EditProposal, type EditProposalId, type SessionId } from '@xm/contracts';
+import {
+  DEFAULT_RESULT_LIMITS,
+  newSessionId,
+  type EditProposal,
+  type EditProposalId,
+  type SessionId,
+} from '@xm/contracts';
 import type { ToolContext } from '@xm/kernel';
+import { truncateResult } from '@xm/kernel';
 import {
   editApplyTool,
   editPreviewTool,
@@ -86,7 +93,57 @@ describe('edit.preview', () => {
   });
 });
 
+/*
+ * 真实尺寸的回归（M2 复审）。
+ *
+ * 原来的夹具全是几十字节的 a.txt/b.txt，正好绕开了失效区：diff 曾经是"整文件对倒"
+ * （先吐全部旧行再吐全部新行），提案体积随**文件大小**而不是**改动量**增长。实测两个
+ * 20KB 文件 + 3 处单行替换 = 223KB 提案 JSON，经默认 64KB middle 截断后中段被挖掉，
+ * 第二个文件的 beforeHash 消失——而 edit.apply 强制要求逐项传回，于是多文件编辑
+ * 在任何真实源文件上都无法完成。下面两条就是那次失效的现场。
+ */
+describe('真实尺寸的提案', () => {
+  it('模型可见结果经统一截断后，每个文件的 beforeHash 都还在', async () => {
+    const { paths } = await previewBig();
+    const proposal = access.only().proposal;
+    const shown = truncateResult(
+      [{ type: 'text', text: await previewOutput }],
+      DEFAULT_RESULT_LIMITS,
+    ).blocks
+      .map((block) => (block.type === 'text' ? block.text : ''))
+      .join('');
+
+    expect(paths).toHaveLength(2);
+    for (const file of proposal.files) {
+      expect(shown).toContain(file.path.replaceAll('\\', '/'));
+      expect(shown).toContain(file.beforeHash);
+    }
+  });
+
+  it('hunk 体积随改动量而不是文件大小增长', async () => {
+    await previewBig();
+    const proposal = access.only().proposal;
+    for (const file of proposal.files) {
+      for (const hunk of file.hunks ?? []) {
+        // 一处单行替换：3 行上下文 × 2 + 1 删 + 1 增 + 文件头/hunk 头，远小于 400 行的文件
+        expect(hunk.diff.split('\n').length).toBeLessThan(20);
+      }
+      expect(file.diff.split('\n').length).toBeLessThan(60);
+    }
+  });
+});
+
 describe('edit.apply', () => {
+  it('真实尺寸的多文件提案可以端到端应用', async () => {
+    const { paths } = await previewBig();
+    const proposal = access.only().proposal;
+    await execute(editApplyTool(access), applyInput(proposal));
+    for (const path of paths) {
+      expect(await readFile(path, 'utf8')).toContain('已替换');
+    }
+    expect(access.only().applied).toBe(true);
+  });
+
   it('一个提案应用多个文件，并只在成功后标记 applied', async () => {
     const [a, b] = await previewTwo();
     const proposal = access.only().proposal;
@@ -127,6 +184,40 @@ describe('edit.apply', () => {
     expect(access.only().applied).toBe(true);
   });
 });
+
+/** 两个 400 行（约 20KB）的普通源文件，共 3 处单行替换——日常改代码的最小真实规模。 */
+let previewOutput: Promise<string>;
+async function previewBig(): Promise<{ readonly paths: readonly string[] }> {
+  const body = (tag: string): string =>
+    `${Array.from(
+      { length: 400 },
+      (_unused, i) => `const ${tag}_${String(i)} = "行内容 ${String(i)} 填充文本 padding";`,
+    ).join('\n')}\n`;
+  const a = join(root, 'big-a.ts');
+  const b = join(root, 'big-b.ts');
+  await writeFile(a, body('a'));
+  await writeFile(b, body('b'));
+
+  previewOutput = Promise.resolve(
+    await execute(editPreviewTool(access), {
+      files: [
+        {
+          path: a,
+          replacements: [
+            { oldText: 'const a_10 =', newText: 'const a_10已替换 =', expectedMatches: 1 },
+            { oldText: 'const a_200 =', newText: 'const a_200已替换 =', expectedMatches: 1 },
+          ],
+        },
+        {
+          path: b,
+          replacements: [{ oldText: 'const b_5 =', newText: 'const b_5已替换 =', expectedMatches: 1 }],
+        },
+      ],
+    }),
+  );
+  await previewOutput;
+  return { paths: [a, b] };
+}
 
 async function previewTwo(): Promise<readonly [string, string]> {
   const a = join(root, 'a.txt');
