@@ -223,6 +223,47 @@ export const StatusResult = z.object({
   }),
 });
 
+const WorkspaceSettings = z.strictObject({
+  mode: z.enum(['choose', 'fixed', 'home']),
+  defaultPath: z.string().max(4096).optional(),
+});
+
+export const SettingsResult = z.object({
+  workspace: WorkspaceSettings,
+  tools: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    enabled: z.boolean(),
+    available: z.boolean(),
+  })),
+  storage: z.object({
+    dataDirectory: z.string(),
+    configDirectory: z.string(),
+    cacheDirectory: z.string(),
+    logsDirectory: z.string(),
+    items: z.array(z.object({
+      id: z.enum(['search-index', 'sessions', 'recovery', 'logs', 'config']),
+      bytes: z.number().int().nonnegative(),
+      clearable: z.boolean(),
+    })),
+    index: z.object({
+      roots: z.array(z.object({
+        root: z.string(),
+        state: z.enum(['cold', 'building', 'ready', 'stale', 'failed']),
+        fileCount: z.number().int().nonnegative(),
+        sourceBytes: z.number().int().nonnegative(),
+        updatedAt: z.number().int().nonnegative(),
+      })),
+    }),
+  }),
+});
+export type SettingsResult = z.infer<typeof SettingsResult>;
+
+export const UpdateSettingsRequest = z.strictObject({
+  workspace: WorkspaceSettings,
+  disabledTools: z.array(z.string()).max(200),
+});
+
 /**
  * 录入 API key。
  *

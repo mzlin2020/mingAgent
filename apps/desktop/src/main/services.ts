@@ -1,4 +1,5 @@
 import { app, safeStorage } from 'electron';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type {
   BlobRef,
@@ -9,7 +10,7 @@ import type {
   EditProposalId,
   SessionId,
 } from '@xm/contracts';
-import { newCallId, newSessionId } from '@xm/contracts';
+import { Config as ConfigSchema, newCallId, newSessionId } from '@xm/contracts';
 import type {
   OrphanedTurn,
   PlatformPort,
@@ -31,6 +32,7 @@ import {
   loadConfig,
   nodePlatform,
   persistProviderConfig,
+  persistUserConfigPatch,
   unavailableSecretStore,
   withCapabilities,
 } from '@xm/platform';
@@ -96,6 +98,33 @@ export interface RuntimeStatus {
   };
 }
 
+export interface SettingsSnapshot {
+  readonly workspace: Config['workspace'];
+  readonly tools: readonly {
+    readonly name: string;
+    readonly description: string;
+    readonly enabled: boolean;
+    readonly available: boolean;
+  }[];
+  readonly storage: {
+    readonly dataDirectory: string;
+    readonly configDirectory: string;
+    readonly cacheDirectory: string;
+    readonly logsDirectory: string;
+    readonly items: readonly {
+      readonly id: 'search-index' | 'sessions' | 'recovery' | 'logs' | 'config';
+      readonly bytes: number;
+      readonly clearable: boolean;
+    }[];
+    readonly index: ReturnType<OpenedStores['index']['stats']>;
+  };
+}
+
+export interface SettingsUpdate {
+  readonly workspace: Config['workspace'];
+  readonly disabledTools: readonly string[];
+}
+
 function recordPtyEvent(runtime: SessionRuntime, event: PtySessionEvent): Promise<unknown> {
   switch (event.type) {
     case 'shell.session.opened':
@@ -156,6 +185,9 @@ export interface Services {
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
   interrupt(sessionId: SessionId): boolean;
   status(): Promise<RuntimeStatus>;
+  settings(): Promise<SettingsSnapshot>;
+  updateSettings(update: SettingsUpdate): Promise<SettingsSnapshot>;
+  clearSearchIndex(): Promise<SettingsSnapshot>;
   setApiKey(providerId: string, key: string): Promise<void>;
   /**
    * 崩溃恢复（M1-e，docs/04 §8）。启动时扫描出的、停在没收尾回合里的会话。
@@ -534,6 +566,7 @@ export async function startServices(): Promise<Services> {
     tools,
 
     async createSession(options: { title?: string; cwd?: string } = {}): Promise<SessionId> {
+      const cwd = options.cwd ?? workspaceForNewSession(config, app.getPath('home'));
       const sessionId = newSessionId();
       const runtime = await runtimeFor(sessionId);
       await runtime.record({
@@ -541,7 +574,7 @@ export async function startServices(): Promise<Services> {
         payload: {
           // 工作目录决定"相对路径相对谁"。用户没选就用家目录——那是个安全的默认值，
           // 但主 DoD 任务（"读这个目录"）需要他先选一个
-          cwd: options.cwd ?? app.getPath('home'),
+          cwd,
           modelRef: config.model.main,
           ...(options.title === undefined ? {} : { title: options.title }),
         },
@@ -866,6 +899,31 @@ export async function startServices(): Promise<Services> {
       };
     },
 
+    async settings(): Promise<SettingsSnapshot> {
+      return readSettingsSnapshot(config, tools, stores, platform);
+    },
+
+    async updateSettings(update: SettingsUpdate): Promise<SettingsSnapshot> {
+      const workspace = ConfigSchema.shape.workspace.parse(update.workspace);
+      if (workspace.mode === 'fixed' && workspace.defaultPath === undefined) {
+        throw new Error('固定工作目录模式必须先选择一个目录。');
+      }
+      const knownTools = new Set(tools.descriptors().map((tool) => tool.name));
+      const disabled = [...new Set(update.disabledTools)].filter((name) => knownTools.has(name)).sort();
+      await persistUserConfigPatch(paths, { workspace, tools: { disabled } });
+      config = ConfigSchema.parse({
+        ...config,
+        workspace,
+        tools: { ...config.tools, disabled },
+      });
+      return readSettingsSnapshot(config, tools, stores, platform);
+    },
+
+    async clearSearchIndex(): Promise<SettingsSnapshot> {
+      await stores.index.clear();
+      return readSettingsSnapshot(config, tools, stores, platform);
+    },
+
     /**
      * 录入 API key。
      *
@@ -909,4 +967,77 @@ export async function startServices(): Promise<Services> {
       await stores.close();
     },
   };
+}
+
+function workspaceForNewSession(config: Config, home: string): string {
+  if (config.workspace.mode === 'home') return home;
+  if (config.workspace.mode === 'fixed' && config.workspace.defaultPath !== undefined) {
+    return config.workspace.defaultPath;
+  }
+  const error = new Error('请先选择这个任务的工作目录。');
+  error.name = 'WorkspaceRequiredError';
+  throw error;
+}
+
+async function readSettingsSnapshot(
+  config: Config,
+  tools: ToolRegistry,
+  stores: OpenedStores,
+  platform: PlatformPort,
+): Promise<SettingsSnapshot> {
+  const paths = platform.paths();
+  const availability = { cwd: paths.home, executor: 'local' as const, platform: platform.capabilities() };
+  const available = new Set(tools.descriptors({ ...availability, disabledTools: [] }).map((tool) => tool.name));
+  const disabled = new Set(config.tools.disabled);
+  const indexDb = join(stores.layout.dataDir, 'workspace-index.sqlite');
+  const [indexBytes, sessionBytes, recoveryBytes, logBytes, configBytes] = await Promise.all([
+    sizeOfSqlite(indexDb),
+    sizeOfSqlite(stores.layout.eventsDb),
+    sizeOfPath(stores.layout.blobsDir),
+    sizeOfPath(paths.logs),
+    sizeOfPath(paths.config),
+  ]);
+  return {
+    workspace: config.workspace,
+    tools: tools.descriptors().map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      enabled: !disabled.has(tool.name),
+      available: available.has(tool.name),
+    })),
+    storage: {
+      dataDirectory: paths.data,
+      configDirectory: paths.config,
+      cacheDirectory: paths.cache,
+      logsDirectory: paths.logs,
+      items: [
+        { id: 'search-index', bytes: indexBytes, clearable: true },
+        { id: 'sessions', bytes: sessionBytes, clearable: false },
+        { id: 'recovery', bytes: recoveryBytes, clearable: false },
+        { id: 'logs', bytes: logBytes, clearable: false },
+        { id: 'config', bytes: configBytes, clearable: false },
+      ],
+      index: stores.index.stats(),
+    },
+  };
+}
+
+const sizeOfSqlite = async (path: string): Promise<number> =>
+  (await Promise.all([path, `${path}-wal`, `${path}-shm`].map(sizeOfPath))).reduce((a, b) => a + b, 0);
+
+async function sizeOfPath(path: string): Promise<number> {
+  try {
+    const info = await stat(path);
+    if (info.isFile()) return info.size;
+    if (!info.isDirectory()) return 0;
+    const children = await readdir(path, { withFileTypes: true });
+    const sizes = await Promise.all(
+      children
+        .filter((child) => !child.isSymbolicLink())
+        .map((child) => sizeOfPath(join(path, child.name))),
+    );
+    return sizes.reduce((a, b) => a + b, 0);
+  } catch {
+    return 0;
+  }
 }

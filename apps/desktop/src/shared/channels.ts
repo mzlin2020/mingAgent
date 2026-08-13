@@ -40,6 +40,9 @@ export const CH = {
   chooseWorkspace: 'xm:choose-workspace',
   /** 取运行状态：Provider 配没配好、密钥后端是哪一档、配置有没有问题 */
   status: 'xm:status',
+  settings: 'xm:settings',
+  updateSettings: 'xm:update-settings',
+  clearSearchIndex: 'xm:clear-search-index',
   /**
    * 崩溃恢复（M1-e，docs/04 §8）。启动时扫描出的"停在没收尾回合里"的会话——
    * 不是"会话列表"的一部分，故意开独立通道，不牵连尚未排期的那个功能。

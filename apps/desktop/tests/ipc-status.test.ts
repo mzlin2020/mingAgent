@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { newEditProposalId, newSessionId } from '@xm/contracts';
-import { IpcEnvelope, StatusResult } from '../src/shared/ipc.js';
+import { IpcEnvelope, SettingsResult, StatusResult } from '../src/shared/ipc.js';
 import { CH } from '../src/shared/channels.js';
 import type { RuntimeStatus, Services } from '../src/main/services.js';
 
@@ -51,6 +51,43 @@ describe('desktop status IPC', () => {
     expect(envelope.ok).toBe(true);
     if (!envelope.ok) return;
     expect(StatusResult.parse(envelope.data).security).toEqual(security);
+  });
+});
+
+describe('settings IPC', () => {
+  it('returns settings and validates updates before passing them to services', async () => {
+    const settings = {
+      workspace: { mode: 'choose' as const },
+      tools: [{ name: 'fs.read', description: 'read', enabled: true, available: true }],
+      storage: {
+        dataDirectory: 'C:/data',
+        configDirectory: 'C:/config',
+        cacheDirectory: 'C:/cache',
+        logsDirectory: 'C:/logs',
+        items: [{ id: 'search-index' as const, bytes: 12, clearable: true }],
+        index: { roots: [] },
+      },
+    };
+    const updateSettings = vi.fn(() => Promise.resolve(settings));
+    const services = {
+      settings: vi.fn(() => Promise.resolve(settings)),
+      updateSettings,
+      bus: { subscribe: vi.fn() },
+    } as unknown as Services;
+    registerIpc(services, () => []);
+
+    const readEnvelope = IpcEnvelope.parse(
+      await mockedElectron.handlers.get(CH.settings)?.({}, undefined),
+    );
+    expect(readEnvelope.ok).toBe(true);
+    if (readEnvelope.ok) expect(SettingsResult.parse(readEnvelope.data)).toEqual(settings);
+
+    const request = { workspace: { mode: 'home' }, disabledTools: ['shell.exec'] };
+    const updateEnvelope = IpcEnvelope.parse(
+      await mockedElectron.handlers.get(CH.updateSettings)?.({}, request),
+    );
+    expect(updateEnvelope.ok).toBe(true);
+    expect(updateSettings).toHaveBeenCalledWith(request);
   });
 });
 

@@ -17,7 +17,9 @@ describe('desktop production tool assembly', () => {
       os: 'linux',
       index: {
         state: () => 'cold',
+        stats: () => ({ roots: [] }),
         refresh: () => Promise.resolve({ state: 'ready', indexed: 0, unchanged: 0, removed: 0, errors: [] }),
+        clear: () => Promise.resolve(),
         searchText: () => [],
         searchSymbols: () => [],
         close: () => Promise.resolve(),

@@ -19,6 +19,7 @@ import {
   ReviewEditProposalResult,
   SendUserMessageResult,
   SetApiKeyResult,
+  SettingsResult,
   StatusResult,
 } from '../shared/ipc.js';
 import { IpcError } from './ipc-error.js';
@@ -47,6 +48,9 @@ interface XmBridge {
   interrupt(req: unknown): Promise<unknown>;
   chooseWorkspace(): Promise<unknown>;
   status(): Promise<unknown>;
+  settings(): Promise<unknown>;
+  updateSettings(req: unknown): Promise<unknown>;
+  clearSearchIndex(): Promise<unknown>;
   setApiKey(req: unknown): Promise<unknown>;
   listOrphanedSessions(): Promise<unknown>;
   resumeOrphanedSession(req: unknown): Promise<unknown>;
@@ -125,6 +129,15 @@ export const api = {
   chooseWorkspace: () => call(bridge().chooseWorkspace(), ChooseWorkspaceResult),
 
   status: () => call(bridge().status(), StatusResult),
+
+  settings: () => call(bridge().settings(), SettingsResult),
+
+  updateSettings: (settings: {
+    workspace: { mode: 'choose' | 'fixed' | 'home'; defaultPath?: string };
+    disabledTools: readonly string[];
+  }) => call(bridge().updateSettings(settings), SettingsResult),
+
+  clearSearchIndex: () => call(bridge().clearSearchIndex(), SettingsResult),
 
   /** 录入密钥。**注意没有对应的读取方法**——渲染层永远拿不到密钥的值 */
   setApiKey: (providerId: string, key: string) =>

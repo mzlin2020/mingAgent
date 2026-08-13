@@ -26,6 +26,18 @@ export interface IndexedSymbol {
   readonly signature: string;
 }
 
+export interface WorkspaceIndexRootStats {
+  readonly root: string;
+  readonly state: WorkspaceIndexState;
+  readonly fileCount: number;
+  readonly sourceBytes: number;
+  readonly updatedAt: number;
+}
+
+export interface WorkspaceIndexStats {
+  readonly roots: readonly WorkspaceIndexRootStats[];
+}
+
 /**
  * 查询范围。
  *
@@ -46,7 +58,10 @@ export interface WorkspaceQuery {
 /** 可重建工作区索引端口；实现含 I/O，但契约保持纯数据。 */
 export interface WorkspaceIndex {
   state(root: string): WorkspaceIndexState;
+  stats(): WorkspaceIndexStats;
   refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh>;
+  /** 删除全部可重建索引内容；不会触碰工作区源文件。 */
+  clear(): Promise<void>;
   searchText(query: WorkspaceQuery): readonly IndexedTextMatch[];
   searchSymbols(query: WorkspaceQuery): readonly IndexedSymbol[];
   close(): Promise<void>;

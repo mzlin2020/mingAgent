@@ -11,7 +11,7 @@ import type {
 } from '../shared/ipc.js';
 import type { z } from 'zod';
 import { api } from './bridge.js';
-import { classifyIpcError } from './ipc-error.js';
+import { IpcError, classifyIpcError } from './ipc-error.js';
 import type { OrphanedSlice } from './orphaned-sessions.js';
 import { createOrphanedSlice } from './orphaned-sessions.js';
 
@@ -168,6 +168,11 @@ export const useUi = create<UiState>((set, get) => {
         await get().refreshSessions();
         await get().openSession(sessionId);
       } catch (e) {
+        if (cwd === undefined && e instanceof IpcError && e.code === 'WorkspaceRequiredError') {
+          const picked = await get().chooseWorkspace();
+          if (picked !== undefined) await get().newSession(picked);
+          return;
+        }
         applyIpcError(e);
       }
     },

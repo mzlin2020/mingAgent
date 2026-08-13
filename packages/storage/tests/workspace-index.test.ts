@@ -70,6 +70,22 @@ describe('M2-g workspace index', () => {
     await index.close();
   });
 
+  it('可查看索引占用明细并安全清空可重建内容', async () => {
+    const fixture = await workspace();
+    const index = await opened(fixture.database);
+    await index.refresh(fixture.root, neverAborts);
+
+    expect(index.stats().roots).toEqual([
+      expect.objectContaining({ root: fixture.root, state: 'ready', fileCount: 3 }),
+    ]);
+    expect(index.stats().roots[0]?.sourceBytes).toBeGreaterThan(0);
+
+    await index.clear();
+    expect(index.stats()).toEqual({ roots: [] });
+    expect(index.state(fixture.root)).toBe('cold');
+    expect(text(index, fixture.root, 'shared needle')).toEqual([]);
+  });
+
   it('pathPrefix 只收窄结果，不另建一份索引', async () => {
     const fixture = await workspace();
     const index = await opened(fixture.database);

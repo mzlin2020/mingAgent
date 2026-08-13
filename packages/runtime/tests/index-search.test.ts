@@ -103,10 +103,12 @@ describe('M2-g index query fallback', () => {
     let refreshCalls = 0;
     const stalled: WorkspaceIndex = {
       state: (target) => real.state(target),
+      stats: () => real.stats(),
       refresh: (): Promise<WorkspaceIndexRefresh> => {
         refreshCalls += 1;
         return new Promise<WorkspaceIndexRefresh>(() => undefined);
       },
+      clear: () => real.clear(),
       searchText: (query) => real.searchText(query),
       searchSymbols: (query) => real.searchSymbols(query),
       close: () => Promise.resolve(),

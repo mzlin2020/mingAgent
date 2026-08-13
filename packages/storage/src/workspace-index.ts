@@ -9,10 +9,16 @@ import type {
   IndexedTextMatch,
   WorkspaceIndex,
   WorkspaceIndexRefresh,
+  WorkspaceIndexStats,
   WorkspaceIndexState,
   WorkspaceQuery,
 } from '@xm/kernel';
 import { extractSymbols, supportsSymbols, symbolDegradation } from './tree-symbols.js';
+import {
+  WORKSPACE_INDEX_SCHEMA,
+  clearWorkspaceIndex,
+  workspaceIndexStats,
+} from './workspace-index-maintenance.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const TEXT_EXTENSIONS = new Set([
@@ -45,6 +51,7 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
   readonly #db: Db;
   readonly #refreshing = new Map<string, Promise<WorkspaceIndexRefresh>>();
   readonly #ripgrep: string;
+  #generation = 0;
   #closed = false;
 
   constructor(path: string, options: WorkspaceIndexOptions = {}) {
@@ -53,7 +60,7 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     try {
       db.pragma('journal_mode = WAL');
       db.pragma('foreign_keys = ON');
-      db.exec(SCHEMA);
+      db.exec(WORKSPACE_INDEX_SCHEMA);
       db.prepare(`UPDATE workspaces SET state = 'stale' WHERE state = 'building'`).run();
     } catch (error) {
       db.close();
@@ -69,15 +76,26 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     return row?.state ?? 'cold';
   }
 
+  stats(): WorkspaceIndexStats {
+    return workspaceIndexStats(this.#db);
+  }
+
   refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh> {
     if (this.#closed) return Promise.reject(new Error('工作区索引已经关闭。'));
     const active = this.#refreshing.get(root);
     if (active !== undefined) return active;
-    const pending = this.#refresh(root, signal).finally(() => {
+    const pending = this.#refresh(root, signal, this.#generation).finally(() => {
       this.#refreshing.delete(root);
     });
     this.#refreshing.set(root, pending);
     return pending;
+  }
+
+  async clear(): Promise<void> {
+    if (this.#closed) throw new Error('工作区索引已经关闭。');
+    this.#generation += 1;
+    await Promise.allSettled(this.#refreshing.values());
+    clearWorkspaceIndex(this.#db);
   }
 
   searchText({ root, query, limit, pathPrefix }: WorkspaceQuery): readonly IndexedTextMatch[] {
@@ -118,7 +136,11 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     this.#db.close();
   }
 
-  async #refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh> {
+  async #refresh(
+    root: string,
+    signal: AbortLike,
+    generation: number,
+  ): Promise<WorkspaceIndexRefresh> {
     /*
      * 已经 ready 的索引在增量刷新期间保持 ready（ADR-0051）。
      *
@@ -134,6 +156,9 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     let unchanged = 0;
     let removed = 0;
     try {
+      if (generation !== this.#generation) {
+        return { state: 'stale', indexed, unchanged, removed, errors };
+      }
       if (isAborted(signal)) {
         this.#setState(root, 'stale');
         return { state: 'stale', indexed, unchanged, removed, errors };
@@ -146,6 +171,9 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
       );
       const current = new Set<string>();
       for (const path of paths) {
+        if (generation !== this.#generation) {
+          return { state: 'stale', indexed, unchanged, removed, errors };
+        }
         if (isAborted(signal)) {
           this.#setState(root, 'stale');
           return { state: 'stale', indexed, unchanged, removed, errors };
@@ -186,6 +214,9 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
       // 符号能力若已降级（WASM 资产缺失等），从这条既有通道说出来，不是无声返回空符号
       const degraded = symbolDegradation();
       if (degraded !== undefined) errors.push(degraded);
+      if (generation !== this.#generation) {
+        return { state: 'stale', indexed, unchanged, removed, errors };
+      }
       this.#setState(root, 'ready');
       return { state: 'ready', indexed, unchanged, removed, errors };
     } catch (error) {
@@ -231,38 +262,6 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     `).run(root, state, Date.now());
   }
 }
-
-const SCHEMA = `
-  CREATE TABLE IF NOT EXISTS workspaces (
-    root TEXT PRIMARY KEY,
-    state TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS files (
-    root TEXT NOT NULL,
-    path TEXT NOT NULL,
-    mtime_ms INTEGER NOT NULL,
-    size INTEGER NOT NULL,
-    content TEXT NOT NULL,
-    PRIMARY KEY(root,path)
-  ) WITHOUT ROWID;
-  CREATE TABLE IF NOT EXISTS symbols (
-    root TEXT NOT NULL,
-    path TEXT NOT NULL,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    line INTEGER NOT NULL,
-    column INTEGER NOT NULL,
-    signature TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS symbols_by_name ON symbols(root,name);
-  CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(
-    root UNINDEXED,
-    path UNINDEXED,
-    content,
-    tokenize='trigram'
-  );
-`;
 
 /**
  * 枚举工作区里要索引的文件。

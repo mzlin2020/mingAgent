@@ -52,6 +52,13 @@ export const Config = z.object({
   tools: z.object({
     disabled: z.array(z.string()).default([]),
   }),
+  /** 新任务未显式传入 cwd 时的工作区选择策略。 */
+  workspace: z
+    .object({
+      mode: z.enum(['choose', 'fixed', 'home']).default('choose'),
+      defaultPath: z.string().max(4096).optional(),
+    })
+    .default({ mode: 'choose' }),
   logging: z.object({
     level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
     /** 关掉需要显式操作，且会在 UI 上常驻警告 */

@@ -15,6 +15,7 @@ import {
   ReviewEditProposalRequest,
   SendUserMessageRequest,
   SetApiKeyRequest,
+  UpdateSettingsRequest,
 } from '../shared/ipc.js';
 import type { Services } from './services.js';
 
@@ -118,6 +119,10 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
       security: s.security,
     };
   });
+
+  handle(CH.settings, undefined, async () => services.settings());
+  handle(CH.updateSettings, UpdateSettingsRequest, async (req) => services.updateSettings(req));
+  handle(CH.clearSearchIndex, undefined, async () => services.clearSearchIndex());
 
   /*
    * 录入密钥。**这个处理器不返回任何与 key 有关的东西**——连"存进去的是什么"都不回显。

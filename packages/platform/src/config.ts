@@ -81,6 +81,7 @@ export const DEFAULT_CONFIG: ConfigPatch = {
   prices: {},
   permission: { rules: [] },
   tools: { disabled: [] },
+  workspace: { mode: 'choose' },
   logging: { level: 'info', redact: true },
 };
 
@@ -177,6 +178,16 @@ export async function persistProviderConfig(options: PersistProviderConfigOption
     providers: { ...providers, [options.providerId]: options.provider },
   };
   await writeJsonAtomic(file, merged);
+}
+
+/** 将受 UI 约束的用户级补丁原子写回 config.json。调用方仍需先按自己的窄 schema 校验。 */
+export async function persistUserConfigPatch(
+  paths: XmPaths,
+  patch: ConfigPatch,
+): Promise<void> {
+  const file = join(paths.config, 'config.json');
+  const current = await readJsonForUpdate(file);
+  await writeJsonAtomic(file, mergeConfigLayers(current, patch));
 }
 
 async function readJsonForUpdate(file: string): Promise<Record<string, unknown>> {
