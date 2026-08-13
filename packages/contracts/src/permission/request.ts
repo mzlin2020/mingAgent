@@ -7,11 +7,10 @@ import { Capability } from './capability.js';
 /**
  * 上下文信任级别 —— 提示词注入防御的接口（ADR-0003）。
  *
- * 当本轮上下文里混入了不可信内容（网页、MCP 返回、子 Agent 结果），由此发起的
- * 权限请求标记为 `untrusted`，PolicyEngine 对**不可撤销能力子集**自动降级为 ask。
- *
- * M1 只会恒填 `model`——但这个字段现在就必须在契约里：
- * **留位置的成本是零，补位置的成本是改所有调用点。**
+ * 当会话上下文里混入不可信内容（网页、终端回显、截图、未来 MCP 返回或子 Agent 污点），
+ * 后续权限请求标记为 `untrusted`。PolicyEngine 不做 ask 降级；它用声明式 deny 规则拒绝
+ * `git.push` / `package.install` / `system.settings` 以及三条 immutable 严重项。
+ * 信任级别由事件流计算，不由调用方自由填写。
  */
 export const TrustLevel = z.enum(['user', 'model', 'untrusted']);
 export type TrustLevel = z.infer<typeof TrustLevel>;

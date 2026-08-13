@@ -22,10 +22,9 @@ import type { SessionState, UntrustedContext } from './session-state.js';
  *
  * 已置上就不再变（粘性），理由见 SessionState.untrustedContext。
  *
- * ⚠️ 已知不覆盖的两条路，见 docs/09 G2 与 ADR-0033：MCP 工具若不声明 `net.fetch`
- * 就标不出来（挡在 ToolRegistry.register()）；子 Agent 的不可信标记不会传染回父会话
- * （挡在 SessionRuntime.record()）——两条都只落了失败关闭的闸门，真正的传播逻辑
- * 随各自的载体（M3 / M2）落地。
+ * ⚠️ MCP 工具若能自行决定是否声明 `net.fetch` 就可能漏标，因此在 M3 完成可信污点来源前
+ * 继续挡在 ToolRegistry.register()。子 Agent 已由 M2-i 在 `subagent.end` 携带末态污点并回
+ * 父会话；它不走本函数，但复用同一个 `UntrustedContext` 与粘性归约语义（ADR-0049）。
  */
 export function taintOf(
   state: SessionState,

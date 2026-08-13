@@ -4,14 +4,15 @@ import { z } from 'zod';
  * 错误码词表（闭集）。
  *
  * `policy_denied` / `user_rejected` / `permission_denied` **必须分开**：
- * 三者的用户处置完全不同——改策略、重新审批、改系统权限。参考项目把它们全揉成
- * 一个字符串，结果 UI 无法给出正确的下一步引导，用户只能看到"失败了"。
+ * 三者分别表示策略拒绝、历史/兼容审批拒绝、操作系统拒绝。当前产品只提供 allow/deny，
+ * 不再发起审批；保留 `user_rejected` 仅用于旧事件与外部适配器兼容。结构化区分仍能让 UI
+ * 给出正确的下一步引导，而不是把所有失败揉成一个字符串。
  */
 export const ErrorCode = z.enum([
   'invalid_input', // schema 校验失败（含模型幻觉参数）
   'not_found',
   'policy_denied', // 策略闸门拒绝
-  'user_rejected', // 用户在审批弹窗点了拒绝
+  'user_rejected', // 旧事件/外部适配器兼容；当前内核不发起审批
   'permission_denied', // 操作系统层面拒绝（EACCES 等）
   'aborted', // 用户主动停止
   'timeout',

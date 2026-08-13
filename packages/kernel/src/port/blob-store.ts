@@ -15,7 +15,8 @@ import type { BlobRef } from '@xm/contracts';
  * 文件实现因此必须 写临时文件 → fsync → rename，而不是边写边返回。
  *
  * **二、内容寻址，只增不删。** `hash` 就是身份，同一张截图在会话里出现十次也只存一份。
- * 引用计数与 GC 推迟到 M2（与 checkpoint 一起做，那时才知道"还原点还需要哪些 blob"）；
+ * 引用计数与 GC 在 M2-c 复审后继续推迟：checkpoint v2 已能表达 manifest 引用闭包，但在
+ * 事件根与嵌套 manifest 的可达性证明完整前仍保持只增不删；
  * 在那之前**不提供删除**——没有引用计数的删除只会删掉还在用的东西。
  */
 

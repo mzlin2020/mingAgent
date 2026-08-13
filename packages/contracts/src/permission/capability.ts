@@ -71,8 +71,9 @@ export const ALL_CAPABILITIES: readonly Capability[] = Capability.options;
  * 少了会漏：`gui.capture` 看似只是截图，但截的如果是一个浏览器窗口，
  * 它和 `net.fetch` 拿回来的是同一段攻击载荷，只是换了条路进来。
  *
- * ⚠️ 已知不覆盖的两条路，见 docs/09：MCP 工具若不声明 `net.fetch` 就标不出来；
- * 子 Agent 的不可信标记目前不会传染回父会话。
+ * ⚠️ MCP 仍未落地：三方工具若能自行决定是否声明 `net.fetch`，就可能漏标，因此注册闸门
+ * 在 M3 完成可信污点来源前继续失败关闭。子 Agent 已在 ADR-0049 中通过
+ * `subagent.end.untrustedContext` 把末态污点粘性并回父会话。
  */
 export const UNTRUSTED_CONTENT_CAPABILITIES: readonly Capability[] = [
   'net.fetch',
@@ -101,8 +102,8 @@ export const isUntrustedContentSource = (c: Capability): boolean =>
  *
  *   · `path`    已规范化的绝对路径。规范化失败 → **deny**（kernel/policy/target.ts）
  *   · `host`    http(s) URL，归一成 `host[:port]`。归一失败 → **deny**（host-target.ts）
- *   · `command` **契约尚未落地**。带非空 target 的判定一律 deny，
- *                带 `match.target` 的规则在构造期抛错。见 ADR-0020 决策三
+ *   · `command` 结构化 `{argv,cwd}` 的规范串已落地；依赖运行时展开的构造失败关闭。
+ *                规范串本身仍不是安全边界，真正防线是 argv 拆出的路径/主机主张
  *   · `opaque`  自由字符串（键名、远端名、设置项）。**不是安全边界**，
  *                只能当便利过滤——红线不许建立在它上面，由 builtinRules 构造期断言
  *
@@ -125,8 +126,8 @@ const TARGET_KINDS: Readonly<Record<Capability, TargetKind>> = {
   'process.spawn': 'command',
 
   /*
-   * `shell.session` 的 target 是打开会话时的 cwd，不是命令行——它复用路径类的既有
-   * 规范化/红线管道来判"在哪打开"，但不覆盖"打开后敲了什么"（ADR-0031，判权设计②）。
+   * `shell.session` 的 target 是 open 时的 cwd，复用路径类规范化/红线管道。
+   * 模型没有原始 stdin；后续 `shell.session.run` 另声明 `shell.exec`，逐次判 argv（ADR-0040）。
    */
   'shell.session': 'path',
 

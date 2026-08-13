@@ -21,8 +21,8 @@ import type { SessionRuntime } from './session-runtime.js';
  * **二、它不是子 Agent，也不是插件。** 隔离靠模块边界就够：自带 system prompt、
  * 自带模型槽位（`config.model.summarize`）、自带取消源，请求里 `tools` 省略，
  * 产出**永远不进 `state.messages`**——只进 `session.renamed` 的 payload。
- * 真做成子 Agent 会撞上 ADR-0033 的失败关闭闸门（`subagent.*` 一写就抛），
- * 那需要先实现 G2 污点传播（M2）；插件宿主是 M3。没有载体就不写实现。
+ * M2-i 已经具备真实子 Agent 生命周期，但命名不需要独立 session、工具白名单或结论回传；
+ * 把它改成子 Agent 只会增加事件与预算开销，不改变隔离边界。插件宿主仍是 M3。
  *
  * **三、模型起的标题是不可信输入。** `sanitizeTitle()` 是这条路径上唯一的护栏——
  * 契约层对标题零约束（`SessionRenamedPayload` 只有 `z.string()`），存储层也不管。

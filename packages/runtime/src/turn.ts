@@ -17,11 +17,11 @@ import type { PendingCall, TurnDeps } from './turn-types.js';
 export type { PendingCall, TurnDeps } from './turn-types.js';
 
 /**
- * 极薄的 Turn 循环（M0-b）。
+ * Turn 循环（M2 现行形态）。
  *
- * **它刻意不完整。** 没有 ContextBuilder、没有上下文压缩、没有并行调度、
- * 没有子 Agent——那些是 M1/M2。这里只做一件事：把
- * `Provider → 事件 → 权限闸门 → 工具 → 事件` 这条链子接通，让它在真实的 SQLite 上跑一遍。
+ * 主请求先经 ContextBuilder 组装稳定前缀、预算、持久摘要和近期原文，再执行
+ * `Provider → 事件 → 权限闸门 → checkpoint → 工具 → 事件`。子 Agent 作为白名单工具
+ * 从同一条分发链派生；当前仍没有并行 Scheduler。
  *
  * 之所以现在就要这条链子，是因为它是几个架构约束**唯一**的实测点：
  * runtime 不依赖 electron、内核纯逻辑能被装配、事件流能完整回放出状态。
@@ -48,8 +48,8 @@ export async function runTurn(deps: TurnDeps, input: readonly ContentBlock[]): P
    * 再造一条"被拒绝"的收尾语义。
    *
    * 只查*这一轮新输入*，不审计历史消息——中途换成不支持 vision 的模型、
-   * 历史里却带着图片，仍然会在 Provider 深处报错。那是 M2 ContextBuilder
-   * （预算/压缩）该管的事，见 ADR-0029 遗留。
+   * 历史里却带着图片，仍可能在 Provider 深处报错；ContextBuilder 当前负责预算/压缩，
+   * 还没有按目标模型能力改写历史多模态内容，见 ADR-0029 遗留。
    */
   const caps = deps.provider.capabilities(deps.model);
   if (input.some((b) => b.type === 'image') && !caps.vision) {
@@ -283,7 +283,7 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
    * 兜底：Provider 没守约定（取消时抛而不是干净收尾）时也要判对。
    *
    * 端口现在明写了「取消时正常结束迭代」，两个自家适配器都守。但这道兜底不能撤——
-   * M3 的 MCP、M2 的子 Agent 都会带进不受我们控制的实现，而"取消被记成失败"
+   * M3 的 MCP 与当前子 Agent 都会带进边界外实现，而"取消被记成失败"
    * 是一个用户当场看得见的错。
    *
    * **`failure` 必须一并清掉。** 这是一次真调用照出来的 bug：真实 fetch 在 abort 时

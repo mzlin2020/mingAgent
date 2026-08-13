@@ -25,7 +25,8 @@ export const FS_WRITE = 'fs.write';
  *
  * ── 全量覆盖，不做局部编辑 ──
  *
- * 局部编辑（按锚点替换、diff 应用）是 M2 的事，它需要 diff 审阅 UI 才安全。
+ * 局部编辑与 diff 审阅已由 M2-d/e 的 `edit.preview` / `edit.apply` 单独实现；本工具仍只负责
+ * 明确的整文件写入，不在这里复刻编辑提案协议。
  * 现在提供一个"看起来能改一行"的接口，实际会变成模型反复整份重写还以为在做局部修改。
  */
 const Input = z.strictObject({

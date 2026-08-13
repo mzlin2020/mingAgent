@@ -4,11 +4,14 @@ import { PolicyRuleSet } from '../permission/policy.js';
 import { SecretRef } from './secret.js';
 
 /**
- * 配置树（M0 最小可用版本，字段随 M1 扩展）。
+ * 配置树（M2 现行版本）。
  *
  * 分层与合并：
- *   内置默认 < 用户级 ~/.xiaoming/config.json < 项目级 .xiaoming/config.json
- *            < 会话覆盖 < 环境变量
+ * 生产文件分层：
+ *   内置默认 < 用户级 `${paths.config}/config.json` < 项目级 `${cwd}/.xiaoming/config.json`
+ *
+ * 会话补丁只进入 SessionState，且 permission/providers 被 restrictSessionPatch() 拦截；
+ * 生产加载器刻意不接环境变量配置层，密钥只从 SecretStore 获取。
  */
 
 export const ProviderConfig = z.object({

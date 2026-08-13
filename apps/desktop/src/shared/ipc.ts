@@ -244,8 +244,8 @@ export type PushedEvent = z.infer<typeof PushedEvent>;
  * 一问一答的统一信封。
  *
  * 主进程**不把异常直接扔过 IPC**：Electron 会把它序列化成一个丢了类型、丢了 code、
- * 只剩字符串的东西，UI 拿它没法给出正确的下一步引导（contracts/base/error.ts 里
- * 区分 policy_denied / user_rejected / permission_denied 就是为了这个）。
+ * 只剩字符串的东西，UI 拿它没法给出正确的下一步引导。contracts/base/error.ts 保留
+ * 结构化错误码（其中 user_rejected 仅作旧事件/外部适配器兼容）就是为了这个。
  * 所以失败也是一个正常的返回值。
  */
 export const IpcFailure = z.object({
