@@ -1,6 +1,8 @@
+import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { newSessionId, type EditProposal, type EditProposalId, type SessionId } from '@xm/contracts';
 import type { ToolContext } from '@xm/kernel';
@@ -14,9 +16,10 @@ import {
 let root: string;
 let access: MemoryAccess;
 const sessionId = newSessionId();
+const realNative = promisify(realpathCb.native);
 
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'xm-edit-'));
+  root = await realNative(await mkdtemp(join(tmpdir(), 'xm-edit-')));
   access = new MemoryAccess();
 });
 afterEach(async () => {

@@ -1,3 +1,5 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserWindow, Menu, app, dialog } from 'electron';
 import { registerIpc } from './ipc.js';
@@ -75,23 +77,36 @@ app.whenReady().then(
      */
     try {
       await assertStorageWorks();
+      services = await startServices();
     } catch (e) {
       dialog.showErrorBox('小明启动失败', e instanceof Error ? e.message : String(e));
       app.exit(1);
       return;
     }
 
-    services = await startServices();
-
     if (isSmoke) {
-      // 走一遍真实的建会话路径：它会打开真库、取写句柄、落一条 session.created。
-      // 打包漏了 prebuilds/ 的话，这一步就是崩的那一步。
-      const sessionId = await services.createSession({ title: '打包冒烟' });
-      const list = await services.stores.events.listSessions();
-      const ok = list.some((s) => s.sessionId === sessionId);
-      console.log(ok ? '✓ 桌面产物冒烟通过：库能开、会话能建、投影能读' : '✗ 会话没进投影');
-      await services.close();
-      app.exit(ok ? 0 : 1);
+      let smokeWorkspace: string | undefined;
+      let exitCode = 1;
+      try {
+        // 不扫描 runner 的整个 home：冒烟只验证打包产物、真库和建会话链路。
+        smokeWorkspace = await mkdtemp(join(app.getPath('temp'), 'xm-desktop-smoke-'));
+        const sessionId = await services.createSession({ title: '打包冒烟', cwd: smokeWorkspace });
+        const list = await services.stores.events.listSessions();
+        const ok = list.some((s) => s.sessionId === sessionId);
+        console.log(ok ? '✓ 桌面产物冒烟通过：库能开、会话能建、投影能读' : '✗ 会话没进投影');
+        exitCode = ok ? 0 : 1;
+      } catch (error) {
+        console.error('✗ 桌面产物冒烟失败：', error);
+      } finally {
+        await services.close().catch((error: unknown) => {
+          console.error('✗ 桌面产物关闭失败：', error);
+          exitCode = 1;
+        });
+        if (smokeWorkspace !== undefined) {
+          await rm(smokeWorkspace, { recursive: true, force: true }).catch(() => undefined);
+        }
+        app.exit(exitCode);
+      }
       return;
     }
 

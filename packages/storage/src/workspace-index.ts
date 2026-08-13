@@ -59,6 +59,7 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
   }
 
   refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh> {
+    if (this.#closed) return Promise.reject(new Error('工作区索引已经关闭。'));
     const active = this.#refreshing.get(root);
     if (active !== undefined) return active;
     const pending = this.#refresh(root, signal).finally(() => {
@@ -99,11 +100,11 @@ class SqliteWorkspaceIndex implements WorkspaceIndex {
     `).all(root, pattern, query, limit) as IndexedSymbol[];
   }
 
-  close(): Promise<void> {
-    if (this.#closed) return Promise.resolve();
+  async close(): Promise<void> {
+    if (this.#closed) return;
     this.#closed = true;
+    await Promise.allSettled(this.#refreshing.values());
     this.#db.close();
-    return Promise.resolve();
   }
 
   async #refresh(root: string, signal: AbortLike): Promise<WorkspaceIndexRefresh> {

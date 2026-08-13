@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { newCallId, newSessionId, type EditProposalId, type SessionId } from '@xm/contracts';
 import {
@@ -23,13 +25,14 @@ import {
 } from '@xm/tools-core';
 
 const roots: string[] = [];
+const realNative = promisify(realpathCb.native);
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
 describe('M2-d 多文件事务真实链路', () => {
   it('第二个文件落盘失败时，整组 checkpoint 能撤销已写入的第一个文件', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'xm-edit-transaction-'));
+    const root = await realNative(await mkdtemp(join(tmpdir(), 'xm-edit-transaction-')));
     roots.push(root);
     const a = join(root, 'a.txt');
     const b = join(root, 'b.txt');

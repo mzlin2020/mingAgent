@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
+import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import { newCallId, newSessionId } from '@xm/contracts';
 import { MemoryEventStore, ToolRegistry, composeRules, type PolicyEnv } from '@xm/kernel';
@@ -10,6 +12,7 @@ import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '
 import { gitBranchTool, gitCommitTool, nodeToolGateway } from '@xm/tools-core';
 
 const roots: string[] = [];
+const realNative = promisify(realpathCb.native);
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
@@ -75,7 +78,7 @@ describe('M2-f Git 生产分发链路', () => {
 });
 
 async function repository(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), 'xm-runtime-git-'));
+  const root = await realNative(await mkdtemp(join(tmpdir(), 'xm-runtime-git-')));
   roots.push(root);
   git(root, 'init', '-b', 'main');
   git(root, 'config', 'user.name', 'Runtime Test');

@@ -66,6 +66,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: 安装 ripgrep（搜索与工作区索引的运行时依赖）
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Linux) sudo apt-get update && sudo apt-get install -y ripgrep ;;
+            macOS) brew install ripgrep ;;
+            Windows) choco install ripgrep --yes --no-progress ;;
+          esac
+          rg --version
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc -b
       - run: pnpm exec vitest run
@@ -104,6 +113,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - name: 安装 ripgrep（打包产物启动后会刷新工作区索引）
+        shell: bash
+        run: |
+          case "${{ runner.os }}" in
+            Linux) sudo apt-get update && sudo apt-get install -y ripgrep ;;
+            macOS) brew install ripgrep ;;
+            Windows) choco install ripgrep --yes --no-progress ;;
+          esac
+          rg --version
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc -b
       - name: 类型检查主进程与渲染层（两套 lib / types，必须分开）
