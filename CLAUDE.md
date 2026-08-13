@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 TypeScript 单语言 monorepo（pnpm workspace）+ Electron 外壳 + React 渲染层。
 非目标：多租户 SaaS、无代码编排画布、自研模型。
 
-当前阶段：**M2-b“文本检索与结果展开”已完成，M2-c 尚未开始**。M2 必须按 `docs/M2-阶段划分.md` 逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
+当前阶段：**M2 已于 2026-08-13 全部完成并通过总验收**。后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
 
 ## 常用命令
 

@@ -72,6 +72,9 @@ export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({ type: z.literal('trust.cleared'), payload: P.TrustClearedPayload }),
 
   EventEnvelope.extend({ type: z.literal('todo.updated'), payload: P.TodoUpdatedPayload }),
+  EventEnvelope.extend({ type: z.literal('edit.proposed'), payload: P.EditProposedPayload }),
+  EventEnvelope.extend({ type: z.literal('edit.applied'), payload: P.EditAppliedPayload }),
+  EventEnvelope.extend({ type: z.literal('edit.reviewed'), payload: P.EditReviewedPayload }),
   EventEnvelope.extend({ type: z.literal('subagent.start'), payload: P.SubagentStartPayload }),
   EventEnvelope.extend({ type: z.literal('subagent.end'), payload: P.SubagentEndPayload }),
 
@@ -83,6 +86,14 @@ export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({
     type: z.literal('checkpoint.created'),
     payload: P.CheckpointCreatedPayload,
+  }),
+  EventEnvelope.extend({
+    type: z.literal('checkpoint.restore.started'),
+    payload: P.CheckpointRestoreStartedPayload,
+  }),
+  EventEnvelope.extend({
+    type: z.literal('checkpoint.restore.failed'),
+    payload: P.CheckpointRestoreFailedPayload,
   }),
   EventEnvelope.extend({
     type: z.literal('checkpoint.restored'),

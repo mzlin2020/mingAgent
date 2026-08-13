@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, open, rename, stat } from 'node:fs/promises';
+import { mkdir, open, rename, stat, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { BlobRef } from '@xm/contracts';
 import type { BlobStat, BlobStore } from '@xm/kernel';
@@ -39,28 +39,50 @@ export class FileBlobStore implements BlobStore {
    * 内容是对的。事件不可变，这种坏引用永远修不掉。
    */
   async put(data: Uint8Array, mime: string, name?: string): Promise<BlobRef> {
+    return this.putStream(asyncIterable([data]), mime, name);
+  }
+
+  async putStream(
+    data: AsyncIterable<Uint8Array>,
+    mime: string,
+    name?: string,
+  ): Promise<BlobRef> {
     this.#assertOpen();
-    const hash = createHash('sha256').update(data).digest('hex');
-    const target = this.#pathOf(hash);
-    const ref: BlobRef = { hash, mime, size: data.length, ...(name === undefined ? {} : { name }) };
-
-    // 内容寻址：同一份内容重复 put 是幂等的，直接认领已有文件
-    if (await exists(target)) return ref;
-
     const tmp = join(this.#root, '.tmp', randomUUID());
     const fh = await open(tmp, 'wx');
+    const digest = createHash('sha256');
+    let size = 0;
+    let closed = false;
     try {
-      await fh.writeFile(data);
+      for await (const chunk of data) {
+        digest.update(chunk);
+        size += chunk.length;
+        await writeAll(fh, chunk);
+      }
       await fh.sync();
-    } finally {
       await fh.close();
+      closed = true;
+
+      const hash = digest.digest('hex');
+      const target = this.#pathOf(hash);
+      const ref: BlobRef = { hash, mime, size, ...(name === undefined ? {} : { name }) };
+
+      // 内容寻址：同一份内容重复 put 是幂等的。复用前仍需校验；否则一个被篡改但
+      // 路径仍存在的 blob 会永久阻止正确内容写回，后续每次读取都会失败。
+      if (await validBlob(target, hash, size)) {
+        await unlink(tmp);
+        return ref;
+      }
+
+      await mkdir(dirname(target), { recursive: true });
+      await rename(tmp, target);
+      await fsyncDir(dirname(target));
+      return ref;
+    } catch (error) {
+      if (!closed) await fh.close().catch(() => undefined);
+      await unlink(tmp).catch(() => undefined);
+      throw error;
     }
-
-    await mkdir(dirname(target), { recursive: true });
-    await rename(tmp, target);
-    await fsyncDir(dirname(target));
-
-    return ref;
   }
 
   /**
@@ -112,6 +134,33 @@ export class FileBlobStore implements BlobStore {
   }
 }
 
+async function writeAll(fh: Awaited<ReturnType<typeof open>>, data: Uint8Array): Promise<void> {
+  let offset = 0;
+  while (offset < data.length) {
+    const { bytesWritten } = await fh.write(data, offset, data.length - offset);
+    if (bytesWritten === 0) throw new Error('写入 blob 临时文件时没有取得进展。');
+    offset += bytesWritten;
+  }
+}
+
+function asyncIterable(chunks: readonly Uint8Array[]): AsyncIterable<Uint8Array> {
+  return {
+    [Symbol.asyncIterator]() {
+      let index = 0;
+      return {
+        next: () => {
+          const value = chunks[index];
+          if (value === undefined) {
+            return Promise.resolve({ done: true as const, value: undefined });
+          }
+          index += 1;
+          return Promise.resolve({ done: false as const, value });
+        },
+      };
+    },
+  };
+}
+
 const exists = async (path: string): Promise<boolean> => {
   try {
     await stat(path);
@@ -120,6 +169,21 @@ const exists = async (path: string): Promise<boolean> => {
     return false;
   }
 };
+
+async function validBlob(path: string, expectedHash: string, expectedSize: number): Promise<boolean> {
+  let info: Awaited<ReturnType<typeof stat>>;
+  try {
+    info = await stat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw error;
+  }
+  if (!info.isFile() || info.size !== expectedSize) return false;
+
+  const digest = createHash('sha256');
+  for await (const chunk of createReadStream(path)) digest.update(chunk as Uint8Array);
+  return digest.digest('hex') === expectedHash;
+}
 
 /**
  * 把目录项本身刷下去。文件内容 fsync 过了，但"这个文件名存在"这件事在目录里，

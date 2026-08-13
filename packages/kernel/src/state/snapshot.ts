@@ -13,6 +13,7 @@ import type {
   ActiveMessage,
   Checkpoint,
   Compaction,
+  EditProposalState,
   Notice,
   OpenPtySession,
   RunningCall,
@@ -48,6 +49,7 @@ export interface SerializedSessionState {
   readonly activeMessage: ActiveMessage | undefined;
   readonly untrustedContext: UntrustedContext | undefined;
   readonly todos: readonly Todo[];
+  readonly editProposals: readonly EditProposalState[];
   readonly runningCalls: readonly (readonly [CallId, RunningCall])[];
   readonly interruptedCalls: readonly RunningCall[];
   readonly runningSubagents: readonly (readonly [AgentId, RunningSubagent])[];
@@ -74,6 +76,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     activeMessage: state.activeMessage,
     untrustedContext: state.untrustedContext,
     todos: state.todos,
+    editProposals: state.editProposals,
     runningCalls: [...state.runningCalls.entries()],
     interruptedCalls: state.interruptedCalls,
     runningSubagents: [...state.runningSubagents.entries()],
@@ -101,6 +104,7 @@ export function deserializeSessionState(s: SerializedSessionState): SessionState
     activeMessage: s.activeMessage,
     untrustedContext: s.untrustedContext,
     todos: s.todos,
+    editProposals: s.editProposals,
     runningCalls: new Map(s.runningCalls),
     interruptedCalls: s.interruptedCalls,
     runningSubagents: new Map(s.runningSubagents),

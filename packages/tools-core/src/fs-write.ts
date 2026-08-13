@@ -73,7 +73,7 @@ export const fsWriteTool = (): RegisteredTool =>
         return;
       }
 
-      await writeAtomic(input.path, input.content);
+      await writeTextAtomic(input.path, input.content);
 
       yield {
         kind: 'result',
@@ -87,7 +87,7 @@ export const fsWriteTool = (): RegisteredTool =>
     },
   });
 
-async function writeAtomic(path: string, content: string): Promise<void> {
+export async function writeTextAtomic(path: string, content: string): Promise<void> {
   const dir = dirname(path);
   await mkdir(dir, { recursive: true });
 

@@ -35,6 +35,26 @@ export class MemoryBlobStore implements BlobStore {
     return { hash, mime, size: data.length, ...(name === undefined ? {} : { name }) };
   }
 
+  async putStream(
+    data: AsyncIterable<Uint8Array>,
+    mime: string,
+    name?: string,
+  ): Promise<BlobRef> {
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for await (const chunk of data) {
+      chunks.push(Uint8Array.from(chunk));
+      size += chunk.length;
+    }
+    const joined = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return this.put(joined, mime, name);
+  }
+
   async *open(ref: BlobRef): AsyncIterable<Uint8Array> {
     this.#assertOpen();
     const cell = this.#cells.get(ref.hash);

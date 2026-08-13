@@ -68,7 +68,9 @@ describe('todo.update', () => {
 
     expect(runtime.state.todos).toEqual(TODOS);
     expect(provider.requests[0]?.tools?.map((tool) => tool.name)).toContain(TODO_UPDATE);
-    expect(provider.requests[0]?.system[0]?.text).toContain('至少三个实质步骤');
+    expect(provider.requests[0]?.system.map((segment) => segment.text).join('\n')).toContain(
+      '至少三个实质步骤',
+    );
 
     const persisted = [];
     for await (const event of runtime.read()) persisted.push(event);
@@ -157,7 +159,9 @@ describe('todo.update', () => {
     );
 
     expect(provider.requests[0]?.tools).toEqual([]);
-    expect(provider.requests[0]?.system[0]?.text).not.toContain('todo.update');
+    expect(provider.requests[0]?.system.map((segment) => segment.text).join('\n')).not.toContain(
+      'todo.update',
+    );
     await runtime.close();
   });
 });

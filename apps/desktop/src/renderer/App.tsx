@@ -17,6 +17,8 @@ import { MessageStream } from './components/message-stream.js';
 import { SessionTabs } from './components/session-tabs.js';
 import { TerminalPanel } from './components/terminal-panel.js';
 import { TodoPanel } from './components/todo-panel.js';
+import { CheckpointPanel } from './components/checkpoint-panel.js';
+import { DiffReviewPanel } from './components/diff-review-panel.js';
 import { SecurityView } from './components/security-view.js';
 import { api } from './bridge.js';
 import { cn } from './lib/cn.js';
@@ -141,6 +143,12 @@ export function App(): ReactNode {
             <UntrustedBanner />
             <MessageStream messages={session?.messages ?? []} />
             <TodoPanel todos={session?.todos ?? []} />
+            {session !== undefined && (
+              <DiffReviewPanel sessionId={session.id} proposals={session.editProposals} />
+            )}
+            {session !== undefined && (
+              <CheckpointPanel sessionId={session.id} checkpoints={session.checkpoints} />
+            )}
             <LiveMessage />
             <LiveCalls />
             <TerminalPanel />

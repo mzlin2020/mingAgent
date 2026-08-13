@@ -6,6 +6,16 @@ M2-a 新增可见任务清单：生产装配注册 `todo.update`，renderer 直�
 
 M2-b 的生产装配注册 `search.text` 与 `result.expand`；后者通过窄回调只解析当前会话 `tool.end.fullRef`，renderer 不获得 BlobStore 浏览能力。
 
+M2-c 新增 checkpoint 列表、结构化详情与一次性撤销 IPC/UI；恢复的开始、失败和成功都写入会话事件，renderer 只消费 `reduce()` 得到的状态。
+
+M2-d 的生产装配注册 `edit.preview` / `edit.apply`，通过窄事件回调保存和完成 `EditProposal`；headless 与桌面端共用同一提案事实来源。
+
+M2-e 新增持久 diff 审阅面板：renderer 只展示事件投影中的 pending 提案，逐块选择通过窄 IPC 生成收窄提案，再复用生产 `edit.apply` 分发路径；拒绝全部不写盘，大 diff 单块最多挂载 400 行。
+
+M2-g 在生产工具装配中注册 `search.symbol` / `search.indexed`，会话打开和创建后在后台触发同一工作区的增量刷新；索引不是启动前置条件，未就绪时工具自动退回 ripgrep。tree-sitter 只使用 WASM 资产，不改变三平台原生模块策略。
+
+M2-i 在生产装配中注册 `agent.explore`，按 `config.model.subagent → model.main` 回落选择模型；子会话使用同一事件库的独立 session，启动时自动把未闭合派生补成 interrupted，renderer 仍只消费父会话归约状态。
+
 小明的 Electron 外壳：`main` / `preload` / `renderer` 三段。
 
 **这是整个应用唯一同时认识 Electron 与业务的地方**——往下每一层都不认识 electron

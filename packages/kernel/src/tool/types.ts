@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import type {
   Capability,
+  CallId,
   ResourceClaim,
   ResultLimits,
   RiskLevel,
@@ -26,6 +27,8 @@ export interface AbortLike {
 export interface ToolContext {
   /** 归属会话。工具产出的事件、审计记录、子 Agent 派生都要挂在它上面 */
   readonly sessionId: SessionId;
+  /** 当前工具调用；子 Agent 生命周期用它关联 parentCallId。手工直调工具时可缺席。 */
+  readonly callId?: CallId;
   readonly signal: AbortLike;
   /** 工作区根目录。工具自己解析相对路径，内核不碰文件系统 */
   readonly cwd: string;
@@ -82,7 +85,8 @@ export interface ToolSpec<I> {
   readonly source?: ToolDescriptor['source'];
 
   /**
-   * 哪些入参字段是**文件系统路径**，按判权重要性排序（第一个用作 target）。
+   * 哪些入参字段是**文件系统路径**。普通字段写 `path`；顶层对象数组里的字段可写
+   * `files[].path`（M2-d），不支持其它 JSONPath 语法。
    *
    * 能力网关据此把相对路径变绝对、把符号链接与 Windows 短名解析掉，
    * 并**回写进入参**——判定与执行因此用的是同一个字符串（见 `port/tool-gateway.ts`）。

@@ -13,6 +13,13 @@ describe('desktop production tool assembly', () => {
     });
     const names = productionTools({
       os: 'linux',
+      index: {
+        state: () => 'cold',
+        refresh: () => Promise.resolve({ state: 'ready', indexed: 0, unchanged: 0, removed: 0, errors: [] }),
+        searchText: () => [],
+        searchSymbols: () => [],
+        close: () => Promise.resolve(),
+      },
       ptySessions: manager,
       updateTodos: () => Promise.resolve(),
       expandResults: {
@@ -21,11 +28,22 @@ describe('desktop production tool assembly', () => {
         ),
         resolveRef: () => Promise.resolve(undefined),
       },
+      editProposals: {
+        save: () => Promise.resolve(),
+        get: () => Promise.resolve(undefined),
+        markApplied: () => Promise.resolve(),
+      },
+      explore: () => Promise.reject(new Error('not used')),
     }).map((tool) => tool.descriptor.name);
     expect(names.some((name) => name.startsWith('demo.'))).toBe(false);
     expect(names).toContain('todo.update');
     expect(names).toContain('search.text');
+    expect(names).toContain('search.symbol');
+    expect(names).toContain('search.indexed');
     expect(names).toContain('result.expand');
+    expect(names).toContain('edit.preview');
+    expect(names).toContain('edit.apply');
+    expect(names).toContain('agent.explore');
     expect(names).toContain('shell.session.run');
     expect(names).not.toContain('shell.session.write');
   });

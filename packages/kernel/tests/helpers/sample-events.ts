@@ -6,6 +6,7 @@ import {
   newAgentId,
   newCallId,
   newCheckpointId,
+  newEditProposalId,
   newEventId,
   newMessageId,
   newPtySessionId,
@@ -30,6 +31,7 @@ export function sampleEvents(): XmEvent[] {
   const requestId = newRequestId();
   const agentId = newAgentId();
   const checkpointId = newCheckpointId();
+  const editProposalId = newEditProposalId();
   const ptySessionId = newPtySessionId();
   const blob = {
     hash: 'a'.repeat(64),
@@ -125,6 +127,23 @@ export function sampleEvents(): XmEvent[] {
       payload: { todos: [{ id: '1', content: '做事', status: 'pending' }] },
     },
     {
+      type: 'edit.proposed',
+      payload: {
+        proposal: {
+          proposalId: editProposalId,
+          files: [{
+            path: '/w/a.ts',
+            beforeHash: 'b'.repeat(64),
+            afterHash: 'c'.repeat(64),
+            replacements: [{ oldText: 'old', newText: 'new', expectedMatches: 1 }],
+            diff: '--- a/a.ts\n+++ b/a.ts',
+          }],
+        },
+      },
+    },
+    { type: 'edit.reviewed', payload: { proposalId: editProposalId, selectedHunkIds: ['0:0'] } },
+    { type: 'edit.applied', payload: { proposalId: editProposalId } },
+    {
       type: 'subagent.start',
       payload: { agentId, childSessionId: newSessionId(), callId, purpose: '调研' },
     },
@@ -149,6 +168,11 @@ export function sampleEvents(): XmEvent[] {
     {
       type: 'checkpoint.created',
       payload: { checkpointId, kind: 'git', ref: 'abc', label: '执行前' },
+    },
+    { type: 'checkpoint.restore.started', payload: { checkpointId } },
+    {
+      type: 'checkpoint.restore.failed',
+      payload: { checkpointId, message: '磁盘暂时不可写' },
     },
     { type: 'checkpoint.restored', payload: { checkpointId } },
     { type: 'notice.posted', payload: { level: 'info', code: 'c', message: 'm' } },

@@ -18,6 +18,10 @@ export * from './content/message.js';
 
 // ── 会话 ──
 export * from './session/todo.js';
+export * from './session/edit.js';
+
+// ── 还原点 ──
+export * from './checkpoint/manifest.js';
 
 // ── 事件（含信封、payload、注册表、解析入口）──
 export * from './event/index.js';

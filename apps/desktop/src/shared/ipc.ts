@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { BlobRef, EventEnvelope, SessionId } from '@xm/contracts';
+import {
+  BlobRef,
+  CheckpointId,
+  CheckpointManifestV2,
+  EditProposalId,
+  EventEnvelope,
+  SessionId,
+} from '@xm/contracts';
 
 /**
  * IPC 载荷契约（ADR-0015）。
@@ -97,6 +104,28 @@ export const ReadBlobRequest = z.strictObject({ ref: BlobRef });
 export const ReadBlobResult = z.object({ dataUrl: z.string() });
 
 export const ReadSessionRequest = z.strictObject({ sessionId: SessionId });
+
+export const InspectCheckpointRequest = z.strictObject({
+  sessionId: SessionId,
+  checkpointId: CheckpointId,
+});
+export const InspectCheckpointResult = CheckpointManifestV2;
+
+export const RestoreCheckpointRequest = z.strictObject({
+  sessionId: SessionId,
+  checkpointId: CheckpointId,
+});
+export const RestoreCheckpointResult = z.object({ restored: z.boolean() });
+
+export const ReviewEditProposalRequest = z.strictObject({
+  sessionId: SessionId,
+  proposalId: EditProposalId,
+  selectedHunkIds: z.array(z.string().min(1)).max(1000),
+});
+export const ReviewEditProposalResult = z.object({
+  applied: z.boolean(),
+  derivedProposalId: EditProposalId.optional(),
+});
 
 /**
  * 会话状态的可过 IPC 镜像——拆到独立文件 `ipc-session-state.ts`（规模纪律，

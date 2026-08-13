@@ -4,6 +4,12 @@ M2-a 新增内建 `todo.update`：工具通过 ADR-0041 的窄 `TodoUpdater` 写
 
 M2-b 新增内建 `result.expand`：完整 hash 只是定位符，工具只读取当前会话已持久化 `tool.end.fullRef` 可达的 Blob，并按行范围流式展开；跨会话 hash 不可读取（ADR-0042）。
 
+M2-c 的 Turn 调度在工具执行前为一次调用的全部写入/删除主张建立一个 v2 checkpoint，并把触发调用 `callId` 与 manifest 引用写入 `checkpoint.created`；建点失败会停止工具执行，不产生伪事件（ADR-0043）。
+
+M2-h 新增唯一 `ContextBuilder`：按模型窗口执行输出/长期预留和 75% 压缩阈值，使用当前主 Provider 只摘要一次旧回合并先写 Blob、后写 `context.compacted`；最近四轮与当前轮保留原文，重开会话直接复用持久摘要（ADR-0048）。
+
+M2-i 新增 `agent.explore`：每次派生使用独立 session/seq，子注册表只含显式白名单的 builtin 只读工具，轮数/超时/父取消均有界；父事件只接收结论，`subagent.end` 把子会话粘性污点并回父会话，重启会补完孤儿生命周期（ADR-0049）。
+
 **装配层**：把内核（纯逻辑）、存储（端口实现）、Provider 与工具拼成一个可运行的
 headless 引擎。
 
@@ -14,6 +20,8 @@ headless 引擎。
 | `src/session-runtime.ts` | 一个会话的运行时。**全系统唯一分配 `seq` 的地方** |
 | `src/event-bus.ts` | 进程内发布订阅，支持 `fromSeq` 续读 |
 | `src/turn.ts` | 极薄的 Turn 循环：Provider → 事件 → 权限闸门 → 工具 → 事件 |
+| `src/context-builder.ts` | 主请求唯一装配入口：稳定前缀、预算、回合切片、摘要生成与复用 |
+| `src/subagent.ts` | 串行只读派生、子工具白名单、取消/重启收尾与污点回传 |
 | `src/provider/scripted.ts` | 按剧本吐 chunk 的 Provider（冒烟、回放、评测都用它） |
 | `src/tools/demo.ts` | 两个零 I/O 的玩具工具，覆盖闸门的三条路径 |
 | `src/tools/result-expand.ts` | 当前会话截断工具结果的 Blob 可达性校验与按行展开 |
@@ -22,8 +30,7 @@ headless 引擎。
 
 - **electron**。`apps/cli`（M3）与 headless 冒烟都要用本包。
 - 真实 Provider、真实工具集、SecretStore、审批 UI（M1）。
-- ContextBuilder、上下文压缩、并行调度、子 Agent（M1/M2）。
-  `turn.ts` 刻意不完整——半成品的上下文装配比没有更难拆。
+- 并行调度、递归/可写子 Agent、后台无人值守（M3/M4）。M2-i 只提供串行、有限、只读探索。
 
 ## 三条容易被破坏的约束
 

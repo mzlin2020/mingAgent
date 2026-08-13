@@ -1,4 +1,4 @@
-import type { TurnId } from '@xm/contracts';
+import type { CallId, TurnId } from '@xm/contracts';
 import { newCheckpointId } from '@xm/contracts';
 import type { PermissionClaim, RegisteredTool, ToolContext } from '@xm/kernel';
 import type { TurnDeps } from './turn-types.js';
@@ -7,6 +7,7 @@ import type { TurnDeps } from './turn-types.js';
 export async function recordTurnCheckpoint(
   deps: TurnDeps,
   turnId: TurnId,
+  callId: CallId,
   tool: RegisteredTool,
   input: unknown,
   ctx: ToolContext,
@@ -25,6 +26,10 @@ export async function recordTurnCheckpoint(
         kind: result.record.kind,
         ref: result.record.ref,
         label: result.record.label,
+        ...(result.record.manifestRef === undefined
+          ? {}
+          : { manifestRef: result.record.manifestRef }),
+        callId,
       },
     });
   }

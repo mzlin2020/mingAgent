@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { newCallId, newMessageId, newPtySessionId, newSessionId } from '@xm/contracts';
+import {
+  newCallId,
+  newCheckpointId,
+  newMessageId,
+  newPtySessionId,
+  newSessionId,
+} from '@xm/contracts';
 import { emptySessionState, serializeSessionState } from '@xm/kernel';
 import { CH } from '../src/shared/channels.js';
 import {
   CreateSessionRequest,
   IpcEnvelope,
+  InspectCheckpointRequest,
+  InspectCheckpointResult,
   ListSessionsResult,
   MAX_IMAGES_PER_MESSAGE,
   PushedEvent,
@@ -12,6 +20,8 @@ import {
   ReadBlobResult,
   ReadSessionRequest,
   ReadSessionResult,
+  RestoreCheckpointRequest,
+  ReviewEditProposalRequest,
   SendUserMessageRequest,
   SessionListStatus,
 } from '../src/shared/ipc.js';
@@ -64,6 +74,35 @@ describe('主进程不信任渲染层送上来的东西', () => {
     const sessionId = newSessionId();
     expect(ReadSessionRequest.safeParse({ sessionId }).success).toBe(true);
     expect(ReadSessionRequest.safeParse({ sessionId, fromSeq: 1 }).success).toBe(false);
+  });
+});
+
+describe('checkpoint v2 IPC', () => {
+  it('详情与恢复都必须绑定会话和品牌化 checkpointId', () => {
+    const valid = { sessionId: newSessionId(), checkpointId: newCheckpointId() };
+    expect(InspectCheckpointRequest.safeParse(valid).success).toBe(true);
+    expect(RestoreCheckpointRequest.safeParse(valid).success).toBe(true);
+    expect(InspectCheckpointRequest.safeParse({ ...valid, checkpointId: '../../x' }).success).toBe(false);
+  });
+
+  it('详情返回结构化 v2 manifest，不接受标签字符串冒充', () => {
+    const manifest = { version: 2, targets: [{ kind: 'missing', path: 'C:\\work\\new.txt' }] };
+    expect(InspectCheckpointResult.safeParse(manifest).success).toBe(true);
+    expect(InspectCheckpointResult.safeParse('执行前').success).toBe(false);
+  });
+});
+
+describe('diff review IPC', () => {
+  it('只接受品牌化提案 ID 与有界 hunk ID 数组', async () => {
+    const { newEditProposalId } = await import('@xm/contracts');
+    const valid = {
+      sessionId: newSessionId(),
+      proposalId: newEditProposalId(),
+      selectedHunkIds: ['0:0'],
+    };
+    expect(ReviewEditProposalRequest.safeParse(valid).success).toBe(true);
+    expect(ReviewEditProposalRequest.safeParse({ ...valid, proposalId: 'bad' }).success).toBe(false);
+    expect(ReviewEditProposalRequest.safeParse({ ...valid, selectedHunkIds: Array(1001).fill('x') }).success).toBe(false);
   });
 });
 

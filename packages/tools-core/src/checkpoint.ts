@@ -1,6 +1,14 @@
-import { readFile, stat } from 'node:fs/promises';
-import { basename } from 'node:path';
-import type { BlobRef } from '@xm/contracts';
+import { createReadStream } from 'node:fs';
+import { lstat, readdir, readlink, stat } from 'node:fs/promises';
+import { basename, isAbsolute, relative, resolve } from 'node:path';
+import {
+  CHECKPOINT_MANIFEST_MIME,
+  CheckpointManifestV2,
+  type BlobRef,
+  type CheckpointDirectoryEntry,
+  type CheckpointManifestV2 as Manifest,
+  type CheckpointTarget,
+} from '@xm/contracts';
 import type {
   BlobStore,
   CheckpointBeforeResult,
@@ -10,43 +18,20 @@ import type {
   ToolContext,
 } from '@xm/kernel';
 
-/**
- * 文件还原点的 Node 实现：把**将被改动的文件的当前内容**存进内容寻址的 blob。
- *
- * ── 判据来自这次调用的主张，不是一份名单 ──
- *
- * "哪些调用需要还原点" = **主张里带着 `fs.write` / `fs.delete` 的具体路径**（ADR-0026）。
- * 与权限判定读的是同一份东西。维护第二份名单的下场在这个仓库里已经见过一次：
- * 自改红线只挂 `self.modify`，而一个普通写文件工具声明的是 `fs.write`，
- * 于是九条红线被整体绕过（ADR-0012 复审）。
- *
- * 判据从"工具声明了什么能力"换成"这次调用主张了什么"之后白拿一样东西：
- * `shell.exec` 跑 `rm foo.txt` 也有还原点了——它主张的是 `fs.delete <绝对路径>`，
- * 与 `fs.delete` 工具主张的是同一种东西。而按能力声明判的话，
- * `shell.exec` 声明的是 `shell.exec`，一个还原点都不会建。
- *
- * ── 只存"改之前"，不存"改之后" ──
- *
- * 改之后的内容在文件里就有，不需要第二份。而且内容寻址让重复内容不重复占空间：
- * 同一个文件被改十次，十份快照里相同的那几份只落一次盘。
- *
- * ── 新建文件也要留痕 ──
- *
- * 写一个还不存在的文件时没有内容可存，但**"这个文件原本不存在"本身就是还原信息**——
- * 回退等于删掉它。这里用一个空内容的 blob 加上 label 里的说明来表达，
- * 而不是干脆不记：不记的话，回退时无从知道该删还是该恢复。
- */
+const MAX_MANIFEST_ENTRIES = 100_000;
+const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 
 export interface NodeCheckpointerOptions {
   readonly blobs: BlobStore;
-  /** 测试注入点；生产默认使用 node:fs/promises。 */
+  /** 测试注入点；生产默认使用 node:fs。 */
   readonly statFile?: typeof stat;
-  readonly readFileBytes?: typeof readFile;
+  readonly openFileStream?: (path: string) => AsyncIterable<Uint8Array>;
 }
 
-/** 单个文件的快照上限。超过就不快照，并在 label 里说清楚——绝不假装存过 */
-const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024;
-
+/**
+ * v2 文件还原点：一次调用的全部写目标先完整快照，最后只记录一个 manifest。
+ * 任一读取或 blob 写入失败都会 reject，因此运行时不会执行工具，也不会留下伪事件。
+ */
 export const nodeCheckpointer = (options: NodeCheckpointerOptions): Checkpointer => ({
   async before(
     _tool: RegisteredTool,
@@ -55,95 +40,142 @@ export const nodeCheckpointer = (options: NodeCheckpointerOptions): Checkpointer
     claims: readonly PermissionClaim[],
   ): Promise<CheckpointBeforeResult | undefined> {
     if (ctx.signal.aborted) return undefined;
-
-    const paths = [
-      ...new Set(
-        claims
-          .filter((c) => c.capability === 'fs.write' || c.capability === 'fs.delete')
-          .map((c) => c.target)
-          .filter((t) => t !== ''),
-      ),
-    ];
+    const paths = collapseTargets(
+      claims
+        .filter((claim) => claim.capability === 'fs.write' || claim.capability === 'fs.delete')
+        .map((claim) => claim.target)
+        .filter((target) => target !== ''),
+    );
     if (paths.length === 0) return undefined;
 
-    const refs: string[] = [];
-    const labels: string[] = [];
-    const warnings: string[] = [];
-
+    const targets: CheckpointTarget[] = [];
+    let entries = 0;
     for (const path of paths) {
-      const snapshot = await snapshotOne(
-        options.blobs,
-        path,
-        options.statFile ?? stat,
-        options.readFileBytes ?? readFile,
-      );
-      if (snapshot.ref === undefined) warnings.push(snapshot.label);
-      else {
-        refs.push(snapshot.ref);
-        labels.push(snapshot.label);
+      const target = await snapshotTarget(path, options);
+      entries += target.kind === 'directory' ? target.entries.length + 1 : 1;
+      if (entries > MAX_MANIFEST_ENTRIES) {
+        throw new Error(`checkpoint manifest 超过 ${String(MAX_MANIFEST_ENTRIES)} 个条目。`);
       }
+      targets.push(target);
     }
 
+    const manifest: Manifest = CheckpointManifestV2.parse({ version: 2, targets });
+    const encoded = new TextEncoder().encode(JSON.stringify(manifest));
+    if (encoded.byteLength > MAX_MANIFEST_BYTES) {
+      throw new Error(`checkpoint manifest 超过 ${String(MAX_MANIFEST_BYTES)} 字节。`);
+    }
+    const manifestRef = await options.blobs.put(
+      encoded,
+      CHECKPOINT_MANIFEST_MIME,
+      'checkpoint-v2.json',
+    );
     return {
-      ...(refs.length === 0
-        ? {}
-        : { record: { kind: 'fs' as const, ref: refs.join(','), label: labels.join('；') } }),
-      warnings,
+      record: {
+        kind: 'fs',
+        ref: refString(manifestRef),
+        manifestRef,
+        label: labelOf(targets),
+      },
+      warnings: [],
     };
   },
 });
 
-interface OneSnapshot {
-  readonly ref?: string;
-  readonly label: string;
-}
-
-async function snapshotOne(
-  blobs: BlobStore,
+async function snapshotTarget(
   path: string,
-  statFile: typeof stat,
-  readFileBytes: typeof readFile,
-): Promise<OneSnapshot> {
-  /*
-   * 目录快照做不了，**而且要说出来**。
-   *
-   * `rm -rf dir` 是经由 `shell.exec` 最容易发生的破坏，偏偏也是这里覆盖不了的一种：
-   * 存一棵目录树需要打包与 GC，那是 M2 的事。宁可让用户看到"这一步没有还原点"，
-   * 也不要让还原点列表里出现一条指向空内容、回退时什么也恢复不了的记录。
-   */
+  options: NodeCheckpointerOptions,
+): Promise<CheckpointTarget> {
+  let info: Awaited<ReturnType<typeof stat>>;
   try {
-    const info = await statFile(path);
-    if (info.isDirectory()) {
-      return { label: `${path}（目录，**这一步没有还原点**，ADR-0026 遗留）` };
-    }
-  } catch (e) {
-    if (!isNotFound(e)) throw e;
-    const ref = await blobs.put(new Uint8Array(0), 'application/octet-stream', basename(path));
-    return { ref: refString(ref), label: `${path}（原本不存在）` };
+    info = await (options.statFile ?? stat)(path);
+  } catch (error) {
+    if (isNotFound(error)) return { kind: 'missing', path };
+    throw error;
   }
 
-  const data = await readFileBytes(path);
-
-  if (data.byteLength > MAX_SNAPSHOT_BYTES) {
-    /*
-     * 太大就不存，**并且说出来**。
-     *
-     * 存一份 8 MB 以上的快照本身不难，难的是它会让 blob 目录随着几次大文件改动
-     * 迅速膨胀，而 GC 要等 M2。宁可让这一次没有退路且用户知道，
-     * 也不要悄悄存下去直到磁盘满。
-     */
+  if (info.isFile()) {
     return {
-      label: `${path}（${String(data.byteLength)} 字节，超过快照上限，**这一步没有还原点**）`,
+      kind: 'file',
+      path,
+      content: await snapshotFile(path, options.blobs, options.openFileStream),
     };
   }
-
-  const ref = await blobs.put(data, 'application/octet-stream', basename(path));
-  return { ref: refString(ref), label: `${path}（${String(data.byteLength)} 字节）` };
+  if (info.isDirectory()) {
+    return { kind: 'directory', path, entries: await snapshotDirectory(path, options) };
+  }
+  throw new Error(`不能为特殊文件建立还原点：${path}`);
 }
 
-/** `sha256:<hex>:<size>` —— 事件里的 `ref` 是字符串，要能一眼看出指向哪个 blob */
-const refString = (ref: BlobRef): string => `sha256:${ref.hash}:${String(ref.size)}`;
+async function snapshotDirectory(
+  root: string,
+  options: NodeCheckpointerOptions,
+): Promise<CheckpointDirectoryEntry[]> {
+  const entries: CheckpointDirectoryEntry[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    const children = await readdir(directory, { withFileTypes: true });
+    children.sort((a, b) => a.name.localeCompare(b.name));
+    for (const child of children) {
+      const absolute = resolve(directory, child.name);
+      const path = relative(root, absolute).replaceAll('\\', '/');
+      const info = await lstat(absolute);
+      if (info.isSymbolicLink()) {
+        entries.push({ kind: 'symlink', path, link: await readlink(absolute) });
+      } else if (info.isDirectory()) {
+        entries.push({ kind: 'directory', path });
+        await visit(absolute);
+      } else if (info.isFile()) {
+        entries.push({
+          kind: 'file',
+          path,
+          content: await snapshotFile(absolute, options.blobs, options.openFileStream),
+        });
+      } else {
+        throw new Error(`目录中包含不能恢复的特殊文件：${absolute}`);
+      }
+      if (entries.length > MAX_MANIFEST_ENTRIES) {
+        throw new Error(`checkpoint manifest 超过 ${String(MAX_MANIFEST_ENTRIES)} 个条目。`);
+      }
+    }
+  };
+  await visit(root);
+  return entries;
+}
 
+const snapshotFile = (
+  path: string,
+  blobs: BlobStore,
+  openFileStream: NodeCheckpointerOptions['openFileStream'],
+): Promise<BlobRef> =>
+  blobs.putStream(
+    (openFileStream ?? ((target) => createReadStream(target)))(path),
+    'application/octet-stream',
+    basename(path),
+  );
+
+function collapseTargets(input: readonly string[]): string[] {
+  const sorted = [...new Set(input.map((path) => resolve(path)))].sort(
+    (a, b) => a.length - b.length || a.localeCompare(b),
+  );
+  return sorted.filter(
+    (candidate, index) =>
+      !sorted.slice(0, index).some((parent) => {
+        const rel = relative(parent, candidate);
+        return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+      }),
+  );
+}
+
+const labelOf = (targets: readonly CheckpointTarget[]): string => {
+  const summary = targets
+    .map((target) => {
+      if (target.kind === 'missing') return `${target.path}（原本不存在）`;
+      if (target.kind === 'file') return `${target.path}（${String(target.content.size)} 字节）`;
+      return `${target.path}（目录，${String(target.entries.length)} 个条目）`;
+    })
+    .join('；');
+  return summary.length <= 1000 ? summary : `${summary.slice(0, 997)}…`;
+};
+
+const refString = (ref: BlobRef): string => `sha256:${ref.hash}:${String(ref.size)}`;
 const isNotFound = (error: unknown): boolean =>
   typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
-

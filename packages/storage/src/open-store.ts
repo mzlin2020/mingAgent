@@ -1,12 +1,15 @@
 import { mkdir } from 'node:fs/promises';
-import type { BlobStore, EventStore, XmDataLayout, XmPaths } from '@xm/kernel';
+import { join } from 'node:path';
+import type { BlobStore, EventStore, WorkspaceIndex, XmDataLayout, XmPaths } from '@xm/kernel';
 import { xmDataLayout } from '@xm/kernel';
 import { FileBlobStore } from './file-blob-store.js';
 import { SqliteEventStore } from './sqlite-event-store.js';
+import { openWorkspaceIndex } from './workspace-index.js';
 
 export interface OpenedStores {
   readonly events: EventStore;
   readonly blobs: BlobStore;
+  readonly index: WorkspaceIndex;
   readonly layout: XmDataLayout;
   close(): Promise<void>;
 }
@@ -27,14 +30,17 @@ export async function openStores(paths: XmPaths): Promise<OpenedStores> {
 
   const events = new SqliteEventStore({ path: layout.eventsDb });
   const blobs = await FileBlobStore.open(layout.blobsDir);
+  const index = await openWorkspaceIndex(join(layout.dataDir, 'workspace-index.sqlite'));
 
   return {
     events,
     blobs,
+    index,
     layout,
     async close() {
       await events.close();
       await blobs.close();
+      await index.close();
     },
   };
 }

@@ -25,6 +25,9 @@ const lazyStore = (root: string): BlobStore => {
     async put(data, mime, name) {
       return (await ready).put(data, mime, name);
     },
+    async putStream(data, mime, name) {
+      return (await ready).putStream(data, mime, name);
+    },
     async *open(ref) {
       yield* (await ready).open(ref);
     },
@@ -87,6 +90,18 @@ describe('FileBlobStore 专属行为', () => {
 
     writeFileSync(join(root, ref.hash.slice(0, 2), ref.hash.slice(2)), Buffer.from([4, 5, 6]));
     await expect(readBlob(store, ref)).rejects.toBeInstanceOf(BlobIntegrityError);
+    await store.close();
+  });
+
+  it('重复 put 会修复同路径下已损坏的 blob', async () => {
+    const root = tmpRoot();
+    const store = await FileBlobStore.open(root);
+    const bytes = Uint8Array.from([1, 2, 3]);
+    const ref = await store.put(bytes, 'application/octet-stream');
+    writeFileSync(join(root, ref.hash.slice(0, 2), ref.hash.slice(2)), Buffer.from([4, 5, 6]));
+
+    expect(await store.put(bytes, 'application/octet-stream')).toEqual(ref);
+    expect(Array.from(await readBlob(store, ref))).toEqual([1, 2, 3]);
     await store.close();
   });
 

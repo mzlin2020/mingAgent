@@ -1,4 +1,5 @@
-import type { RegisteredTool, ToolContext } from '../tool/types.js';
+import type { BlobRef, CheckpointManifestV2 } from '@xm/contracts';
+import type { AbortLike, RegisteredTool, ToolContext } from '../tool/types.js';
 import type { PermissionClaim } from './tool-gateway.js';
 
 /**
@@ -17,7 +18,7 @@ import type { PermissionClaim } from './tool-gateway.js';
  *
  * ── 为什么结果同时带 record 与 warnings ──
  *
- * "没有需要快照的东西"是正常结果；目录与超大文件则是已知不支持、允许继续但必须告警。
+ * "没有需要快照的东西"是正常结果；尚未支持的目标类型允许继续但必须告警。
  * 真正的 I/O 失败直接 reject，由运行时停止破坏性操作。
  */
 export interface Checkpointer {
@@ -25,7 +26,7 @@ export interface Checkpointer {
    * 在工具执行**之前**建立还原点。
    *
    * 抛错意味着本应建立的还原点因 I/O/完整性问题失败，调用方必须停止执行。
-   * 已知不支持的目录或超大文件通过 warnings 表达，调用方告警后继续。
+   * 已知不支持的目标类型通过 warnings 表达，调用方告警后继续。
    */
   before(
     tool: RegisteredTool,
@@ -45,7 +46,7 @@ export interface Checkpointer {
 export interface CheckpointBeforeResult {
   /** 至少有一个真实可恢复对象时才存在。 */
   readonly record?: CheckpointRecord;
-  /** 已知无法快照但允许继续的目标，例如目录或超过上限的大文件。 */
+  /** 已知无法快照但允许继续的目标；M2-c 完成后文件与目录都不应走这里。 */
   readonly warnings: readonly string[];
 }
 
@@ -53,6 +54,15 @@ export interface CheckpointRecord {
   readonly kind: 'fs' | 'git';
   /** blob 引用串或 git 快照 sha。回退时据此还原 */
   readonly ref: string;
+  /** v2 结构化恢复计划。fs checkpoint 从 M2-c 起必须提供。 */
+  readonly manifestRef?: BlobRef;
   /** 给用户看的一句话，如「写入 README.md 之前」 */
   readonly label: string;
+}
+
+export interface CheckpointRestorer {
+  /** 读取并完整校验 manifest，供详情入口展示。 */
+  inspect(ref: BlobRef): Promise<CheckpointManifestV2>;
+  /** 把所有目标收敛到 manifest 描述的状态；实现必须可安全重试。 */
+  restore(ref: BlobRef, signal?: AbortLike): Promise<void>;
 }

@@ -21,6 +21,7 @@ export const CallId = uuid.brand<'CallId'>();
 export const RequestId = uuid.brand<'RequestId'>();
 export const AgentId = uuid.brand<'AgentId'>();
 export const CheckpointId = uuid.brand<'CheckpointId'>();
+export const EditProposalId = uuid.brand<'EditProposalId'>();
 /** PTY 会话（`shell.session`，ADR-0031）。跨越单次工具调用存活，故不用 CallId */
 export const PtySessionId = uuid.brand<'PtySessionId'>();
 
@@ -32,6 +33,7 @@ export type CallId = z.infer<typeof CallId>;
 export type RequestId = z.infer<typeof RequestId>;
 export type AgentId = z.infer<typeof AgentId>;
 export type CheckpointId = z.infer<typeof CheckpointId>;
+export type EditProposalId = z.infer<typeof EditProposalId>;
 export type PtySessionId = z.infer<typeof PtySessionId>;
 
 /**
@@ -60,4 +62,5 @@ export const newCallId = (): CallId => rawId() as CallId;
 export const newRequestId = (): RequestId => rawId() as RequestId;
 export const newAgentId = (): AgentId => rawId() as AgentId;
 export const newCheckpointId = (): CheckpointId => rawId() as CheckpointId;
+export const newEditProposalId = (): EditProposalId => rawId() as EditProposalId;
 export const newPtySessionId = (): PtySessionId => rawId() as PtySessionId;

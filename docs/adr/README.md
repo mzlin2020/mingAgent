@@ -57,6 +57,13 @@
 | [0040](./0040-M1.5自主安全边界与受控终端.md) | M1.5 自主安全边界、核心资源保护、受控 argv 终端、checkpoint 分级与非 OS 沙箱限制 | 🟢 Accepted | 2026-08-12 |
 | [0041](./0041-M2-a可见任务清单与窄事件写入口.md) | M2-a 可见任务清单：`todo.update` 通过窄回调写入 `todo.updated`，不向 `ToolContext` 暴露通用事件入口；空能力集代表无会话外副作用 | 🟢 Accepted | 2026-08-12 |
 | [0042](./0042-M2-b文本检索与会话内结果展开.md) | M2-b 文本检索与结果展开：`search.text` 经路径网关调用 ripgrep；`result.expand` 只读取当前会话 `tool.end.fullRef` 可达的 Blob | 🟢 Accepted | 2026-08-12 |
+| [0043](./0043-M2-c-Checkpoint-v2与整组撤销.md) | M2-c Checkpoint v2：整组 manifest、目录与大文件流式快照、一次性可审计恢复及 Blob GC 可达性规则 | 🟢 Accepted | 2026-08-12 |
+| [0044](./0044-M2-d精确编辑与多文件事务.md) | M2-d 精确编辑：持久 preview/apply 提案、逐路径判权、内容漂移检测与整组 checkpoint 故障恢复 | 🟢 Accepted | 2026-08-12 |
+| [0045](./0045-M2-e-diff审阅不是权限审批.md) | M2-e diff 审阅：选择生成收窄提案并复用完整 apply 分发路径，不恢复 ask/授权；持久 hunk 与有界渲染 | 🟢 Accepted | 2026-08-12 |
+| [0046](./0046-M2-f本地Git工具与显式提交范围.md) | M2-f 本地 Git：四个窄 argv 工具、结构化错误、path-only commit 默认排除其它既有改动 | 🟢 Accepted | 2026-08-13 |
+| [0047](./0047-M2-g可重建WASM符号与FTS索引.md) | M2-g 索引：同一套 tree-sitter WASM、独立可重建 FTS5 派生库、按需增量与 ripgrep fallback | 🟢 Accepted | 2026-08-13 |
+| [0048](./0048-M2-h上下文预算与持久摘要.md) | M2-h 上下文：唯一 ContextBuilder、75% 分层预算、字节稳定前缀与一次生成的持久摘要 | 🟢 Accepted | 2026-08-13 |
+| [0049](./0049-M2-i串行只读子Agent.md) | M2-i 子 Agent：独立 session/seq、串行有限只读工具集、完整收尾与粘性污点回传 | 🟢 Accepted | 2026-08-13 |
 
 ## 什么时候要写 ADR
 

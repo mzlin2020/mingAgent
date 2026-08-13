@@ -71,6 +71,7 @@ export async function dispatchCall(deps: TurnDeps, turnId: TurnId, call: Pending
 
   let ctx: ToolContext = {
     sessionId: runtime.sessionId,
+    callId: call.callId,
     signal: deps.signal ?? NEVER_ABORTS,
     cwd: runtime.state.cwd,
     executor: 'local',
@@ -255,7 +256,7 @@ async function executeCall(
   const startedAt = Date.now();
 
   try {
-    await recordTurnCheckpoint(deps, turnId, tool, input, ctx, claims);
+    await recordTurnCheckpoint(deps, turnId, call.callId, tool, input, ctx, claims);
   } catch (e) {
     await failCall(
       deps,

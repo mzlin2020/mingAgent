@@ -7,6 +7,7 @@ import {
   CreateSessionResult,
   ImageAttachment,
   InterruptResult,
+  InspectCheckpointResult,
   IpcEnvelope,
   ListOrphanedSessionsResult,
   ListSessionsResult,
@@ -14,6 +15,8 @@ import {
   ReadBlobResult,
   ReadSessionResult,
   ResumeOrphanedSessionResult,
+  RestoreCheckpointResult,
+  ReviewEditProposalResult,
   SendUserMessageResult,
   SetApiKeyResult,
   StatusResult,
@@ -37,6 +40,9 @@ interface XmBridge {
   sendUserMessage(req: unknown): Promise<unknown>;
   readSession(req: unknown): Promise<unknown>;
   readBlob(req: unknown): Promise<unknown>;
+  inspectCheckpoint(req: unknown): Promise<unknown>;
+  restoreCheckpoint(req: unknown): Promise<unknown>;
+  reviewEditProposal(req: unknown): Promise<unknown>;
   clearUntrusted(req: unknown): Promise<unknown>;
   interrupt(req: unknown): Promise<unknown>;
   chooseWorkspace(): Promise<unknown>;
@@ -94,6 +100,18 @@ export const api = {
   readSession: (sessionId: string) =>
     call(bridge().readSession({ sessionId }), ReadSessionResult),
   readBlob: (ref: BlobRef) => call(bridge().readBlob({ ref }), ReadBlobResult),
+
+  inspectCheckpoint: (sessionId: string, checkpointId: string) =>
+    call(bridge().inspectCheckpoint({ sessionId, checkpointId }), InspectCheckpointResult),
+
+  restoreCheckpoint: (sessionId: string, checkpointId: string) =>
+    call(bridge().restoreCheckpoint({ sessionId, checkpointId }), RestoreCheckpointResult),
+
+  reviewEditProposal: (sessionId: string, proposalId: string, selectedHunkIds: readonly string[]) =>
+    call(
+      bridge().reviewEditProposal({ sessionId, proposalId, selectedHunkIds }),
+      ReviewEditProposalResult,
+    ),
 
   clearUntrusted: (sessionId: string, reason?: string) =>
     call(

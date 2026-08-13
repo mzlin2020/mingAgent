@@ -88,6 +88,9 @@ export const EVENT_SPECS = {
 
   // ── 任务与子 Agent ──
   'todo.updated': { schema: P.TodoUpdatedPayload, durability: 'persisted', version: 1 },
+  'edit.proposed': { schema: P.EditProposedPayload, durability: 'persisted', version: 1 },
+  'edit.applied': { schema: P.EditAppliedPayload, durability: 'persisted', version: 1 },
+  'edit.reviewed': { schema: P.EditReviewedPayload, durability: 'persisted', version: 1 },
   'subagent.start': { schema: P.SubagentStartPayload, durability: 'persisted', version: 1 },
   'subagent.end': { schema: P.SubagentEndPayload, durability: 'persisted', version: 1 },
 
@@ -95,6 +98,16 @@ export const EVENT_SPECS = {
   'context.compacted': { schema: P.ContextCompactedPayload, durability: 'persisted', version: 1 },
   'usage.recorded': { schema: P.UsagePayload, durability: 'persisted', version: 1 },
   'checkpoint.created': { schema: P.CheckpointCreatedPayload, durability: 'persisted', version: 1 },
+  'checkpoint.restore.started': {
+    schema: P.CheckpointRestoreStartedPayload,
+    durability: 'persisted',
+    version: 1,
+  },
+  'checkpoint.restore.failed': {
+    schema: P.CheckpointRestoreFailedPayload,
+    durability: 'persisted',
+    version: 1,
+  },
   'checkpoint.restored': {
     schema: P.CheckpointRestoredPayload,
     durability: 'persisted',

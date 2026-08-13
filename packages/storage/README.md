@@ -13,13 +13,16 @@
 | `src/sqlite-event-store.ts` | `EventStore` 的 SQLite 实现（单写者租约、同事务投影、分页读） |
 | `src/file-blob-store.ts` | `BlobStore` 的文件实现（sha256 寻址、写临时文件→fsync→rename） |
 | `src/open-store.ts` | 按 `XmPaths` 打开全部存储。**落盘位置的唯一来源** |
+| `src/workspace-index.ts` | 可重建的工作区派生索引：文件指纹、FTS5 trigram 全文与增量刷新 |
+| `src/tree-symbols.ts` | 使用 tree-sitter WASM 从 TypeScript / JavaScript AST 提取符号 |
 
 ## 不负责什么
 
 - **electron**。原生模块的 ABI 差异由构建期的 `electron-rebuild` 处理，不是靠
   在代码里 import electron 解决（depcruise 强制）。
 - 审计库。它是独立文件、记录的也不是 `XmEvent`，是否复用同一端口待定（ADR-0013 遗留）。
-- blob 的引用计数与 GC。M2 随 checkpoint 一起做——没有引用计数的删除只会删掉还在用的东西。
+- blob 的引用计数与 GC。M2-c 已定义事件根与 checkpoint manifest 的递归可达性，但在“标记闭包后再次核对事件库”实现完成前保持只增不删；证明不足时不提供删除入口。
+- 索引真相。`workspace-index.sqlite` 是可删除、可重建的派生库；冷启动、损坏或刷新失败不能阻断 ripgrep 基线检索（ADR-0047）。
 
 ## 四条容易被破坏的约束
 
@@ -63,4 +66,5 @@ better-sqlite3 全同步，游标要跨越 `yield` 一直开着，而消费方�
 
 - [ADR-0013 存储引擎选型与 EventStore 端口](../../docs/adr/0013-存储引擎选型与EventStore端口.md)
 - [ADR-0016 原生模块与打包](../../docs/adr/0016-原生模块与打包.md)
+- [ADR-0047 M2-g 可重建 WASM 符号与 FTS 索引](../../docs/adr/0047-M2-g可重建WASM符号与FTS索引.md)
 - [docs/04 §6 持久化设计](../../docs/04-总体架构.md)

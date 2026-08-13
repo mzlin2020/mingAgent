@@ -7,9 +7,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PersistedEvent, PolicyRuleSet } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
-import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
+import { MemoryBlobStore, MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { coreTools, nodeToolGateway } from '@xm/tools-core';
+import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
 
 /**
  * ── 命令即一组能力主张，跑在真实工具上（ADR-0026）──
@@ -43,6 +43,7 @@ const call = (name: string, args: unknown) => {
 
 async function harness(userRules: PolicyRuleSet = []) {
   const store = new MemoryEventStore();
+  const blobs = new MemoryBlobStore(sha256);
   const sessionId = newSessionId();
   const runtime = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });
   await runtime.record({
@@ -61,6 +62,7 @@ async function harness(userRules: PolicyRuleSet = []) {
         layers: composeRules({ env: ENV, user: userRules }),
         model: 'scripted-1',
         gateway: nodeToolGateway({ home }),
+        checkpointer: nodeCheckpointer({ blobs }),
         provider: new ScriptedProvider({ turns: [call('shell.exec', { argv }), END] as never }),
       },
       textInput('跑一下'),
@@ -228,6 +230,16 @@ describe('🔴 curl 不再绕过不可信标记', () => {
 });
 
 describe('放行的路径也要真的通', () => {
+  it('shell.exec 声明的删除目标在执行前形成一个 v2 checkpoint', async () => {
+    const target = join(dir, 'checkpoint-me.txt');
+    await writeFile(target, 'before');
+    const { exec } = await harness();
+    const all = await exec(['rm', target]);
+    const checkpoints = all.filter((event) => event.type === 'checkpoint.created');
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]!.payload).toMatchObject({ kind: 'fs', manifestRef: { size: expect.any(Number) } });
+  });
+
   it('普通命令零确认框跑起来', async () => {
     const { exec } = await harness();
     /*
@@ -252,6 +264,11 @@ describe('放行的路径也要真的通', () => {
     expect(requests(all)).toHaveLength(0);
   });
 });
+
+async function sha256(data: Uint8Array): Promise<string> {
+  const { createHash } = await import('node:crypto');
+  return createHash('sha256').update(data).digest('hex');
+}
 
 /**
  * ── 一次调用的多条主张：全过则零事件，任一被拒则恰好一对（ADR-0039）──

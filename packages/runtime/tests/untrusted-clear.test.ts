@@ -251,7 +251,13 @@ describe('解除不可信标记', () => {
 
     const ctx = sink.ctx;
     expect(ctx).toBeDefined();
-    expect(Object.keys(ctx as object).sort()).toEqual(['cwd', 'executor', 'sessionId', 'signal']);
+    expect(Object.keys(ctx as object).sort()).toEqual([
+      'callId',
+      'cwd',
+      'executor',
+      'sessionId',
+      'signal',
+    ]);
 
     // 上下文里不许出现任何能写事件的东西。逐个查而不是只看键名，
     // 是因为将来更可能的形状是"往现有字段上挂个方法"，而不是加一个叫 record 的新键。

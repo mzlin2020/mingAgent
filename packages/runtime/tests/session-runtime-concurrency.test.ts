@@ -101,15 +101,11 @@ describe('SessionRuntime 的并发写入', () => {
     const rt = await SessionRuntime.open({ sessionId, store, bus });
     await rt.record(CREATED);
 
-    // 子 Agent 闸门（ADR-0033 · G2）是现成的、会抛的写入——借它当失败源，
-    // 不必再造一个会坏的存储
-    const doomed = rt.record({
-      type: 'subagent.start',
-      payload: { agentId: 'a', childSessionId: sessionId, prompt: 'p' },
-    } as never);
+    // 无效 payload 会在 sealEvent 的统一校验出口失败；失败不能毒死写入队列。
+    const doomed = rt.record({ type: 'session.renamed', payload: { title: 42 } } as never);
     const survivor = rt.record(notice('我该活下来'));
 
-    await expect(doomed).rejects.toThrow(/子 Agent 的污点回传尚未实现/u);
+    await expect(doomed).rejects.toThrow();
     await expect(survivor).resolves.toMatchObject({ seq: 2 });
     expect(rt.state.lastSeq).toBe(2);
 

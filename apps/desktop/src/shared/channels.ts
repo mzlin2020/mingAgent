@@ -20,6 +20,9 @@ export const CH = {
   createSession: 'xm:create-session',
   sendUserMessage: 'xm:send-user-message',
   readSession: 'xm:read-session',
+  inspectCheckpoint: 'xm:inspect-checkpoint',
+  restoreCheckpoint: 'xm:restore-checkpoint',
+  reviewEditProposal: 'xm:review-edit-proposal',
   /**
    * 按 `BlobRef` 反查一张图片的字节，编成 data URL 供 `<img src>` 直接用。
    * 渲染层此前从未反查过 blob 内容，这是第一条——见 `services.readBlob` 的注释。

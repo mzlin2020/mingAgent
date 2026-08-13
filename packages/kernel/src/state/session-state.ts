@@ -5,6 +5,7 @@ import type {
   Capability,
   CheckpointId,
   ConfigPatch,
+  EditProposal,
   Message,
   MessageId,
   PtySessionId,
@@ -52,6 +53,7 @@ export interface SessionState {
   readonly untrustedContext: UntrustedContext | undefined;
 
   readonly todos: readonly Todo[];
+  readonly editProposals: readonly EditProposalState[];
   readonly runningCalls: ReadonlyMap<CallId, RunningCall>;
   /** turn.end 时仍在 runningCalls 里的调用 —— 崩溃恢复时它们要被标记为中断 */
   readonly interruptedCalls: readonly RunningCall[];
@@ -160,6 +162,13 @@ export interface Compaction {
   readonly summaryRef: BlobRef;
   readonly tokensBefore: number;
   readonly tokensAfter: number;
+  readonly strategy?: 'tiered-75-v1' | undefined;
+  readonly provider?: string | undefined;
+  readonly model?: string | undefined;
+  readonly maxContextTokens?: number | undefined;
+  readonly thresholdTokens?: number | undefined;
+  readonly reservedTokens?: number | undefined;
+  readonly recentFromSeq?: number | undefined;
 }
 
 export interface Checkpoint {
@@ -167,7 +176,18 @@ export interface Checkpoint {
   readonly kind: 'fs' | 'git';
   readonly ref: string;
   readonly label: string;
+  readonly manifestRef: BlobRef | undefined;
+  readonly callId: CallId | undefined;
+  readonly restoreStartedAt: number | undefined;
+  readonly restoreFailure: { readonly message: string; readonly ts: number } | undefined;
   readonly restoredAt: number | undefined;
+}
+
+export interface EditProposalState {
+  readonly proposal: EditProposal;
+  readonly appliedAt: number | undefined;
+  readonly reviewedAt: number | undefined;
+  readonly selectedHunkIds: readonly string[] | undefined;
 }
 
 export interface Notice {
@@ -192,6 +212,7 @@ export const emptySessionState = (id: SessionId): SessionState => ({
   activeMessage: undefined,
   untrustedContext: undefined,
   todos: [],
+  editProposals: [],
   runningCalls: new Map(),
   interruptedCalls: [],
   runningSubagents: new Map(),

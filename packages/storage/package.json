@@ -12,12 +12,16 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "sideEffects": false,
   "dependencies": {
+    "@vscode/tree-sitter-wasm": "0.3.1",
     "@xm/contracts": "workspace:*",
     "@xm/kernel": "workspace:*",
-    "better-sqlite3": "13.0.2"
+    "better-sqlite3": "13.0.2",
+    "web-tree-sitter": "0.26.11"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13"

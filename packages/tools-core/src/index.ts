@@ -10,6 +10,10 @@
 
 export * from './gateway.js';
 export * from './checkpoint.js';
+export * from './checkpoint-restore.js';
+export * from './edit.js';
+export * from './git.js';
+export * from './index-search.js';
 export * from './fs-read.js';
 export * from './fs-list.js';
 export * from './fs-write.js';
@@ -24,6 +28,8 @@ import type { RegisteredTool } from '@xm/kernel';
 import { fsListTool } from './fs-list.js';
 import { fsReadTool } from './fs-read.js';
 import { fsWriteTool } from './fs-write.js';
+import { gitTools } from './git.js';
+import { indexSearchTools } from './index-search.js';
 import { textSearchTool } from './search-text.js';
 import type { ShellExecOptions } from './shell-exec.js';
 import { shellExecTool } from './shell-exec.js';
@@ -45,6 +51,8 @@ export interface CoreToolsOptions {
   readonly os: ShellExecOptions['os'];
   /** 允许透传给子进程的额外环境变量名 */
   readonly extraEnv?: readonly string[];
+  /** M2-g 的可重建工作区索引；未提供时不注册索引增强工具。 */
+  readonly index?: import('@xm/kernel').WorkspaceIndex;
 }
 
 export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
@@ -53,5 +61,7 @@ export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
   fsWriteTool(),
   textSearchTool(),
   shellExecTool(options),
+  ...gitTools(options),
+  ...(options.index === undefined ? [] : indexSearchTools({ index: options.index })),
   webFetchTool(),
 ];

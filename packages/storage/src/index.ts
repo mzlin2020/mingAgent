@@ -9,3 +9,4 @@ export * from './schema.js';
 export * from './sqlite-event-store.js';
 export * from './file-blob-store.js';
 export * from './open-store.js';
+export * from './workspace-index.js';

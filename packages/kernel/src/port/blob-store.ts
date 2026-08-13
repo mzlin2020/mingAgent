@@ -37,6 +37,12 @@ export interface BlobStore {
   put(data: Uint8Array, mime: string, name?: string): Promise<BlobRef>;
 
   /**
+   * 流式写入并返回引用。语义与 `put()` 相同：返回时内容已持久化，同一内容幂等。
+   * 大文件 checkpoint 必须走这个入口，不能先在主进程里拼成一整块。
+   */
+  putStream(data: AsyncIterable<Uint8Array>, mime: string, name?: string): Promise<BlobRef>;
+
+  /**
    * 流式读取。与 `EventStore.read()` 同样的理由：blob 可能是几十 MB 的截图或日志，
    * 一次性物化会阻塞主进程。
    *

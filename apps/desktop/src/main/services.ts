@@ -1,7 +1,15 @@
 import { app, safeStorage } from 'electron';
 import { join } from 'node:path';
-import type { BlobRef, Config, ContentBlock, SessionId } from '@xm/contracts';
-import { newSessionId } from '@xm/contracts';
+import type {
+  BlobRef,
+  CheckpointId,
+  CheckpointManifestV2,
+  Config,
+  ContentBlock,
+  EditProposalId,
+  SessionId,
+} from '@xm/contracts';
+import { newCallId, newSessionId } from '@xm/contracts';
 import type {
   OrphanedTurn,
   PlatformPort,
@@ -30,8 +38,10 @@ import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
 import type { ProviderStreamStatus } from '@xm/providers';
 import type { TurnDeps } from '@xm/runtime';
+import { recoverInterruptedSubagents, runSubagentExploration } from '@xm/runtime';
 import {
   EventBus,
+  ScriptedProvider,
   SessionRuntime,
   abandonOrphanedTurn,
   autoTitleSession,
@@ -41,9 +51,15 @@ import {
   synthesizeInterruption,
 } from '@xm/runtime';
 import type { PtySessionEvent } from '@xm/tools-core';
-import { PtySessionManager, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
+import {
+  PtySessionManager,
+  nodeCheckpointer,
+  nodeCheckpointRestorer,
+  nodeToolGateway,
+} from '@xm/tools-core';
 import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
+import { prepareReviewedProposal } from './edit-review.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
 import { productionTools } from './production-tools.js';
@@ -128,6 +144,13 @@ export interface Services {
    * 拿现成的，比让它自己重放一遍全部历史（旧行为）省掉一整趟 IPC 全量物化。
    */
   getSessionState(sessionId: SessionId): Promise<SerializedSessionState>;
+  inspectCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<CheckpointManifestV2>;
+  restoreCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<boolean>;
+  reviewEditProposal(
+    sessionId: SessionId,
+    proposalId: EditProposalId,
+    selectedHunkIds: readonly string[],
+  ): Promise<{ readonly applied: boolean; readonly derivedProposalId?: EditProposalId }>;
   /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
@@ -212,10 +235,25 @@ export async function startServices(): Promise<Services> {
    */
   const gateway = nodeToolGateway({ home: paths.home });
   const checkpointer = nodeCheckpointer({ blobs: stores.blobs });
+  const checkpointRestorer = nodeCheckpointRestorer(stores.blobs);
 
   const runtimes = new Map<SessionId, SessionRuntime>();
   /** 每会话一个 AbortController。它的存在期就是"这一轮正在跑" */
   const running = new Map<SessionId, AbortController>();
+  const withExclusiveSessionOperation = async <T>(
+    sessionId: SessionId,
+    busyMessage: string,
+    operation: (controller: AbortController) => Promise<T>,
+  ): Promise<T> => {
+    if (running.has(sessionId)) throw new Error(busyMessage);
+    const controller = new AbortController();
+    running.set(sessionId, controller);
+    try {
+      return await operation(controller);
+    } finally {
+      if (running.get(sessionId) === controller) running.delete(sessionId);
+    }
+  };
   /**
    * 后台任务（目前只有会话自动命名）的统一取消源。
    *
@@ -225,6 +263,12 @@ export async function startServices(): Promise<Services> {
    * 不该对主对话有任何影响。
    */
   const background = new AbortController();
+  const refreshIndex = (root: string): void => {
+    if (root === '') return;
+    void stores.index.refresh(root, background.signal).catch((error: unknown) => {
+      if (!background.signal.aborted) console.error('后台工作区索引失败：', error);
+    });
+  };
 
   /**
    * 崩溃恢复的起始扫描（M1-e，docs/04 §8 步骤 1）。**只读**——`scanForOrphanedSessions`
@@ -256,6 +300,8 @@ export async function startServices(): Promise<Services> {
     // 同一会话只允许一个写者（不变量四）：句柄的生命周期就是租约，缓存住它
     const created = await SessionRuntime.open({ sessionId, store: stores.events, bus });
     runtimes.set(sessionId, created);
+    refreshIndex(created.state.cwd);
+    await recoverInterruptedSubagents(created, stores.events);
     // PTY handles are process-local. An opened session replayed after restart cannot be reattached.
     for (const [ptySessionId] of created.state.ptySessions) {
       if (!ptySessions.has(sessionId, ptySessionId)) {
@@ -288,6 +334,7 @@ export async function startServices(): Promise<Services> {
   });
   for (const tool of productionTools({
     os: platform.os,
+    index: stores.index,
     ptySessions,
     updateTodos: async ({ sessionId, todos }) => {
       const runtime = await runtimeFor(sessionId);
@@ -310,6 +357,65 @@ export async function startServices(): Promise<Services> {
         return undefined;
       },
     },
+    editProposals: {
+      save: async (sessionId, proposal) => {
+        const runtime = await runtimeFor(sessionId);
+        const turnId = runtime.state.activeTurn?.turnId;
+        await runtime.record({
+          type: 'edit.proposed',
+          payload: { proposal },
+          ...(turnId === undefined ? {} : { turnId }),
+        });
+      },
+      get: async (sessionId, proposalId) => {
+        const runtime = await runtimeFor(sessionId);
+        const item = runtime.state.editProposals.find(
+          (candidate) => candidate.proposal.proposalId === proposalId,
+        );
+        return item === undefined
+          ? undefined
+          : { proposal: item.proposal, applied: item.appliedAt !== undefined };
+      },
+      markApplied: async (sessionId, proposalId) => {
+        const runtime = await runtimeFor(sessionId);
+        const turnId = runtime.state.activeTurn?.turnId;
+        await runtime.record({
+          type: 'edit.applied',
+          payload: { proposalId },
+          ...(turnId === undefined ? {} : { turnId }),
+        });
+      },
+    },
+    explore: async (request) => {
+      const parentRuntime = await runtimeFor(request.sessionId);
+      const ref = modelRefFor('subagent');
+      const provider =
+        (await providerFor(ref, async (status) => {
+          await parentRuntime.record({ type: 'provider.status', payload: status });
+        })) ?? onboardingProvider(request.purpose);
+      return runSubagentExploration(
+        {
+          parentRuntime,
+          store: stores.events,
+          bus,
+          parentTools: tools,
+          provider,
+          model: provider.id === 'scripted' ? 'scripted-1' : ref.model,
+          layers,
+          toolAvailability: {
+            executor: 'local',
+            platform: platform.capabilities(),
+            disabledTools: config.tools.disabled,
+          },
+          hostOs: platform.os,
+          gateway,
+          blobs: stores.blobs,
+          prices: config.prices,
+          pathCaseInsensitive: platform.os === 'windows',
+        },
+        request,
+      );
+    },
   })) {
     tools.register(tool);
   }
@@ -323,7 +429,7 @@ export async function startServices(): Promise<Services> {
    * "对所有人都能用、对某些人略贵"是可接受的降级；"对一部分人更便宜、对另一部分人
    * 静默失效"不是。`summarize` 保持纯 opt-in。
    */
-  const modelRefFor = (role: 'main' | 'summarize'): { provider: string; model: string } =>
+  const modelRefFor = (role: 'main' | 'summarize' | 'subagent'): { provider: string; model: string } =>
     configuredModelRef(config, role);
 
   const modelRef = (): { provider: string; model: string } => modelRefFor('main');
@@ -438,6 +544,7 @@ export async function startServices(): Promise<Services> {
           ...(options.title === undefined ? {} : { title: options.title }),
         },
       });
+      refreshIndex(runtime.state.cwd);
 
       /*
        * 降级与配置问题**在会话里留痕**，不只是在界面上闪一下。
@@ -576,6 +683,111 @@ export async function startServices(): Promise<Services> {
     async getSessionState(sessionId: SessionId): Promise<SerializedSessionState> {
       const runtime = await runtimeFor(sessionId);
       return serializeSessionState(runtime.state);
+    },
+
+    async inspectCheckpoint(
+      sessionId: SessionId,
+      checkpointId: CheckpointId,
+    ): Promise<CheckpointManifestV2> {
+      const runtime = await runtimeFor(sessionId);
+      const checkpoint = runtime.state.checkpoints.find((item) => item.checkpointId === checkpointId);
+      if (checkpoint?.manifestRef === undefined) throw new Error('该还原点没有可读取的 v2 manifest。');
+      return checkpointRestorer.inspect(checkpoint.manifestRef);
+    },
+
+    async restoreCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<boolean> {
+      return withExclusiveSessionOperation(
+        sessionId,
+        '会话仍在运行，不能同时恢复文件。',
+        async (controller) => {
+          const runtime = await runtimeFor(sessionId);
+          const checkpoint = runtime.state.checkpoints.find(
+            (item) => item.checkpointId === checkpointId,
+          );
+          if (checkpoint === undefined) throw new Error('找不到该还原点。');
+          if (checkpoint.restoredAt !== undefined) return false;
+          if (checkpoint.kind !== 'fs' || checkpoint.manifestRef === undefined) {
+            throw new Error('该还原点不支持文件系统恢复。');
+          }
+
+          await runtime.record({
+            type: 'checkpoint.restore.started',
+            payload: { checkpointId },
+          });
+          try {
+            await checkpointRestorer.restore(checkpoint.manifestRef, controller.signal);
+            await runtime.record({ type: 'checkpoint.restored', payload: { checkpointId } });
+            return true;
+          } catch (error) {
+            await runtime.record({
+              type: 'checkpoint.restore.failed',
+              payload: {
+                checkpointId,
+                message: error instanceof Error ? error.message : String(error),
+              },
+            });
+            throw error;
+          }
+        },
+      );
+    },
+
+    async reviewEditProposal(sessionId, proposalId, selectedHunkIds) {
+      return withExclusiveSessionOperation(
+        sessionId,
+        '会话仍在运行，不能同时应用 diff 审阅结果。',
+        async (controller) => {
+          const runtime = await runtimeFor(sessionId);
+          const item = runtime.state.editProposals.find(
+            (candidate) => candidate.proposal.proposalId === proposalId,
+          );
+          if (item === undefined || item.appliedAt !== undefined || item.reviewedAt !== undefined) {
+            throw new Error('该编辑提案已处理或不存在。');
+          }
+          const derived = await prepareReviewedProposal(item, selectedHunkIds);
+
+          await runtime.record({
+            type: 'edit.reviewed',
+            payload: { proposalId, selectedHunkIds: [...selectedHunkIds] },
+          });
+          if (derived === undefined) return { applied: false };
+          await runtime.record({ type: 'edit.proposed', payload: { proposal: derived } });
+
+          const callId = newCallId();
+          const deps = await buildTurnDeps(sessionId, runtime, controller);
+          const provider = new ScriptedProvider({
+            turns: [
+              {
+                chunks: [
+                  { kind: 'tool_call_start', id: callId, name: 'edit.apply' },
+                  {
+                    kind: 'tool_call_delta',
+                    id: callId,
+                    argsJson: JSON.stringify({
+                      proposalId: derived.proposalId,
+                      files: derived.files.map((file) => ({
+                        path: file.path,
+                        beforeHash: file.beforeHash,
+                      })),
+                    }),
+                  },
+                  { kind: 'tool_call_end', id: callId },
+                  { kind: 'stop', reason: 'tool_use' },
+                ],
+              },
+              { chunks: [{ kind: 'stop', reason: 'end_turn' }] },
+            ],
+          });
+          await runTurn(
+            { ...deps, provider, model: 'scripted-1' },
+            [{ type: 'text', text: `用户从 diff 面板应用提案 ${proposalId} 的选中块。` }],
+          );
+          const applied = runtime.state.editProposals.find(
+            (candidate) => candidate.proposal.proposalId === derived.proposalId,
+          )?.appliedAt !== undefined;
+          return { applied, derivedProposalId: derived.proposalId };
+        },
+      );
     },
 
     /**

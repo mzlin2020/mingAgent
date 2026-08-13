@@ -30,6 +30,7 @@ import type {
  * （`spec.capabilities`），加一道检查不需要新的基础设施。
  */
 export const EMPTY_CAPABILITIES_ALLOWLIST: Readonly<Record<string, string>> = {
+  'agent.explore': 'ADR-0049（元工具只编排隔离子会话；实际只读访问仍由子工具逐次判权）',
   'result.expand': 'ADR-0042（只展开当前会话 tool.end.fullRef 已授权可达的工具结果）',
   'todo.update': 'ADR-0041（只更新当前会话内的可见任务清单，没有会话外副作用）',
   'shell.session.status': 'ADR-0040（只读查询当前会话所属终端的有界状态）',

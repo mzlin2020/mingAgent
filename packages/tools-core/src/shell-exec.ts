@@ -153,7 +153,7 @@ export function shellChildEnv(options: ShellExecOptions): Record<string, string>
   return out;
 }
 
-interface RunOutcome {
+export interface RunOutcome {
   readonly stdout: string;
   readonly stderr: string;
   readonly code: number | undefined;
@@ -164,7 +164,7 @@ interface RunOutcome {
   readonly spawnError?: string;
 }
 
-interface RunInput {
+export interface RunInput {
   readonly bin: string;
   readonly args: readonly string[];
   readonly cwd: string;
@@ -174,7 +174,7 @@ interface RunInput {
   readonly signal: { readonly aborted: boolean; addEventListener(t: 'abort', l: () => void): void; removeEventListener(t: 'abort', l: () => void): void };
 }
 
-function runCommand(input: RunInput): Promise<RunOutcome> {
+export function runCommand(input: RunInput): Promise<RunOutcome> {
   return new Promise<RunOutcome>((done) => {
     const child = spawn(input.bin, [...input.args], {
       cwd: input.cwd,

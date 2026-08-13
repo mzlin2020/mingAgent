@@ -10,7 +10,7 @@ import type {
 import { newMessageId, newTurnId, xmError } from '@xm/contracts';
 import type { AbortLike } from '@xm/kernel';
 import { costOf, lookupPrice } from '@xm/kernel';
-import { buildTurnRequest } from './turn-request.js';
+import { ContextBuilder } from './context-builder.js';
 import { dispatchCall } from './turn-tools.js';
 import type { PendingCall, TurnDeps } from './turn-types.js';
 
@@ -167,6 +167,22 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
   const { runtime, provider } = deps;
   const messageId = newMessageId();
 
+  let request: ModelRequest;
+  try {
+    request = await new ContextBuilder(deps).build(turnId);
+  } catch (error) {
+    const failure =
+      error instanceof Error
+        ? xmError('provider_error', error.message)
+        : xmError('internal', String(error));
+    await runtime.record({
+      type: 'error.raised',
+      turnId,
+      payload: { error: failure, fatal: false },
+    });
+    return { stopReason: 'error', calls: [] };
+  }
+
   await runtime.record({
     type: 'message.start',
     turnId,
@@ -184,7 +200,7 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
   let failure: ReturnType<typeof xmError> | undefined;
 
   try {
-    for await (const chunk of provider.stream(buildRequest(deps), signal)) {
+    for await (const chunk of provider.stream(request, signal)) {
       switch (chunk.kind) {
         case 'text_delta':
           text += chunk.text;
@@ -338,13 +354,6 @@ async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult>
 // ── 一次工具调用 ─────────────────────────────────────────────────
 
 // ── 小工具 ──────────────────────────────────────────────────────
-
-function buildRequest(deps: TurnDeps): ModelRequest {
-  return buildTurnRequest({
-    ...deps,
-    providerMaxOutputTokens: deps.provider.capabilities(deps.model).maxOutput,
-  });
-}
 
 /** 模型给的参数 JSON 可能是残缺的；消息事件保留一个安全的对象形状。 */
 function parseArgs(argsJson: string): unknown {

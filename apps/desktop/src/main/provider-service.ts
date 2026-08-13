@@ -10,8 +10,14 @@ export interface ModelRef {
   readonly model: string;
 }
 
-export function configuredModelRef(config: Config, role: 'main' | 'summarize'): ModelRef {
-  return parseModelRef((role === 'summarize' ? config.model.summarize : undefined) ?? config.model.main);
+export function configuredModelRef(config: Config, role: 'main' | 'summarize' | 'subagent'): ModelRef {
+  const configured =
+    role === 'summarize'
+      ? config.model.summarize
+      : role === 'subagent'
+        ? config.model.subagent
+        : undefined;
+  return parseModelRef(configured ?? config.model.main);
 }
 
 export async function openConfiguredProvider(input: {

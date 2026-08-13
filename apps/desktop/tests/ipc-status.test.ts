@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { newEditProposalId, newSessionId } from '@xm/contracts';
 import { IpcEnvelope, StatusResult } from '../src/shared/ipc.js';
 import { CH } from '../src/shared/channels.js';
 import type { RuntimeStatus, Services } from '../src/main/services.js';
@@ -50,5 +51,29 @@ describe('desktop status IPC', () => {
     expect(envelope.ok).toBe(true);
     if (!envelope.ok) return;
     expect(StatusResult.parse(envelope.data).security).toEqual(security);
+  });
+});
+
+describe('diff review IPC handler', () => {
+  it('校验窄入参并把选择原样交给 services', async () => {
+    const reviewEditProposal = vi.fn(() => Promise.resolve({ applied: true }));
+    const services = {
+      reviewEditProposal,
+      bus: { subscribe: vi.fn() },
+    } as unknown as Services;
+    registerIpc(services, () => []);
+    const handler = mockedElectron.handlers.get(CH.reviewEditProposal);
+    const request = {
+      sessionId: newSessionId(),
+      proposalId: newEditProposalId(),
+      selectedHunkIds: ['0:0'],
+    };
+    const envelope = IpcEnvelope.parse(await handler?.({}, request));
+    expect(envelope).toMatchObject({ ok: true, data: { applied: true } });
+    expect(reviewEditProposal).toHaveBeenCalledWith(
+      request.sessionId,
+      request.proposalId,
+      request.selectedHunkIds,
+    );
   });
 });

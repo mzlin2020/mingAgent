@@ -12,6 +12,7 @@ import {
   fsReadTool,
   fsWriteTool,
   nodeCheckpointer,
+  nodeCheckpointRestorer,
   shellExecTool,
 } from '@xm/tools-core';
 
@@ -168,11 +169,13 @@ describe('工具声明', () => {
     }
   });
 
-  it('都声明了资源，因此不会被默认降级成 exclusive', () => {
+  it('都声明了资源；共享进程或 Git 工作树状态的工具显式串行', () => {
     for (const t of coreTools({ os: 'linux' })) {
       // shell.exec 是**显式**声明的 exclusive：一条命令能改动的东西无法从入参判断，
-      // 与别的调用并发跑就是数据竞争（ADR-0005 "声明不了就别并发"）
-      const want = t.descriptor.name === 'shell.exec' ? 'exclusive' : 'parallel';
+      // Git 工具共享 index/HEAD；与同仓库的其它调用并发同样是数据竞争。
+      const want = t.descriptor.name === 'shell.exec' || t.descriptor.group === 'git'
+        ? 'exclusive'
+        : 'parallel';
       expect(t.descriptor.concurrency, t.descriptor.name).toBe(want);
     }
   });
@@ -194,7 +197,8 @@ describe('写前还原点', () => {
     );
 
     expect(record?.record?.kind).toBe('fs');
-    expect(record?.record?.ref).toMatch(/^sha256:[a-f0-9]{64}:3$/);
+    expect(record?.record?.manifestRef).toBeDefined();
+    expect(record?.record?.ref).toMatch(/^sha256:[a-f0-9]{64}:\d+$/);
     expect(record?.record?.label).toContain('3 字节');
   });
 
@@ -237,15 +241,19 @@ describe('写前还原点', () => {
     expect(record?.record?.label).toContain('3 字节');
   });
 
-  it('目录快照做不了，而且说得出来 —— 绝不假装存过', async () => {
-    const record = await nodeCheckpointer({ blobs: blobs() }).before(
+  it('目录树形成一个结构化还原点', async () => {
+    const store = blobs();
+    await writeFile(join(dir, 'inside.txt'), 'OLD');
+    const record = await nodeCheckpointer({ blobs: store }).before(
       shellExecTool({ os: 'linux' }),
       { argv: ['rm', '-rf', dir] },
       ctx(),
       [{ capability: 'fs.delete', target: dir }],
     );
-    expect(record?.record).toBeUndefined();
-    expect(record?.warnings.join('；')).toContain('没有还原点');
+    expect(record?.record?.manifestRef).toBeDefined();
+    const manifest = await nodeCheckpointRestorer(store).inspect(record!.record!.manifestRef!);
+    expect(manifest.targets[0]).toMatchObject({ kind: 'directory', path: dir });
+    expect(record?.warnings).toEqual([]);
   });
 
   it('🔴 判据来自这次调用的主张，不是一份工具名单', async () => {
@@ -284,18 +292,21 @@ describe('写前还原点', () => {
     ).rejects.toThrow('denied');
   });
 
-  it('large files continue with an explicit warning and no fake checkpoint', async () => {
+  it('大文件流式进入 BlobStore，不再因固定上限失去还原点', async () => {
     const target = join(dir, 'large.bin');
-    await writeFile(target, 'x');
-    const result = await nodeCheckpointer({
-      blobs: blobs(),
-      readFileBytes: (() =>
-        Promise.resolve(Buffer.alloc(8 * 1024 * 1024 + 1))) as unknown as typeof import('node:fs/promises').readFile,
-    }).before(fsWriteTool(), { path: target, content: 'NEW' }, ctx(), [
+    const store = blobs();
+    await writeFile(target, Buffer.alloc(8 * 1024 * 1024 + 1, 7));
+    const result = await nodeCheckpointer({ blobs: store }).before(
+      fsWriteTool(),
+      { path: target, content: 'NEW' },
+      ctx(),
+      [
       { capability: 'fs.write', target },
-    ]);
-    expect(result?.record).toBeUndefined();
-    expect(result?.warnings.join(' ')).toContain('超过快照上限');
+      ],
+    );
+    const manifest = await nodeCheckpointRestorer(store).inspect(result!.record!.manifestRef!);
+    expect(manifest.targets[0]).toMatchObject({ kind: 'file', content: { size: 8 * 1024 * 1024 + 1 } });
+    expect(result?.warnings).toEqual([]);
   });
 
   it('blob persistence failure for an existing file rejects execution', async () => {
@@ -303,6 +314,7 @@ describe('写前还原点', () => {
     await writeFile(target, 'OLD');
     const failedBlobs = {
       put: () => Promise.reject(new Error('blob unavailable')),
+      putStream: () => Promise.reject(new Error('blob unavailable')),
       get: () => Promise.resolve(undefined),
     } as unknown as BlobStore;
     await expect(

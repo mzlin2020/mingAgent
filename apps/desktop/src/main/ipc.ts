@@ -7,9 +7,12 @@ import {
   ClearUntrustedRequest,
   CreateSessionRequest,
   InterruptRequest,
+  InspectCheckpointRequest,
   ReadBlobRequest,
   ReadSessionRequest,
   ResumeOrphanedSessionRequest,
+  RestoreCheckpointRequest,
+  ReviewEditProposalRequest,
   SendUserMessageRequest,
   SetApiKeyRequest,
 } from '../shared/ipc.js';
@@ -50,6 +53,18 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   handle(CH.readSession, ReadSessionRequest, async (req) => {
     return services.getSessionState(req.sessionId);
   });
+
+  handle(CH.inspectCheckpoint, InspectCheckpointRequest, async (req) =>
+    services.inspectCheckpoint(req.sessionId, req.checkpointId),
+  );
+
+  handle(CH.restoreCheckpoint, RestoreCheckpointRequest, async (req) => ({
+    restored: await services.restoreCheckpoint(req.sessionId, req.checkpointId),
+  }));
+
+  handle(CH.reviewEditProposal, ReviewEditProposalRequest, async (req) =>
+    services.reviewEditProposal(req.sessionId, req.proposalId, req.selectedHunkIds),
+  );
 
   handle(CH.clearUntrusted, ClearUntrustedRequest, async (req) => ({
     cleared: await services.clearUntrusted(req.sessionId, req.reason),

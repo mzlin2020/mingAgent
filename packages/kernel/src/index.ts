@@ -28,6 +28,7 @@ export * from './port/model-provider.js';
 export * from './port/secret-store.js';
 export * from './port/tool-gateway.js';
 export * from './port/checkpointer.js';
+export * from './port/workspace-index.js';
 
 export * from './model/cost.js';
 

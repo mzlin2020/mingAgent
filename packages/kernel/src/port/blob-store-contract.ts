@@ -55,6 +55,23 @@ export const BLOB_STORE_CONTRACT: readonly BlobStoreCase[] = [
   },
 
   {
+    name: '流式写入跨块保持原始字节并与 put 共用内容地址',
+    async run(makeStore) {
+      const store = makeStore();
+      const expected = Uint8Array.from([0, 1, 2, 0xfe, 0xff, 3, 4]);
+      const streamed = await store.putStream(chunksOf(expected, [2, 1, 3]), 'application/octet-stream');
+      const direct = await store.put(expected, 'application/octet-stream');
+      assert(streamed.hash === direct.hash, '块边界不得影响内容地址');
+      assert(streamed.size === expected.length, '流式引用应记录总字节数');
+      const back = await readBlob(store, streamed);
+      assert(
+        back.length === expected.length && back.every((b, i) => b === expected[i]),
+        '流式写入必须逐字节读回',
+      );
+    },
+  },
+
+  {
     name: '不同内容得到不同 hash',
     async run(makeStore) {
       const store = makeStore();
@@ -155,3 +172,28 @@ export const BLOB_STORE_CONTRACT: readonly BlobStoreCase[] = [
     },
   },
 ];
+
+function chunksOf(data: Uint8Array, sizes: readonly number[]): AsyncIterable<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+  for (const size of sizes) {
+    chunks.push(data.subarray(offset, offset + size));
+    offset += size;
+  }
+  if (offset < data.length) chunks.push(data.subarray(offset));
+  return {
+    [Symbol.asyncIterator]() {
+      let index = 0;
+      return {
+        next: () => {
+          const value = chunks[index];
+          if (value === undefined) {
+            return Promise.resolve({ done: true as const, value: undefined });
+          }
+          index += 1;
+          return Promise.resolve({ done: false as const, value });
+        },
+      };
+    },
+  };
+}

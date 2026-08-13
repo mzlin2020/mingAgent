@@ -1,7 +1,9 @@
-import type { ContentBlock, Message, MessageId, XmEvent } from '@xm/contracts';
+import type { ContentBlock, MessageId, XmEvent } from '@xm/contracts';
 import { addUsage, mergeConfig, restrictSessionPatch } from '@xm/contracts';
 import type { SessionState } from './session-state.js';
+import { compactionOf } from './context-compaction.js';
 import { taintOf } from './taint.js';
+import { appendToolResult } from './tool-result.js';
 
 /**
  * 事件 → 状态的归约。**纯函数**：不读时间、不取随机数、不碰文件系统。
@@ -219,7 +221,13 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     case 'subagent.end': {
       const subs = new Map(state.runningSubagents);
       subs.delete(e.payload.agentId);
-      return { ...state, runningSubagents: subs, lastSeq: e.seq };
+      return {
+        ...state,
+        runningSubagents: subs,
+        // 父已有污点时保留更早来源；否则原样接收子会话末态（ADR-0033）。
+        untrustedContext: state.untrustedContext ?? e.payload.untrustedContext,
+        lastSeq: e.seq,
+      };
     }
 
     // ── 上下文与运维 ──────────────────────────────────────────
@@ -230,13 +238,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         ...state,
         compactions: [
           ...state.compactions,
-          {
-            fromSeq: e.payload.fromSeq,
-            toSeq: e.payload.toSeq,
-            summaryRef: e.payload.summaryRef,
-            tokensBefore: e.payload.tokensBefore,
-            tokensAfter: e.payload.tokensAfter,
-          },
+          compactionOf(e.payload),
         ],
         lastSeq: e.seq,
       };
@@ -265,9 +267,76 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
             kind: e.payload.kind,
             ref: e.payload.ref,
             label: e.payload.label,
+            manifestRef: e.payload.manifestRef,
+            callId: e.payload.callId,
+            restoreStartedAt: undefined,
+            restoreFailure: undefined,
             restoredAt: undefined,
           },
         ],
+        lastSeq: e.seq,
+      };
+
+    case 'edit.proposed':
+      return {
+        ...state,
+        editProposals: [
+          ...state.editProposals.filter(
+            (item) => item.proposal.proposalId !== e.payload.proposal.proposalId,
+          ),
+          {
+            proposal: e.payload.proposal,
+            appliedAt: undefined,
+            reviewedAt: undefined,
+            selectedHunkIds: undefined,
+          },
+        ],
+        lastSeq: e.seq,
+      };
+
+    case 'edit.reviewed':
+      return {
+        ...state,
+        editProposals: state.editProposals.map((item) =>
+          item.proposal.proposalId === e.payload.proposalId
+            ? { ...item, reviewedAt: e.ts, selectedHunkIds: e.payload.selectedHunkIds }
+            : item,
+        ),
+        lastSeq: e.seq,
+      };
+
+    case 'edit.applied':
+      return {
+        ...state,
+        editProposals: state.editProposals.map((item) =>
+          item.proposal.proposalId === e.payload.proposalId ? { ...item, appliedAt: e.ts } : item,
+        ),
+        lastSeq: e.seq,
+      };
+
+    case 'checkpoint.restore.started':
+      return {
+        ...state,
+        checkpoints: state.checkpoints.map((c) =>
+          c.checkpointId === e.payload.checkpointId
+            ? { ...c, restoreStartedAt: e.ts, restoreFailure: undefined }
+            : c,
+        ),
+        lastSeq: e.seq,
+      };
+
+    case 'checkpoint.restore.failed':
+      return {
+        ...state,
+        checkpoints: state.checkpoints.map((c) =>
+          c.checkpointId === e.payload.checkpointId
+            ? {
+                ...c,
+                restoreStartedAt: undefined,
+                restoreFailure: { message: e.payload.message, ts: e.ts },
+              }
+            : c,
+        ),
         lastSeq: e.seq,
       };
 
@@ -275,7 +344,9 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       return {
         ...state,
         checkpoints: state.checkpoints.map((c) =>
-          c.checkpointId === e.payload.checkpointId ? { ...c, restoredAt: e.ts } : c,
+          c.checkpointId === e.payload.checkpointId
+            ? { ...c, restoreStartedAt: undefined, restoreFailure: undefined, restoredAt: e.ts }
+            : c,
         ),
         lastSeq: e.seq,
       };
@@ -317,25 +388,3 @@ export const reduceAll = (initial: SessionState, events: Iterable<XmEvent>): Ses
   for (const e of events) state = reduce(state, e);
   return state;
 };
-
-/**
- * 工具结果要作为 `tool_result` 块进 user 消息（Anthropic 形状，见 contracts/content/message.ts）。
- *
- * 并行的多个工具调用应该合进同一条 user 消息——所以这里把结果追加到"末尾那条纯
- * tool_result 的 user 消息"上；没有就新建一条。判断是纯结构性的，因此仍然确定性。
- */
-function appendToolResult(
-  messages: readonly Message[],
-  block: ContentBlock,
-  fallbackId: MessageId,
-  ts: number,
-): readonly Message[] {
-  const last = messages.at(-1);
-  const isToolResultBucket =
-    last?.role === 'user' && last.blocks.length > 0 && last.blocks.every((b) => b.type === 'tool_result');
-
-  if (isToolResultBucket) {
-    return [...messages.slice(0, -1), { ...last, blocks: [...last.blocks, block] }];
-  }
-  return [...messages, { id: fallbackId, role: 'user', blocks: [block], ts }];
-}

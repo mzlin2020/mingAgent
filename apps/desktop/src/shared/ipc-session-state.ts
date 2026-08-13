@@ -6,6 +6,7 @@ import {
   Capability,
   CheckpointId,
   ConfigPatch,
+  EditProposal,
   Message,
   MessageId,
   PtySessionId,
@@ -81,7 +82,19 @@ const CheckpointSchema = z.object({
   kind: z.enum(['fs', 'git']),
   ref: z.string(),
   label: z.string(),
+  manifestRef: BlobRef.or(z.undefined()),
+  callId: CallId.or(z.undefined()),
+  restoreStartedAt: z.number().or(z.undefined()),
+  restoreFailure: z
+    .object({ message: z.string(), ts: z.number() })
+    .or(z.undefined()),
   restoredAt: z.number().or(z.undefined()),
+});
+const EditProposalStateSchema = z.object({
+  proposal: EditProposal,
+  appliedAt: z.number().or(z.undefined()),
+  reviewedAt: z.number().or(z.undefined()),
+  selectedHunkIds: z.array(z.string()).or(z.undefined()),
 });
 const CompactionSchema = z.object({
   fromSeq: z.number(),
@@ -89,6 +102,13 @@ const CompactionSchema = z.object({
   summaryRef: BlobRef,
   tokensBefore: z.number(),
   tokensAfter: z.number(),
+  strategy: z.literal('tiered-75-v1').optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  maxContextTokens: z.number().optional(),
+  thresholdTokens: z.number().optional(),
+  reservedTokens: z.number().optional(),
+  recentFromSeq: z.number().optional(),
 });
 const UsageTotalsSchema = z.object({
   usage: Usage,
@@ -126,6 +146,7 @@ export const SerializedSessionStateResult = z.object({
     .or(z.undefined()),
   untrustedContext: UntrustedContextSchema.or(z.undefined()),
   todos: z.array(Todo),
+  editProposals: z.array(EditProposalStateSchema),
   runningCalls: z.array(z.tuple([CallId, RunningCallSchema])),
   interruptedCalls: z.array(RunningCallSchema),
   runningSubagents: z.array(z.tuple([AgentId, RunningSubagentSchema])),

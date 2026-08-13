@@ -15,6 +15,7 @@ import {
   normalizeHostTarget,
 } from '@xm/kernel';
 import { asInputRecord, canonicalPath, resolveDeepPath } from './gateway-path.js';
+import { resolvePathFields } from './gateway-path-inputs.js';
 
 /**
  * 路径能力网关的 Node 实现（ADR-0024）。
@@ -109,27 +110,18 @@ export const nodeToolGateway = (options: NodeGatewayOptions = {}): ToolGateway =
     }
 
     const record = asInputRecord(input, tool.descriptor.name);
-    const out: Record<string, unknown> = { ...record };
-    let target = '';
-
-    for (const field of tool.pathInputs) {
-      const raw = record[field];
-      // 可选的路径字段没给值就跳过——它不是错误，只是这次调用没用到
-      if (raw === undefined) continue;
-      if (typeof raw !== 'string' || raw === '') {
-        throw new GatewayError(
-          `工具 ${tool.descriptor.name} 的入参 "${field}" 应当是一个非空路径字符串。`,
-          { tool: tool.descriptor.name, field },
-        );
-      }
-
-      const resolved = canonicalPath(await resolveDeepPath(resolve(cwd, raw)), tool.descriptor.name, field);
-      out[field] = resolved;
-      // 第一个声明的字段就是判权用的 target（`pathInputs` 按判权重要性排序）
-      if (target === '') target = resolved;
-    }
-
-    return { input: out, claims: claimsOfCapabilities(tool.descriptor.capabilities, target) };
+    const resolved = await resolvePathFields(tool, record, cwd);
+    const out = resolved.input;
+    const uniqueTargets = [...new Set(resolved.targets)];
+    return {
+      input: out,
+      claims:
+        uniqueTargets.length === 0
+          ? claimsOfCapabilities(tool.descriptor.capabilities, '')
+          : uniqueTargets.flatMap((target) =>
+              claimsOfCapabilities(tool.descriptor.capabilities, target),
+            ),
+    };
   },
 });
 
@@ -192,9 +184,12 @@ async function resolveCommand(
   const analysis = analyzeArgv(argv);
   if (!analysis.ok) throw new GatewayError(analysis.reason, { tool: name });
 
-  const claims: PermissionClaim[] = tool.descriptor.capabilities
-    .filter((c) => targetKindOf(c) === 'command')
-    .map((capability) => ({ capability, target: analysis.canonical }));
+  // 命令类工具还可能同时声明 git.write 等副作用能力。每项静态能力都必须保留一条
+  // 主张，否则 runtime 的“主张只能加不能减”断言会（正确地）拒绝这次调用。
+  const claims: PermissionClaim[] = tool.descriptor.capabilities.map((capability) => ({
+    capability,
+    target: analysis.canonical,
+  }));
 
   for (const claim of analysis.claims) {
     if (claim.target.kind === 'literal') {

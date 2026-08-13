@@ -5,6 +5,7 @@ import {
   AgentId,
   CallId,
   CheckpointId,
+  EditProposalId,
   MessageId,
   PtySessionId,
   RequestId,
@@ -18,6 +19,7 @@ import { StopReason, Usage } from '../model/usage.js';
 import { Capability } from '../permission/capability.js';
 import { TrustLevel } from '../permission/request.js';
 import { Todo } from '../session/todo.js';
+import { EditProposal } from '../session/edit.js';
 import { RiskLevel } from '../tool/descriptor.js';
 import { DisplayHint } from '../tool/display.js';
 
@@ -272,6 +274,16 @@ export const SubagentEndPayload = z.looseObject({
   ok: z.boolean(),
   /** 只回传结论，不回传子 Agent 的完整上下文 */
   summary: z.array(ResultBlock),
+  reason: z.enum(['completed', 'failed', 'aborted', 'timeout', 'interrupted']).optional(),
+  /** 子会话末态污点的来源；父 reducer 按既有粘性语义并入（ADR-0033/0049）。 */
+  untrustedContext: z
+    .object({
+      callId: CallId,
+      toolName: z.string(),
+      viaCapability: Capability,
+      since: z.number().int(),
+    })
+    .optional(),
 });
 
 // ── 上下文与运维 ────────────────────────────────────────────────────
@@ -286,6 +298,14 @@ export const ContextCompactedPayload = z.looseObject({
   summaryRef: BlobRef,
   tokensBefore: z.number().int().nonnegative(),
   tokensAfter: z.number().int().nonnegative(),
+  /** 下面这些字段让一次压缩决定可解释；均可选以兼容 M0 的历史事件。 */
+  strategy: z.literal('tiered-75-v1').optional(),
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  maxContextTokens: z.number().int().positive().optional(),
+  thresholdTokens: z.number().int().positive().optional(),
+  reservedTokens: z.number().int().nonnegative().optional(),
+  recentFromSeq: z.number().int().positive().optional(),
 });
 
 export const UsagePayload = z.looseObject({
@@ -311,6 +331,32 @@ export const CheckpointCreatedPayload = z.looseObject({
   /** git commit sha 或快照目录标识 */
   ref: z.string(),
   label: z.string(),
+  /** v2 文件系统还原计划；旧事件没有该字段。 */
+  manifestRef: BlobRef.optional(),
+  /** 触发还原点的工具调用；旧事件没有该字段。 */
+  callId: CallId.optional(),
+});
+
+export const EditProposedPayload = z.looseObject({
+  proposal: EditProposal,
+});
+
+export const EditAppliedPayload = z.looseObject({
+  proposalId: EditProposalId,
+});
+
+export const EditReviewedPayload = z.looseObject({
+  proposalId: EditProposalId,
+  selectedHunkIds: z.array(z.string()),
+});
+
+export const CheckpointRestoreStartedPayload = z.looseObject({
+  checkpointId: CheckpointId,
+});
+
+export const CheckpointRestoreFailedPayload = z.looseObject({
+  checkpointId: CheckpointId,
+  message: z.string(),
 });
 
 export const CheckpointRestoredPayload = z.looseObject({
