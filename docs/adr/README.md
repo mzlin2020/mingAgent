@@ -56,14 +56,16 @@
 | [0039](./0039-放弃审批模式.md) | 放弃审批模式：权限模型收敛为「红线 + 拒绝清单」——判定只剩 `allow`/`deny`，`evaluate()` 从五步降到三步，三档模式/注入降级/会话授权/审批 UI 全部删除；「严重项」判据改写成三条声明式的污染上下文 deny，并补上 ADR-0019 那个一直没做的「解除标记」按钮（Supersedes 0030/0034/0035/0036，落实用户 2026-08-11 的产品决定） | 🟢 Accepted | 2026-08-11 |
 | [0040](./0040-M1.5自主安全边界与受控终端.md) | M1.5 自主安全边界、核心资源保护、受控 argv 终端、checkpoint 分级与非 OS 沙箱限制 | 🟢 Accepted | 2026-08-12 |
 | [0041](./0041-M2-a可见任务清单与窄事件写入口.md) | M2-a 可见任务清单：`todo.update` 通过窄回调写入 `todo.updated`，不向 `ToolContext` 暴露通用事件入口；空能力集代表无会话外副作用 | 🟢 Accepted | 2026-08-12 |
-| [0042](./0042-M2-b文本检索与会话内结果展开.md) | M2-b 文本检索与结果展开：`search.text` 经路径网关调用 ripgrep；`result.expand` 只读取当前会话 `tool.end.fullRef` 可达的 Blob | 🟢 Accepted | 2026-08-12 |
+| [0042](./0042-M2-b文本检索与会话内结果展开.md)（部分被 0051 取代） | M2-b 文本检索与结果展开：`search.text` 经路径网关调用 ripgrep；`result.expand` 只读取当前会话 `tool.end.fullRef` 可达的 Blob | 🟢 Accepted | 2026-08-12 |
 | [0043](./0043-M2-c-Checkpoint-v2与整组撤销.md) | M2-c Checkpoint v2：整组 manifest、目录与大文件流式快照、一次性可审计恢复及 Blob GC 可达性规则 | 🟢 Accepted | 2026-08-12 |
-| [0044](./0044-M2-d精确编辑与多文件事务.md) | M2-d 精确编辑：持久 preview/apply 提案、逐路径判权、内容漂移检测与整组 checkpoint 故障恢复 | 🟢 Accepted | 2026-08-12 |
+| [0044](./0044-M2-d精确编辑与多文件事务.md)（部分被 0050 取代） | M2-d 精确编辑：持久 preview/apply 提案、逐路径判权、内容漂移检测与整组 checkpoint 故障恢复 | 🟢 Accepted | 2026-08-12 |
 | [0045](./0045-M2-e-diff审阅不是权限审批.md) | M2-e diff 审阅：选择生成收窄提案并复用完整 apply 分发路径，不恢复 ask/授权；持久 hunk 与有界渲染 | 🟢 Accepted | 2026-08-12 |
 | [0046](./0046-M2-f本地Git工具与显式提交范围.md) | M2-f 本地 Git：四个窄 argv 工具、结构化错误、path-only commit 默认排除其它既有改动 | 🟢 Accepted | 2026-08-13 |
-| [0047](./0047-M2-g可重建WASM符号与FTS索引.md) | M2-g 索引：同一套 tree-sitter WASM、独立可重建 FTS5 派生库、按需增量与 ripgrep fallback | 🟢 Accepted | 2026-08-13 |
+| [0047](./0047-M2-g可重建WASM符号与FTS索引.md)（部分被 0051 取代） | M2-g 索引：同一套 tree-sitter WASM、独立可重建 FTS5 派生库、按需增量与 ripgrep fallback | 🟢 Accepted | 2026-08-13 |
 | [0048](./0048-M2-h上下文预算与持久摘要.md) | M2-h 上下文：唯一 ContextBuilder、75% 分层预算、字节稳定前缀与一次生成的持久摘要 | 🟢 Accepted | 2026-08-13 |
 | [0049](./0049-M2-i串行只读子Agent.md) | M2-i 子 Agent：独立 session/seq、串行有限只读工具集、完整收尾与粘性污点回传 | 🟢 Accepted | 2026-08-13 |
+| [0050](./0050-编辑diff的行级hunk与提案投影.md) | 编辑 diff 改行级多 hunk（Myers），模型可见结果收窄为紧凑信封——原整文件对倒使多文件编辑在 >5KB 文件上不可用 | 🟢 Accepted | 2026-08-13 |
+| [0051](./0051-索引查询时机与无ripgrep降级.md) | 索引查询不再同步全量重扫、工作区身份取会话 cwd，ripgrep 由硬依赖降为优先项（纯 Node 退路） | 🟢 Accepted | 2026-08-13 |
 
 ## 什么时候要写 ADR
 

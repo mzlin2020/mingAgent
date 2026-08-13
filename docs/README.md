@@ -34,7 +34,8 @@
 
 ## 代码现状（2026-08-13）
 
-**M2 已于 2026-08-13 全部完成并通过总验收。** `pnpm verify`、M2-b 至 M2-i 的同链路 dist smoke 和 Electron renderer/main/preload 三段生产构建均通过；完整证据见 [M2 体验报告](./experience/m2/体验报告.md)、[ADR-0049](./adr/0049-M2-i串行只读子Agent.md) 与 [M2 阶段划分](./M2-阶段划分.md)。
+**M2 已实现并经过一次独立复审修复；两项验收仍未完成（M2-e 桌面人工验收、总验收 §5.2 的
+真实功能开发）。** `pnpm verify`、M2-b 至 M2-i 的同链路 dist smoke 和 Electron renderer/main/preload 三段生产构建均通过；完整证据见 [M2 体验报告](./experience/m2/体验报告.md)、[ADR-0049](./adr/0049-M2-i串行只读子Agent.md) 与 [M2 阶段划分](./M2-阶段划分.md)。
 下一阶段是 **M3「能扩展」**；插件宿主、MCP、Skill 加载器、通用渲染器注册表与正式 CLI
 均尚未实现，不能从已有的 manifest/descriptor 契约推断运行时已经支持它们。
 
