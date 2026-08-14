@@ -13,7 +13,7 @@
 `domain/external/*.py` 定义协议（`LLM` / `Sandbox` / `Browser` / `Task` / `MessageQueue` / `FileStorage` / `SearchEngine` / `JSONParser`），`infrastructure/external/**` 提供实现，`interfaces/service_dependencies.py` 集中装配。domain 层禁止 import infrastructure。
 
 **继承方式**：这就是小明"一切皆插件"的基础。M0–M2 已以 Ports & Adapters 和桌面端集中装配
-落地；“注册表 + 清单驱动的动态装配”仍是 M3 插件宿主目标，当前 Provider/工具生产装配仍是
+落地；“注册表 + 清单驱动的动态装配”仍是 M4 插件宿主目标，当前 Provider/工具生产装配仍是
 显式代码，不能把目标形态写成现状。
 
 ### 1.2 事件驱动的 UI 契约（★★★★★）
@@ -141,7 +141,7 @@ CLAUDE.md 明确写了："消息附件只把沙箱文件路径拼进上下文，
 
 `compact_memory()` 只是简单压缩；没有 token 预算核算，没有分层摘要，没有按需检索。
 
-→ **小明**：M2-h 已完成近期原文 + 持久摘要、token 预算器和稳定前缀；跨会话长期记忆/检索仍属 M5。
+→ **小明**：M2-h 已完成近期原文 + 持久摘要、token 预算器和稳定前缀；跨会话长期记忆/检索仍属 M6。
 
 ### 2.13 无成本与用量核算
 
@@ -154,7 +154,7 @@ CLAUDE.md 明确写了："消息附件只把沙箱文件路径拼进上下文，
 `AgentTaskRunner._handle_tool_event()` 里针对每种工具类型手工塞展示内容（截图、console、文件内容），CLAUDE.md 承认"新增工具类型需要同时改这里和前端 tool-use/"。加一个工具要改三处。
 
 → **小明**：工具描述符和结果已有 `DisplayHint`，内建 todo/diff/checkpoint/terminal 视图已经消费各自
-投影；通用渲染器注册表与插件自带渲染器仍属 M3，当前不能声称新增任意工具都无需改 UI。
+投影；通用渲染器注册表与插件自带渲染器仍属 M4，当前不能声称新增任意工具都无需改 UI。
 
 ### 2.15 SSE + anyio cancel scope 的坑
 

@@ -66,6 +66,16 @@
 | [0049](./0049-M2-i串行只读子Agent.md) | M2-i 子 Agent：独立 session/seq、串行有限只读工具集、完整收尾与粘性污点回传 | 🟢 Accepted | 2026-08-13 |
 | [0050](./0050-编辑diff的行级hunk与提案投影.md) | 编辑 diff 改行级多 hunk（Myers），模型可见结果收窄为紧凑信封——原整文件对倒使多文件编辑在 >5KB 文件上不可用 | 🟢 Accepted | 2026-08-13 |
 | [0051](./0051-索引查询时机与无ripgrep降级.md) | 索引查询不再同步全量重扫、工作区身份取会话 cwd，ripgrep 由硬依赖降为优先项（纯 Node 退路） | 🟢 Accepted | 2026-08-13 |
+| [0052](./0052-插件容器与效果模型.md) | 插件容器与效果模型：自研最小容器落 `@xm/kernel/src/container/`（不 vendor 也不依赖 npm cordis），五概念 + 四种派发模式 + 可撤销 effect；与 `EventBus` 分工不合并。**负面已写明：静态可分析性下降是真损失**，三条对策——插件不新建细粒度包、生成接缝图补盲区、未满足 inject 必须 fail loud | 🟢 Accepted | 2026-08-14 |
+| [0053](./0053-微内核的特权底座与扩展点边界.md) | 微内核的特权底座与扩展点边界：小明是「微内核 + 不可绕过的安全底座」，**不是**参考实现的「一切可从配置替换」；六项底座 + 装配期断言；扩展点只能追加 deny；红线是单调 guard 不是 waterfall 一环；`ask` 不因参考实现有就回来 | 🟢 Accepted | 2026-08-14 |
+| [0054](./0054-能力接缝三角色与执行世界.md) | 能力接缝三角色（定义/提供者/消费者）与执行世界：`port/` 正名，统一提供者注册与消费者注入形状；`executor` 从字符串字段升为真实接缝，fs/process/pty 收敛到一处，容器与远端执行器从「改二十多个工具」变成「写一个提供者」 | 🟢 Accepted | 2026-08-14 |
+| [0055](./0055-Turn驱动器的扩展点契约.md) | Turn 驱动器的扩展点契约：工具执行十二步、前五步为不可插入的特权链段；五个回合级扩展点；ContextBuilder/checkpoint/截断/上限兜底搬出 `turn.ts`；`tool/pre-execute` 刻意不提供改写 `input` 的能力（否则 ADR-0018 的短名绕过复活） | 🟢 Accepted | 2026-08-14 |
+| [0056](./0056-Agent句柄与Inbox.md) | Agent 句柄与 Inbox：`followup`/`steer`/`inject` 三入口与认领语义；**`inject` 必须落 `context.injected` 持久事件**（模型可见 ⟺ 已落库）；`inject` 不唤醒空闲 Agent——后台任务、定时任务、子 Agent 回传的结构前提 | 🟢 Accepted | 2026-08-14 |
+| [0057](./0057-扩展事件通道与未知事件语义.md) | 扩展事件通道：两个静态信封 `ext.persisted` / `ext.transient` 保住闭集与静态 durability；未声明即拒绝写入；`reduce()` 对 `ext.*` 恒等，插件自建投影；`pluginId` 由运行时按身份填，插件拿到的是窄写入口 | 🟢 Accepted | 2026-08-14 |
+| [0058](./0058-工具渲染意图与结果投影.md) | 工具渲染意图：`DisplayHint`（零生产者零消费者）升级为 `presentCall`/`presentResult` 纯函数 + 落库的 `presentationMeta`；四种卡片；投影禁 I/O 禁读状态（实时与回放必须同结果）；畸形参数降级不许崩回放；`edit-review` 专用通道退役 | 🟢 Accepted | 2026-08-14 |
+| [0059](./0059-组合配置profile与patch层.md) | 组合配置：内建 profile（有序插件行）+ 用户 patch 两层，desktop/headless/cli 共用一条装配路径；**项目目录不参与装配**（安全边界）；基线层不可 patch；新增 `@xm/compose`（包数 8→9）；不做可分发 bundle、不做配置内表达式求值 | 🟢 Accepted | 2026-08-14 |
+| [0060](./0060-运行时不变量注册表与文档图谱生成.md) | 运行时不变量注册表 + 文档图谱生成：把「规则存在但从未生效」（已栽八次）从靠人演练变成持续断言；只许断言自己拥有的事件流/可变数据关系，禁止断言「服务存在」；五张生成表进 `pnpm verify` | 🟢 Accepted | 2026-08-14 |
+| [0061](./0061-CodeMode与工具SDK生成.md) | Code Mode：`run_code` 把工具暴露成 TS API，多步任务一次往返完成；**worker 隔离是稳定性手段不是安全边界**——子调用重入 ADR-0055 完整十二步链、不复用父判定、落 `tool.code.dispatch`；默认仍是 `native`，Code Mode 为 opt-in | 🟢 Accepted | 2026-08-14 |
 
 ## 什么时候要写 ADR
 
