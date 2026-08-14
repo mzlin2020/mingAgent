@@ -45,7 +45,7 @@ headless 冒烟是 `scripts/` 下另一条独立实现，`xm` CLI 不存在，�
   "name": "desktop",
   "rows": [
     { "id": "baseline.policy",   "plugin": "@xm/kernel#policyGate" },
-    { "id": "baseline.gateway",  "plugin": "@xm/tools-core#gateway" },
+    { "id": "baseline.gateway",  "plugin": "@xm/tool-runtime#gateway" },
     { "id": "baseline.secrets",  "plugin": "@xm/platform#secretStore" },
     // …基线层，见下…
     { "id": "tools.fs",          "plugin": "@xm/tools-core#fsTools" },
@@ -55,16 +55,17 @@ headless 冒烟是 `scripts/` 下另一条独立实现，`xm` CLI 不存在，�
 }
 ```
 
-四个内建 profile：
+内建 profile（**M3 实现前三个**，后两个只预留位置）：
 
-| profile | 用途 | 与今天的对应 |
-|---|---|---|
-| `desktop` | Electron 桌面应用 | `services.ts` |
-| `headless` | 无 GUI 跑完整会话 | `pnpm smoke` 的独立脚本 |
-| `cli` | `xm` 命令行（新 M4 产品化，M3 先能跑通） | 不存在 |
-| `eval` | 评测运行器批量跑任务（新 M6） | 不存在 |
+| profile | 用途 | 与今天的对应 | M3 是否实现 |
+|---|---|---|---|
+| `desktop` | Electron 桌面应用 | `services.ts` | ✅ |
+| `headless` | 无 GUI 跑完整会话 | `pnpm smoke` 的独立脚本 | ✅ |
+| `cli` | `xm` 命令行（新 M4 产品化，M3 先能跑通） | 不存在 | ✅ |
+| `test` | 确定性时钟与 id，供行为快照比对（[ADR-0066](./0066-时钟与ID的注入.md)） | 不存在 | ✅ |
+| `eval` | 评测运行器批量跑任务（新 M6） | 不存在 | ❌ 预留 |
 
-四个 profile 共享同一份基线层与绝大多数业务行，差异只在 UI/入口那几行。
+各 profile 共享同一份基线层与绝大多数业务行，差异只在 UI/入口那几行。
 **这就是"引擎被第二次装配"的证据**，而且是每天都在跑的证据（headless 冒烟在 `pnpm verify` 里）。
 
 ### 二、patch 只有一层，来自用户配置目录
@@ -94,8 +95,11 @@ ADR-0053 的六项底座对应的插件行标记为基线，`id` 以 `baseline.`
 
 ### 五、新增包 `@xm/compose`
 
-承载 profile 解析、patch 合并、四份内建 profile 定义、装配期断言。
-它是**唯一**同时认识 `@xm/runtime` 与 `@xm/tools-core` 的包（除 `apps/desktop` 外）。
+承载 profile 解析、patch 合并、内建 profile 定义、装配期断言。
+它是**唯一**同时认识 `@xm/runtime`、`@xm/tool-runtime` 与 `@xm/tools-core` 的包
+（除 `apps/desktop` 外）。**它对 `@xm/tools-core` 的依赖必须是可拆的**——
+删掉工具包 + 换一份不含工具行的 profile，`@xm/compose` 仍要能编译通过
+（[ADR-0063](./0063-安全底座与工具实现的包边界.md) §五）。
 
 depcruise 新增规则两条：
 
@@ -104,6 +108,13 @@ depcruise 新增规则两条：
 
 包数 8 → 9。**不为插件新建细粒度包**（ADR-0052 的对策一），插件住在各自现有的包里，
 由包导出，profile 只写引用。
+
+> **2026-08-14 修订（[ADR-0063](./0063-安全底座与工具实现的包边界.md)）**：包数是 8 → **10**。
+> 本 ADR 把基线行 `baseline.gateway` 指向 `@xm/tools-core`，而 `@xm/compose` 又依赖它——
+> 结果是"删掉 `packages/tools-core` 仍能启动"（`docs/01` 原则二的可检验约束）
+> 在结构上不可能成立，M3 的 DoD 因此被写成了更弱的"删掉业务插件行"。
+> ADR-0063 把网关、checkpoint 与 local 执行世界提供者迁进新包 `@xm/tool-runtime`，
+> 基线行改指该包，原则二那条约束第一次可以真的跑。
 
 ### 六、不做的
 

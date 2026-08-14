@@ -75,7 +75,12 @@
 | [0058](./0058-工具渲染意图与结果投影.md) | 工具渲染意图：`DisplayHint`（零生产者零消费者）升级为 `presentCall`/`presentResult` 纯函数 + 落库的 `presentationMeta`；四种卡片；投影禁 I/O 禁读状态（实时与回放必须同结果）；畸形参数降级不许崩回放；`edit-review` 专用通道退役 | 🟢 Accepted | 2026-08-14 |
 | [0059](./0059-组合配置profile与patch层.md) | 组合配置：内建 profile（有序插件行）+ 用户 patch 两层，desktop/headless/cli 共用一条装配路径；**项目目录不参与装配**（安全边界）；基线层不可 patch；新增 `@xm/compose`（包数 8→9）；不做可分发 bundle、不做配置内表达式求值 | 🟢 Accepted | 2026-08-14 |
 | [0060](./0060-运行时不变量注册表与文档图谱生成.md) | 运行时不变量注册表 + 文档图谱生成：把「规则存在但从未生效」（已栽八次）从靠人演练变成持续断言；只许断言自己拥有的事件流/可变数据关系，禁止断言「服务存在」；五张生成表进 `pnpm verify` | 🟢 Accepted | 2026-08-14 |
-| [0061](./0061-CodeMode与工具SDK生成.md) | Code Mode：`run_code` 把工具暴露成 TS API，多步任务一次往返完成；**worker 隔离是稳定性手段不是安全边界**——子调用重入 ADR-0055 完整十二步链、不复用父判定、落 `tool.code.dispatch`；默认仍是 `native`，Code Mode 为 opt-in | 🟢 Accepted | 2026-08-14 |
+| [0061](./0061-CodeMode与工具SDK生成.md) | Code Mode：`run_code` 把工具暴露成 TS API，多步任务一次往返完成；**worker 隔离是稳定性手段不是安全边界**——子调用重入 ADR-0055 完整十二步链、不复用父判定、落 `tool.code.dispatch`；默认仍是 `native`，Code Mode 为 opt-in。**2026-08-14 降级为 Proposed**：§一 承诺的"程序拿不到 fs/net/进程"普通 Node worker 给不了，隔离机制待 H2 定案 | 🟡 Proposed | 2026-08-14 |
+| [0062](./0062-扩展点的异步契约与执行收据.md) | 扩展点的异步契约与执行收据：修正 ADR-0052 把 `waterfall` 写成"不 await"的自相矛盾；补齐错误即中止不吞、`AbortSignal` 显式传递、重入按独立派发三条规则；**⑨ 真实执行签发插件构造不出来的 `ExecutionReceipt`，⑫ 无收据即判为未执行**——把 ADR-0055 那条"或在结构上做不到"从待办变成机制 | 🟢 Accepted | 2026-08-14 |
+| [0063](./0063-安全底座与工具实现的包边界.md) | 安全底座与工具实现的包边界：网关 / checkpoint / local 执行世界迁出 `@xm/tools-core`，新增 `@xm/tool-runtime`（包数 8→10）。**起因是原则二的验收被悄悄降级**——基线行指向 tools-core 导致"删掉该包仍能启动"不可能成立，DoD 于是被写成更弱的"删掉业务插件行"；顺带把"工具不得碰 `node:*`"从包内文件名单升级为包边界规则 | 🟢 Accepted | 2026-08-14 |
+| [0064](./0064-Inbox的持久化边界与steer生效时点.md) | Inbox 的持久化边界：`context.injected` **参与 `reduce()`** 按 seq 折进历史，消费因此隐式且天然幂等（**不加 `context.claimed`**）；未认领的 `followup`/`steer` 不落库、崩溃即丢失（at-most-once）；**`steer` 不取消在飞的工具调用**，下一个认领点生效 | 🟢 Accepted | 2026-08-14 |
+| [0065](./0065-卡片动作通道.md) | 卡片动作通道：ADR-0058 的三件套全是只出不进的投影，退役 `edit-review` 还缺反方向的路。工具声明 `actions`、渲染层只能引用 `actionId`、唯一具名 IPC `ui.cardAction`、**由 `callId` 从已落库事件流反查工具**；动作不复用父判定、不提升 `trustLevel`、不跨会话；`tool.start` 新增 `origin` | 🟢 Accepted | 2026-08-14 |
+| [0066](./0066-时钟与ID的注入.md) | 时钟与 ID 的注入：`ctx.clock` / `ctx.ids` 随容器落地，生产用 local、测试用确定性提供者。**起因是 M3-b「事件流逐条一致」照现有代码根本跑不出稳定结果**（`newTurnId()` 随机、两处 `Date.now()`）；选注入而非规范化抹除，否则时间与 id 相关的回归永远测不到 | 🟢 Accepted | 2026-08-14 |
 
 ## 什么时候要写 ADR
 
