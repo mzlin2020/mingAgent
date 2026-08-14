@@ -8,7 +8,7 @@
 |---|---|
 | 产品形态 | 桌面应用，风格贴近 Claude Code 桌面端。Tier 1: Windows / macOS；Tier 2: Linux（除计算机操作外全功能）。CLI 形态 M4 补上 |
 | 技术栈 | TypeScript **7.0** 单语言 monorepo（编译走 TS 7 原生、工具 API 走 TS 6，见 [ADR-0010](./adr/0010-TypeScript双编译器工具链.md)）+ Electron 外壳 + React 渲染层；热点可在后续引入 Rust sidecar |
-| 架构范式 | 六边形架构（Ports & Adapters）+ 事件溯源。**M3 起转向「微内核 + 插件容器 + 不可绕过的安全底座」**（[11](./11-微内核与插件容器.md)）；容器与扩展点尚未实现，三方插件宿主更靠后（M4） |
+| 架构范式 | 六边形架构（Ports & Adapters）+ 事件溯源。**M3 起转向「微内核 + 插件容器 + 不可绕过的安全底座」**（[11](./11-微内核与插件容器.md)）；M3-a～M3-d 已落地容器、profile、Turn 扩展点与 Inbox，三方插件宿主更靠后（M4） |
 | 内核定位 | `@xm/kernel` 纯逻辑、零 I/O、零 Node API，可在浏览器/Node/测试中运行 |
 | 可插拔单元 | 模型提供商、工具、MCP Server、插件、执行器（本地/容器/远程）、技能(Skill) |
 | 安全基线 | 默认不信任模型输出；策略判定只有 `allow` / `deny`，以红线与拒绝清单为核心（[ADR-0039](./adr/0039-放弃审批模式.md)） |
@@ -42,9 +42,10 @@
 下一阶段是 **M3「微内核化重构」**（2026-08-14 新增，原 M3–M6 顺延为 M4–M7）：插件容器、
 回合扩展点、Agent Inbox、能力接缝、渲染意图、Code Mode。规划见
 [11-微内核与插件容器](./11-微内核与插件容器.md) 与 [M3 阶段划分](./M3-阶段划分.md)，
-决策见 [ADR-0052 ~ 0066](./adr/README.md)。
-**这些全部是规划，代码尚未开工**——插件容器、扩展点、`ctx.executor` 接缝、渲染器注册表
-一个都还不存在，不能从文档或已有的 manifest/descriptor 契约推断运行时已经支持它们。
+决策见 [ADR-0052 ~ 0068](./adr/README.md)。
+**M3-a～M3-d 已完成**：容器、确定性服务、四份内建 profile、`@xm/tool-runtime`、
+Turn 命名扩展点与 Agent Inbox 已存在；desktop/headless 走同一装配器，实际接缝图由代码生成。
+`ctx.executor` 接缝和渲染器注册表仍不存在，不能从 profile 推断 M3-e/M3-f 已完成。
 插件宿主、MCP、Skill 加载器与正式 CLI 更靠后（M4）。
 
 权限模型已在 2026-08-11 收敛为「红线 + 拒绝清单」：没有审批 UI、权限档位、会话授权或
@@ -54,12 +55,14 @@
 | 包 | 状态 |
 |---|---|
 | [`packages/contracts`](../packages/contracts/README.md) | 唯一契约来源：Zod schema、事件、工具、权限、模型与配置 |
-| [`packages/kernel`](../packages/kernel/README.md) | 纯逻辑、零 I/O；全部端口在此定义 |
-| [`packages/platform`](../packages/platform/README.md) | `PlatformPort` 的 Node 实现（[ADR-0014](./adr/0014-数据目录与平台路径.md)） |
+| [`packages/kernel`](../packages/kernel/README.md) | 纯逻辑、零 I/O；全部端口与 M3-a 容器机制在此定义 |
+| [`packages/platform`](../packages/platform/README.md) | `PlatformPort` 的 Node 实现与 local 时钟/ID 提供者（[ADR-0014](./adr/0014-数据目录与平台路径.md)） |
 | [`packages/storage`](../packages/storage/README.md) | SQLite 事件存储 + 文件 Blob + 编辑提案 + 可重建 FTS/符号索引 |
 | [`packages/providers`](../packages/providers/) | Anthropic 与 OpenAI-compatible 的流式适配器 |
-| [`packages/tools-core`](../packages/tools-core/) | 文件、命令、PTY、网页抓取与能力网关 |
+| [`packages/tool-runtime`](../packages/tool-runtime/README.md) | 路径/命令/主机网关与写前 checkpoint 安全底座 |
+| [`packages/tools-core`](../packages/tools-core/) | 文件、命令、PTY、网页抓取等业务工具实现 |
 | [`packages/runtime`](../packages/runtime/README.md) | 会话运行时、事件总线、Turn 循环、崩溃恢复与自动命名 |
+| [`packages/compose`](../packages/compose/README.md) | 内建 profile、用户 patch、基线断言与容器装配 |
 | [`apps/desktop`](../apps/desktop/README.md) | Electron main/preload/renderer、窄 IPC 与 React 桌面界面 |
 
 验证入口是 `pnpm verify`：它覆盖工具链、类型检查、lint、测试、headless 冒烟、

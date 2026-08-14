@@ -7,8 +7,17 @@ import type {
   XmEventType,
 } from '@xm/contracts';
 import { createEvent, isPersistedType } from '@xm/contracts';
-import type { EventStore, ReadOptions, SessionState, SessionWriter } from '@xm/kernel';
+import type {
+  ClockService,
+  EventStore,
+  IdService,
+  ReadOptions,
+  SessionState,
+  SessionWriter,
+} from '@xm/kernel';
 import {
+  createDeterministicClock,
+  createDeterministicIds,
   deserializeSessionState,
   emptySessionState,
   nextSeq,
@@ -27,6 +36,10 @@ import type { EventBus } from './event-bus.js';
  */
 const SNAPSHOT_INTERVAL = 500;
 
+/** 仅供尚未显式注入服务的旧单元测试；生产入口必须由 profile 传入 local 提供者。 */
+const fallbackClock = createDeterministicClock({ start: 0 });
+const fallbackIds = createDeterministicIds();
+
 /**
  * 一个会话的运行时：**全系统唯一分配 `seq` 的地方**。
  *
@@ -44,8 +57,9 @@ export class SessionRuntime {
   readonly #store: EventStore;
   readonly #bus: EventBus;
   readonly #writer: SessionWriter;
-  readonly #now: () => number;
   readonly sessionId: SessionId;
+  readonly clock: ClockService;
+  readonly ids: IdService;
 
   #state: SessionState;
   #closed = false;
@@ -65,7 +79,8 @@ export class SessionRuntime {
     bus: EventBus,
     writer: SessionWriter,
     state: SessionState,
-    now: () => number,
+    clock: ClockService,
+    ids: IdService,
     lastSnapshotSeq: number,
   ) {
     this.sessionId = sessionId;
@@ -73,7 +88,8 @@ export class SessionRuntime {
     this.#bus = bus;
     this.#writer = writer;
     this.#state = state;
-    this.#now = now;
+    this.clock = clock;
+    this.ids = ids;
     this.#lastSnapshotSeq = lastSnapshotSeq;
   }
 
@@ -88,7 +104,8 @@ export class SessionRuntime {
     readonly sessionId: SessionId;
     readonly store: EventStore;
     readonly bus: EventBus;
-    readonly now?: () => number;
+    readonly clock?: ClockService;
+    readonly ids?: IdService;
   }): Promise<SessionRuntime> {
     const { sessionId, store, bus } = options;
     const writer = await store.openForWrite(sessionId);
@@ -104,7 +121,8 @@ export class SessionRuntime {
       bus,
       writer,
       state,
-      options.now ?? Date.now,
+      options.clock ?? fallbackClock,
+      options.ids ?? fallbackIds,
       snapshot?.seq ?? 0,
     );
   }
@@ -171,11 +189,12 @@ export class SessionRuntime {
   }): Promise<EventOf<T>> {
     const persisted = isPersistedType(input.type);
     const event = createEvent({
+      id: this.ids.event(),
       type: input.type,
       sessionId: this.sessionId,
       // 瞬态事件复用上一条持久事件的 seq，不推进 seq 空间
       seq: persisted ? nextSeq(this.#state.lastSeq) : this.#state.lastSeq,
-      ts: this.#now(),
+      ts: this.clock.now(),
       payload: input.payload,
       ...(input.turnId === undefined ? {} : { turnId: input.turnId }),
     });

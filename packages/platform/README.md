@@ -9,6 +9,7 @@
 | `src/detect.ts` | 全仓库**唯一**允许读 `process.platform` / `node:os` 的文件 |
 | `src/paths.ts` | 用 `env-paths` 解析平台规范目录，产出已规范化的 `XmPaths`（ADR-0014） |
 | `src/node-platform.ts` | 组装 `PlatformPort`；`withCapabilities()` 供外壳往上抬能力 |
+| `src/container-services.ts` | M3-a 生产 profile 的 local `clock` / `ids` 提供者；时间与随机性不泄漏进 kernel |
 
 ## 不负责什么
 

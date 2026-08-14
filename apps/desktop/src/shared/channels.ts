@@ -19,6 +19,7 @@ export const CH = {
   listSessions: 'xm:list-sessions',
   createSession: 'xm:create-session',
   sendUserMessage: 'xm:send-user-message',
+  steerUserMessage: 'xm:steer-user-message',
   readSession: 'xm:read-session',
   inspectCheckpoint: 'xm:inspect-checkpoint',
   restoreCheckpoint: 'xm:restore-checkpoint',

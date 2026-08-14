@@ -6,7 +6,8 @@ import { newCallId, newCheckpointId, newSessionId } from '@xm/contracts';
 import { nodePlatform } from '@xm/platform';
 import { openStores } from '@xm/storage';
 import { EventBus, SessionRuntime } from '@xm/runtime';
-import { fsWriteTool, nodeCheckpointer, nodeCheckpointRestorer } from '@xm/tools-core';
+import { nodeCheckpointer, nodeCheckpointRestorer } from '@xm/tool-runtime';
+import { fsWriteTool } from '@xm/tools-core';
 
 const roots: string[] = [];
 afterEach(async () => {

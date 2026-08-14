@@ -1,391 +1,135 @@
-import type {
-  CallId,
-  ContentBlock,
-  Message,
-  MessageId,
-  ModelRequest,
-  StopReason,
-  TurnId,
-} from '@xm/contracts';
-import { newMessageId, newTurnId, xmError } from '@xm/contracts';
-import type { AbortLike } from '@xm/kernel';
-import { costOf, lookupPrice } from '@xm/kernel';
-import { ContextBuilder } from './context-builder.js';
+import type { ContentBlock, StopReason, TurnId } from '@xm/contracts';
+import type { TurnExtensionHost } from './turn-extension-host.js';
+import { createDefaultTurnExtensions } from './turn-plugins.js';
+import { streamOnce } from './turn-stream.js';
 import { dispatchCall } from './turn-tools.js';
-import type { PendingCall, TurnDeps } from './turn-types.js';
+import type { TurnDeps } from './turn-types.js';
 
 export type { PendingCall, TurnDeps } from './turn-types.js';
 
-/**
- * Turn 循环（M2 现行形态）。
- *
- * 主请求先经 ContextBuilder 组装稳定前缀、预算、持久摘要和近期原文，再执行
- * `Provider → 事件 → 权限闸门 → checkpoint → 工具 → 事件`。子 Agent 作为白名单工具
- * 从同一条分发链派生；当前仍没有并行 Scheduler。
- *
- * 之所以现在就要这条链子，是因为它是几个架构约束**唯一**的实测点：
- * runtime 不依赖 electron、内核纯逻辑能被装配、事件流能完整回放出状态。
- * 这些约束在 M0-a 全是纸面上的。
- *
- * 三条在这里落地的不变量：
- *   · `seq` 只由 `SessionRuntime` 分配（不变量三）
- *   · 广播排在落库之后（不变量五）
- *   · 工具**执行前**必过 PolicyEngine——闸门长在路径上，不是长在文档里
- */
-
-/** 最常见的输入形状：纯文字。多模态输入直接构造 ContentBlock[] 传给 runTurn */
+/** 最常见的输入形状；多模态入口直接传 ContentBlock[]。 */
 export const textInput = (text: string): ContentBlock[] => [{ type: 'text', text }];
 
 export async function runTurn(deps: TurnDeps, input: readonly ContentBlock[]): Promise<StopReason> {
-  const { runtime } = deps;
-
-  /*
-   * 能力闸门必须在这里、在记第一条事件之前判。`turn.start` 一旦落库就必须有一条
-   * `turn.end` 收尾配对（ADR-0008 的包含性不变量）；如果放任图片块流到 Provider
-   * 深处才失败关闭，就会留下一条只有开始没有收尾的事件流。直接 throw，不新增
-   * `StopReason` 枚举值——调用方（`services.sendUserMessage`）的 try/finally
-   * 接得住，异常经 IPC 信封转成 `{ok:false}` 落进渲染层已有的错误态，不需要
-   * 再造一条"被拒绝"的收尾语义。
-   *
-   * 只查*这一轮新输入*，不审计历史消息——中途换成不支持 vision 的模型、
-   * 历史里却带着图片，仍可能在 Provider 深处报错；ContextBuilder 当前负责预算/压缩，
-   * 还没有按目标模型能力改写历史多模态内容，见 ADR-0029 遗留。
-   */
-  const caps = deps.provider.capabilities(deps.model);
-  if (input.some((b) => b.type === 'image') && !caps.vision) {
-    throw new Error(
-      `模型 ${deps.model} 不支持图片输入（vision），请换一个支持的模型或去掉图片后再试。`,
-    );
-  }
-  if (input.some((b) => b.type === 'document') && !caps.documents) {
-    throw new Error(`模型 ${deps.model} 不支持文档输入，请换一个支持的模型或去掉附件后再试。`);
-  }
-
-  /*
-   * 8 太容易在正常任务里撞到——一个「做个 todolist」这种朴素任务，
-   * 读文件、列目录、写几步、回头检查一下，往返次数很容易过 8。
-   * 撞上限的后果不是"模型偷懒"，是回合被腰斩，用户看到的是任务莫名其妙半途而废。
-   * 这里的上限本来就只是"防跑飞"的兜底，不是引导模型精简步骤的手段——
-   * 收敛应该来自模型自己判断任务完成，不是靠一个悄悄的步数配额逼它提前结束。
-   * 调大到 9999，实质上等于交给"模型自己不再调工具"这一条真正的停止条件；
-   * 真正失控的死循环由用户手动停止 / 会话预算兜底，不该指望这个数字。
-   */
-  const maxIterations = deps.maxIterations ?? 9999;
-  const turnId = newTurnId();
-
-  // turn.start 自己就会把用户输入并进 messages（见 reduce.ts），别在这里再补一条 user 消息
-  await runtime.record({
-    type: 'turn.start',
-    turnId,
-    payload: { turnId, input: [...input] },
+  return withExtensions(deps, async (extensions) => {
+    // admission 在 turn.start 前完成，拒绝多模态时不会留下孤儿回合。
+    await extensions.preStep({ kind: 'admission', deps, input });
+    const turnId = deps.runtime.ids.turn();
+    await deps.runtime.record({
+      type: 'turn.start',
+      turnId,
+      payload: { turnId, input: [...input] },
+    });
+    return driveTurnLoop(deps, extensions, turnId);
   });
-
-  return driveTurnLoop(deps, turnId, maxIterations);
 }
 
-/**
- * 续跑一个已经开始、但因为进程崩溃而没跑完的回合（M1-e 崩溃恢复，docs/04 §8 步骤 3"继续"）。
- *
- * **调用方必须先用 `synthesizeInterruption()`（`crash-recovery.ts`）补完缺失的收尾事件**，
- * 这里不做——"要不要补、补哪些"是 `OrphanedTurn` 该回答的问题，这个函数只负责"从这里
- * 继续跑"，与 `runTurn()` 写完 `turn.start` 之后要做的事完全一样：下一步就是 `streamOnce`，
- * 效果等价于"崩溃发生的那个迭代边界之后，循环本来就会做的下一步"。不重连任何原生进程、
- * 不重放原始工具调用——模型只是被如实告知"这次没跑完"，这是没有幂等性契约时唯一安全
- * 的做法。`maxIterations` 重新计满：崩溃前用了几次不落库，这是可接受的近似。
- */
 export async function resumeTurn(deps: TurnDeps, turnId: TurnId): Promise<StopReason> {
-  return driveTurnLoop(deps, turnId, deps.maxIterations ?? 9999);
+  return withExtensions(deps, (extensions) => driveTurnLoop(deps, extensions, turnId));
 }
 
-async function driveTurnLoop(deps: TurnDeps, turnId: TurnId, maxIterations: number): Promise<StopReason> {
-  const { runtime } = deps;
+async function driveTurnLoop(
+  deps: TurnDeps,
+  extensions: TurnExtensionHost,
+  turnId: TurnId,
+): Promise<StopReason> {
   let reason: StopReason = 'end_turn';
+  let iteration = 0;
   let maxTokenContinuations = 0;
-
   try {
-    for (let i = 0; i < maxIterations; i++) {
+    // 驱动器的停止条件全部来自 turn/stopping 插件或取消信号。
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while (true) {
       if (deps.signal?.aborted === true) {
         reason = 'aborted';
         break;
       }
-
-      const { stopReason, calls } = await streamOnce(deps, turnId);
-      reason = stopReason;
-
-      if (calls.length === 0 && stopReason === 'max_tokens') {
-        if (maxTokenContinuations === 0) {
-          maxTokenContinuations += 1;
-          continue;
-        }
-        await runtime.record({
-          type: 'notice.posted',
+      // steer 只在步骤边界生效；不会取消上一轮已经发起的工具调用（ADR-0064）。
+      if (iteration > 0 && deps.inbox?.hasSteer() === true) break;
+      iteration += 1;
+      const streamed = await streamOnce(deps, extensions, turnId);
+      reason = streamed.stopReason;
+      if (reason === 'aborted') break;
+      if (streamed.error !== undefined) {
+        const decision = await extensions.stepError({
+          deps,
           turnId,
-          payload: {
-            level: 'warn',
-            code: 'turn.max_tokens',
-            message: '模型连续两次达到输出上限，任务可能尚未完成。请让小明继续，或缩小任务范围。',
-          },
+          error: streamed.error,
+          attempt: iteration,
         });
+        if (decision === 'retry') continue;
+      }
+      const afterStream = await requireStopping(extensions, {
+        deps,
+        turnId,
+        phase: 'after-stream',
+        iteration,
+        stopReason: reason,
+        callCount: streamed.calls.length,
+        maxTokenContinuations,
+      });
+      maxTokenContinuations = afterStream.maxTokenContinuations;
+      await recordNotice(deps, turnId, afterStream.notice);
+      if (afterStream.action === 'stop') {
+        reason = afterStream.reason;
         break;
       }
+      if (afterStream.action === 'continue') continue;
+      for (const call of streamed.calls) await dispatchCall(deps, extensions, turnId, call);
 
-      if (calls.length === 0 || stopReason === 'aborted' || stopReason === 'error') break;
-
-      for (const call of calls) {
-        await dispatchCall(deps, turnId, call);
-      }
-
-      if (i === maxIterations - 1) {
-        // 跑满上限而模型还在要工具：如实记下来，不要假装是正常结束
-        await runtime.record({
-          type: 'notice.posted',
-          turnId,
-          payload: {
-            level: 'warn',
-            code: 'turn.max_iterations',
-            message: `本回合达到 ${String(maxIterations)} 次模型往返上限，已停止。`,
-          },
-        });
-        reason = 'max_iterations';
+      const afterTools = await requireStopping(extensions, {
+        deps,
+        turnId,
+        phase: 'after-tools',
+        iteration,
+        stopReason: reason,
+        callCount: streamed.calls.length,
+        maxTokenContinuations,
+      });
+      maxTokenContinuations = afterTools.maxTokenContinuations;
+      await recordNotice(deps, turnId, afterTools.notice);
+      if (afterTools.action === 'stop') {
+        reason = afterTools.reason;
+        break;
       }
     }
   } finally {
-    await runtime.record({ type: 'turn.end', turnId, payload: { turnId, reason } });
+    await deps.runtime.record({ type: 'turn.end', turnId, payload: { turnId, reason } });
   }
-
   return reason;
 }
 
-// ── 一次模型往返 ─────────────────────────────────────────────────
-
-interface StreamResult {
-  readonly stopReason: StopReason;
-  readonly calls: readonly PendingCall[];
+async function requireStopping(
+  extensions: TurnExtensionHost,
+  input: Parameters<TurnExtensionHost['stopping']>[0],
+): Promise<NonNullable<Awaited<ReturnType<TurnExtensionHost['stopping']>>>> {
+  const decision = await extensions.stopping(input);
+  if (decision === undefined) throw new Error('缺少必需的 turn/stopping 兜底插件。');
+  return decision;
 }
 
-async function streamOnce(deps: TurnDeps, turnId: TurnId): Promise<StreamResult> {
-  const { runtime, provider } = deps;
-  const messageId = newMessageId();
-
-  let request: ModelRequest;
-  try {
-    request = await new ContextBuilder(deps).build(turnId);
-  } catch (error) {
-    const failure =
-      error instanceof Error
-        ? xmError('provider_error', error.message)
-        : xmError('internal', String(error));
-    await runtime.record({
-      type: 'error.raised',
-      turnId,
-      payload: { error: failure, fatal: false },
-    });
-    return { stopReason: 'error', calls: [] };
-  }
-
-  await runtime.record({
-    type: 'message.start',
+async function recordNotice(
+  deps: TurnDeps,
+  turnId: TurnId,
+  notice: { readonly code: string; readonly message: string } | undefined,
+): Promise<void> {
+  if (notice === undefined) return;
+  await deps.runtime.record({
+    type: 'notice.posted',
     turnId,
-    payload: { messageId, role: 'assistant', model: deps.model },
+    payload: { level: 'warn', ...notice },
   });
+}
 
-  let text = '';
-  let thinking = '';
-  let thinkingSignature: string | undefined;
-  let stopReason: StopReason = 'end_turn';
-  const calls = new Map<CallId, PendingCall>();
-  const order: CallId[] = [];
-
-  const signal: AbortLike = deps.signal ?? NEVER_ABORTS;
-  let failure: ReturnType<typeof xmError> | undefined;
-
+async function withExtensions<T>(
+  deps: TurnDeps,
+  run: (extensions: TurnExtensionHost) => Promise<T>,
+): Promise<T> {
+  if (deps.extensions !== undefined) return run(deps.extensions);
+  const defaults = await createDefaultTurnExtensions();
   try {
-    for await (const chunk of provider.stream(request, signal)) {
-      switch (chunk.kind) {
-        case 'text_delta':
-          text += chunk.text;
-          // 瞬态：不落库、不占 seq，只推给订阅者。ADR-0008 的硬不变量是它不得携带
-          // message.end 里不存在的信息——这里的 text 最后逐字进了 message.end
-          await runtime.record({
-            type: 'message.delta',
-            turnId,
-            payload: { messageId, blockIndex: 0, kind: 'text', text: chunk.text },
-          });
-          break;
-
-        case 'thinking_delta':
-          thinking += chunk.text;
-          await runtime.record({
-            type: 'message.delta',
-            turnId,
-            payload: { messageId, blockIndex: 0, kind: 'thinking', text: chunk.text },
-          });
-          break;
-
-        case 'thinking_signature':
-          thinkingSignature = chunk.signature;
-          break;
-
-        case 'tool_call_start':
-          calls.set(chunk.id, { callId: chunk.id, name: chunk.name, argsJson: '' });
-          order.push(chunk.id);
-          break;
-
-        case 'tool_call_delta': {
-          const pending = calls.get(chunk.id);
-          // 各家的分片边界不同，累积完整之后再一次性 parse 是唯一稳妥做法（contracts/model/chunk.ts）
-          if (pending !== undefined) pending.argsJson += chunk.argsJson;
-          break;
-        }
-
-        case 'tool_call_end':
-          break;
-
-        case 'usage': {
-          // 成本由价格表算，Provider 不提供（contracts/model/usage.ts）
-          const cost = costOf(chunk.usage, lookupPrice(deps.prices, provider.id, deps.model));
-          await runtime.record({
-            type: 'usage.recorded',
-            turnId,
-            payload: {
-              turnId,
-              provider: provider.id,
-              model: deps.model,
-              usage: chunk.usage,
-              costUsd: cost ?? 0,
-              priced: cost !== undefined,
-            },
-          });
-          break;
-        }
-
-        case 'stop':
-          stopReason = chunk.reason;
-          break;
-      }
-    }
-  } catch (e) {
-    /*
-     * Provider 抛错**不会跨越这里**。
-     *
-     * 让它往外抛看起来更"干净"，但那样这一段已经推给订阅者的 `message.delta`
-     * 就再也不会有对应的 `message.end`——ADR-0008 的包含性不变量当场破掉，
-     * 表现是用户看着打字机打出半句话，重开会话后那半句凭空消失。
-     * 所以下面照常落 message.end（带已到达的部分），错误另记一条 error.raised。
-     */
-    failure = e instanceof Error ? xmError('provider_error', e.message) : xmError('internal', String(e));
-    const asXm = (e as { xm?: unknown }).xm;
-    if (isXmErrorLike(asXm)) failure = asXm;
-    stopReason = failure.code === 'aborted' ? 'aborted' : 'error';
-  }
-
-  /*
-   * 兜底：Provider 没守约定（取消时抛而不是干净收尾）时也要判对。
-   *
-   * 端口现在明写了「取消时正常结束迭代」，两个自家适配器都守。但这道兜底不能撤——
-   * M3 的 MCP 与当前子 Agent 都会带进边界外实现，而"取消被记成失败"
-   * 是一个用户当场看得见的错。
-   *
-   * **`failure` 必须一并清掉。** 这是一次真调用照出来的 bug：真实 fetch 在 abort 时
-   * 抛 `AbortError`，上面的 catch 把它记成 `provider_error`，这里只纠正了 stopReason
-   * 而没动 failure——于是用户点了停止，却收到一条红色的 `error.raised`。
-   * 单元测试没抓到，因为它只断言了两条事件**存在**，从没断言 error.raised **不存在**。
-   */
-  if (signal.aborted) {
-    stopReason = 'aborted';
-    failure = undefined;
-  }
-
-  const blocks: ContentBlock[] = [];
-  if (thinking !== '') {
-    blocks.push({
-      type: 'thinking',
-      text: thinking,
-      ...(thinkingSignature === undefined ? {} : { signature: thinkingSignature }),
-    });
-  }
-  if (text !== '') blocks.push({ type: 'text', text });
-  for (const id of order) {
-    const c = calls.get(id);
-    if (c === undefined) continue;
-    blocks.push({ type: 'tool_use', id: c.callId, name: c.name, input: parseArgs(c.argsJson) });
-  }
-
-  const message: Message = {
-    id: messageId,
-    role: 'assistant',
-    blocks,
-    model: deps.model,
-    ts: Date.now(),
-  };
-  await runtime.record({ type: 'message.end', turnId, payload: { message } });
-
-  /*
-   * 中断是**两条事件**，不是一条。
-   *
-   * 直觉的写法是"中断时只发 message.interrupted"，但那样已经流出去的 delta
-   * 在持久流里没有任何落点（见上面 catch 里的注释）。所以顺序是：
-   *   message.end        —— 已到达的部分进 messages，模型下一轮看得见自己说到哪
-   *   message.interrupted —— UI 据此标注"已停止"，live buffer 据此归零（ADR-0021）
-   *
-   * 反过来说，只发 message.end 也不行：那样这条被截断的回复看起来和一条正常回复
-   * 完全一样，用户回看历史时无从分辨。
-   */
-  if (stopReason === 'aborted') {
-    await runtime.record({
-      type: 'message.interrupted',
-      turnId,
-      payload: { messageId, reason: 'aborted' },
-    });
-  }
-
-  if (failure !== undefined && failure.code !== 'aborted') {
-    await runtime.record({
-      type: 'error.raised',
-      turnId,
-      // 一次模型调用失败不等于会话完蛋：用户可以改配置、换模型、重试
-      payload: { error: failure, fatal: false },
-    });
-  }
-
-  return { stopReason, calls: order.map((id) => calls.get(id)).filter(isPending) };
-}
-
-// ── 一次工具调用 ─────────────────────────────────────────────────
-
-// ── 小工具 ──────────────────────────────────────────────────────
-
-/** 模型给的参数 JSON 可能是残缺的；消息事件保留一个安全的对象形状。 */
-function parseArgs(argsJson: string): unknown {
-  if (argsJson.trim() === '') return {};
-  try {
-    return JSON.parse(argsJson) as unknown;
-  } catch {
-    return {};
+    return await run(defaults.host);
+  } finally {
+    await defaults.dispose();
   }
 }
-
-const isPending = (c: PendingCall | undefined): c is PendingCall => c !== undefined;
-
-/**
- * Provider 抛的错里若挂着结构化 `XmError`（`ProviderHttpError.xm`），原样用它。
- *
- * 用结构判断而不是 `instanceof`：runtime 不依赖 `@xm/providers`（依赖方向是
- * apps 装配时才把两者接上），拿不到那个类。而这里要的信息只是"有没有 code"。
- */
-function isXmErrorLike(v: unknown): v is ReturnType<typeof xmError> {
-  return (
-    typeof v === 'object' &&
-    v !== null &&
-    typeof (v as { code?: unknown }).code === 'string' &&
-    typeof (v as { message?: unknown }).message === 'string'
-  );
-}
-
-const NEVER_ABORTS: AbortLike = {
-  aborted: false,
-  addEventListener: () => undefined,
-  removeEventListener: () => undefined,
-};
-
-export type { CallId, MessageId };

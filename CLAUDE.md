@@ -13,10 +13,13 @@ TypeScript 单语言 monorepo（pnpm workspace）+ Electron 外壳 + React 渲�
 当前阶段：**M2 已完成**（含 M2-e 桌面人工验收与总验收 §5.2 的真实功能开发，留痕见
 `docs/experience/m2/收官记录.md`）。**下一阶段是 M3「微内核化重构」**——2026-08-14 新增的里程碑，
 原 M3–M6 顺延为 M4–M7；规划见 `docs/11-微内核与插件容器.md` 与 `docs/M3-阶段划分.md`，
-决策见 ADR-0052 ~ 0066（其中 0062–0066 是 2026-08-14 规划复审的产物，
-复审结论见 `docs/11 §10`）。**M3 的一切都还是文档，代码未开工**：插件容器、扩展点、
-`ctx.executor` 接缝、渲染器注册表一个都不存在，不要从文档推断运行时已经支持它们。
+决策见 ADR-0052 ~ 0068（其中 0062–0066 是 2026-08-14 规划复审的产物，
+复审结论见 `docs/11 §10`）。**M3-a～M3-d 已完成并通过全量门禁**：
+`@xm/kernel/src/container/`、确定性 `clock` / `ids`、`@xm/compose` profile 装配和
+`@xm/tool-runtime` 已存在，desktop/headless 共用装配器；Turn 命名扩展点、工具十二步链、
+执行收据、Agent 句柄与持久注入已落地；`ctx.executor` 与渲染器注册表仍不存在。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
+M3-a～M3-d 证据见 `docs/experience/m3/`；下一段是 M3-e 能力接缝与执行世界。
 
 **ADR-0061（Code Mode）是 🟡 Proposed，不是 Accepted**——它承诺的隔离属性普通 Node worker
 给不了，机制待 `docs/09` 的 H2 定案。别照着它开工。
@@ -58,6 +61,9 @@ pnpm exec vitest run packages/providers/tests/live.test.ts
 
 单项闸门也可以单独跑：`pnpm depcruise`、`pnpm size`、`pnpm check:file-size`、
 `pnpm check:paths`、`pnpm check:workflows`、`pnpm toolchain`。
+M3 起新增 `pnpm check:determinism`：冻结 M0–M2 留下的时间/ID 直调，禁止数量继续增长；
+M3-b 已迁移到 `ctx.clock` / `ctx.ids`，清单为零。profile 接缝图用 `pnpm generate:seams` 更新，
+`pnpm verify` 会检查它是否漂移。
 
 ## 架构：依赖方向是唯一的硬约束
 
@@ -81,17 +87,18 @@ platform · storage · providers · tools-core
 | `platform` | `PlatformPort` 的 Node 实现：os 识别、路径、能力探测、配置加载、密钥后端 | electron |
 | `storage` | SQLite 事件存储 + 文件 blob（`EventStore`/`BlobStore` 落地） | electron |
 | `providers` | ModelProvider 各家实现，只用 Web 平台 API（fetch/AbortController/TextDecoder） | `node:*`、electron、DOM、localStorage |
-| `tools-core` | fs 读写列举 · 路径能力网关 · shell.exec · PTY · web.fetch · 写前还原点 | electron、`@xm/runtime` |
+| `tool-runtime` | 路径/命令/主机网关 · 写前 checkpoint 与恢复 | electron |
+| `tools-core` | fs 读写列举 · shell.exec · PTY · web.fetch 等业务工具 | electron、`@xm/runtime`、`@xm/tool-runtime` |
 | `runtime` | 把上面这些拼成可运行的 headless 引擎 | electron、`tools-core` |
+| `compose` | 内建 profile · 用户 patch · 基线断言 · 容器装配 | electron；除 apps 外不得依赖它 |
 | `apps/desktop` | Electron main/preload/renderer —— **整个应用唯一同时认识 Electron 与业务的地方** | — |
 
 未开工的包**不建空目录**：空包会让 depcruise 规则指着一个不存在的目录空转（已吃过两次亏）。
 
-**M3 会在这张图上加两层、改两处**（规划，尚未实现，见 `docs/04 §1.1`）：
-容器进 `kernel/src/container/`（纯逻辑零 I/O）；新增装配层 `@xm/compose`（profile 解析 +
-patch 合并 + 装配期断言）；**新增 `@xm/tool-runtime`**——路径网关、写前 checkpoint、
-local 执行世界提供者从 `@xm/tools-core` 迁出去（ADR-0063），包数 8 → 10；
-`turn.ts` 从焊死的流程变成驱动器 + 命名扩展点。**依赖方向的硬约束一字不改**，
+**M3-a/M3-b 已在这张图上加两层、改两处**（见 `docs/04 §1.1`）：
+容器进入 `kernel/src/container/`；`@xm/compose` 负责 profile 与装配；`@xm/tool-runtime`
+承接路径网关和 checkpoint。M3-c 已把 `turn.ts` 收敛为驱动器 + 命名扩展点，M3-d 已接入
+Agent Inbox；local 执行世界提供者仍在 M3-e 落地。**依赖方向的硬约束一字不改**，
 且**不为插件新建细粒度包**——容器化会让一部分依赖关系从 import 图挪到运行时，
 保住包边界规则是这个真损失的首要对策。
 
@@ -202,5 +209,5 @@ git pre-commit 钩子只做一件事：`scripts/check-secrets.mjs` 拦密钥（�
 | 排期 / 确认当前阶段 | `docs/08-路线图与里程碑.md` |
 | 查某个决定为什么这么定 | `docs/adr/README.md` 索引表 —— 几乎每条反直觉的实现都有对应 ADR |
 | 体验验收与复盘 | `docs/experience/` |
-| **参考 `/code_mine/deepseek-harness` 补代码前** | `docs/11-微内核与插件容器.md` §4「不拿什么，以及为什么」—— 那个仓库有 `ask`、有「没有特权内核」、有 51 个包，这三条小明都刻意不要 |
+| **参考 deepseek-harness 补代码前** | 本机源码路径是 `C:\Users\EDY\Desktop\code_mine\deepseek-harness`；先读 `docs/11-微内核与插件容器.md` §4「不拿什么，以及为什么」——那个仓库有 `ask`、有「没有特权内核」、有 51 个包，这三条小明都刻意不要 |
 | 做 M3 任一段之前 | `docs/M3-阶段划分.md`（八段的边界、验收与反向演练清单） |

@@ -7,7 +7,8 @@ import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { coreTools, nodeToolGateway } from '@xm/tools-core';
+import { nodeToolGateway } from '@xm/tool-runtime';
+import { coreTools } from '@xm/tools-core';
 
 /**
  * ── M1-d DoD：`web.fetch http://169.254.169.254/` 被拦 ──

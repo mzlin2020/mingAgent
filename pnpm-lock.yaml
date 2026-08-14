@@ -50,6 +50,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@xm/compose':
+        specifier: workspace:*
+        version: link:../../packages/compose
       '@xm/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -68,6 +71,9 @@ importers:
       '@xm/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@xm/tool-runtime':
+        specifier: workspace:*
+        version: link:../../packages/tool-runtime
       '@xm/tools-core':
         specifier: workspace:*
         version: link:../../packages/tools-core
@@ -126,6 +132,18 @@ importers:
       zustand:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.18)(react@19.2.8)
+
+  packages/compose:
+    dependencies:
+      '@xm/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@xm/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   packages/contracts:
     dependencies:
@@ -196,6 +214,19 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+
+  packages/tool-runtime:
+    dependencies:
+      '@xm/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@xm/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+    devDependencies:
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
 
   packages/tools-core:
     dependencies:

@@ -14,10 +14,11 @@ import {
   RestoreCheckpointRequest,
   ReviewEditProposalRequest,
   SendUserMessageRequest,
+  SteerUserMessageRequest,
   SetApiKeyRequest,
   UpdateSettingsRequest,
 } from '../shared/ipc.js';
-import type { Services } from './services.js';
+import type { Services } from './desktop-host.js';
 
 /**
  * IPC 处理器（ADR-0015）。
@@ -61,6 +62,10 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
 
   handle(CH.restoreCheckpoint, RestoreCheckpointRequest, async (req) => ({
     restored: await services.restoreCheckpoint(req.sessionId, req.checkpointId),
+  }));
+
+  handle(CH.steerUserMessage, SteerUserMessageRequest, async (req) => ({
+    reason: await services.steerUserMessage(req.sessionId, req.text),
   }));
 
   handle(CH.reviewEditProposal, ReviewEditProposalRequest, async (req) =>

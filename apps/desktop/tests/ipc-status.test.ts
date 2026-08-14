@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { newEditProposalId, newSessionId } from '@xm/contracts';
 import { IpcEnvelope, SettingsResult, StatusResult } from '../src/shared/ipc.js';
 import { CH } from '../src/shared/channels.js';
-import type { RuntimeStatus, Services } from '../src/main/services.js';
+import type { RuntimeStatus, Services } from '../src/main/desktop-host.js';
 
 type IpcHandler = (event: unknown, raw: unknown) => Promise<unknown>;
 const mockedElectron = vi.hoisted(() => ({ handlers: new Map<string, IpcHandler>() }));

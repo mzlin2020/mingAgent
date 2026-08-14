@@ -94,6 +94,13 @@ export const SendUserMessageRequest = z
   });
 export const SendUserMessageResult = z.object({ reason: z.string() });
 
+/** 回合中纠偏；只接文字，并明确在下一个认领点生效，不隐式取消工具。 */
+export const SteerUserMessageRequest = z.strictObject({
+  sessionId: SessionId,
+  text: z.string().trim().min(1).max(100_000),
+});
+export const SteerUserMessageResult = z.object({ reason: z.string() });
+
 /**
  * 渲染层反查一个 blob 的字节——**第一条**这样的通道。此前 `stores.blobs` 只在
  * 主进程内部用（checkpoint 快照、超限工具结果的归档），渲染层从没读过 blob 内容。

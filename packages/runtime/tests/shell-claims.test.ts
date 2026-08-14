@@ -9,7 +9,8 @@ import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryBlobStore, MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { coreTools, nodeCheckpointer, nodeToolGateway } from '@xm/tools-core';
+import { nodeCheckpointer, nodeToolGateway } from '@xm/tool-runtime';
+import { coreTools } from '@xm/tools-core';
 
 /**
  * ── 命令即一组能力主张，跑在真实工具上（ADR-0026）──

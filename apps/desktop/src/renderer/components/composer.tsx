@@ -54,7 +54,9 @@ function StopIcon(): ReactNode {
 
 export function Composer({ disabled, running }: { readonly disabled: boolean; readonly running: boolean }): ReactNode {
   const send = useUi((s) => s.send);
+  const steer = useUi((s) => s.steer);
   const stop = useUi((s) => s.stop);
+  const pendingInputs = useUi((s) => s.pendingInputs);
   const [text, setText] = useState('');
   const [images, setImages] = useState<readonly PendingImage[]>([]);
   const [attachError, setAttachError] = useState<string | undefined>(undefined);
@@ -122,6 +124,13 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
     void send(trimmed, toSend.length > 0 ? toSend : undefined);
   };
 
+  const submitSteer = (): void => {
+    if (text.trim() === '' || disabled) return;
+    const correction = text.trim();
+    setText('');
+    void steer(correction);
+  };
+
   return (
     /*
       不画 `border-t`：输入区自己已经是一个有边框的盒子，再来一条横贯全宽的线等于把界面
@@ -130,6 +139,16 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
     */
     <div className="relative shrink-0 bg-canvas pb-5 pt-1">
       <div className={COLUMN}>
+        {pendingInputs.length > 0 && (
+          <div className="mb-1.5 rounded-control border border-border bg-surface-2 px-3 py-2 text-meta">
+            <p className="font-medium text-fg">待处理队列（进程退出前为易失）</p>
+            {pendingInputs.map((item) => (
+              <p key={item.id} className="mt-1 truncate text-muted">
+                {item.kind === 'steer' ? '纠偏 · 下一步生效' : '排队'}：{item.text}
+              </p>
+            ))}
+          </div>
+        )}
         {attachError !== undefined && (
           <p className="mb-1.5 text-meta text-danger">{attachError}</p>
         )}
@@ -192,16 +211,17 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
               Enter 发送 · Shift+Enter 换行 · 可粘贴图片
             </p>
             {running ? (
-              <Button
-                size="icon"
-                onClick={() => {
-                  void stop();
-                }}
-                aria-label="停止"
-                title="停止"
-              >
-                <StopIcon />
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button size="sm" variant="ghost" onClick={submitSteer} disabled={text.trim() === '' || disabled}>
+                  纠偏（下一步）
+                </Button>
+                <Button size="icon" onClick={submit} disabled={!canSend} aria-label="排队发送" title="排队发送">
+                  <SendIcon />
+                </Button>
+                <Button size="icon" onClick={() => void stop()} aria-label="停止" title="停止">
+                  <StopIcon />
+                </Button>
+              </div>
             ) : (
               <Button
                 size="icon"

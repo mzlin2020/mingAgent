@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
-import { newCallId, newMessageId, newSessionId, newTurnId } from '../packages/contracts/dist/index.js';
+import { newCallId, newMessageId, newSessionId, newTurnId, redact } from '../packages/contracts/dist/index.js';
+import { assembleProfile, loadPatchedProfile } from '../packages/compose/dist/index.js';
 import {
   ToolRegistry,
   builtinLayers,
@@ -28,26 +29,35 @@ import {
   policyEnvFromPaths,
   reduce,
 } from '../packages/kernel/dist/index.js';
-import { nodePlatform } from '../packages/platform/dist/index.js';
+import { createLocalClock, createLocalIds, nodePlatform } from '../packages/platform/dist/index.js';
 import { openStores } from '../packages/storage/dist/index.js';
+import {
+  nodeCheckpointer,
+  nodeCheckpointRestorer,
+  nodeToolGateway,
+} from '../packages/tool-runtime/dist/index.js';
 import {
   coreTools,
   editApplyTool,
   editPreviewTool,
-  nodeCheckpointer,
-  nodeCheckpointRestorer,
-  nodeToolGateway,
 } from '../packages/tools-core/dist/index.js';
 import {
   DEMO_ECHO,
   DEMO_FAKE_DELETE,
+  Agent,
   EventBus,
   ScriptedProvider,
   SessionRuntime,
+  createTurnExtensionHost,
   TODO_UPDATE,
   demoTargetOf,
   echoTool,
   fakeDeleteTool,
+  installCheckpoint,
+  installContextBuilder,
+  installMultimodalGuard,
+  installResultTruncation,
+  installStoppingGuard,
   resultExpandTool,
   runSubagentExploration,
   runTurn,
@@ -75,19 +85,87 @@ try {
   const stores = await openStores(paths);
   const layers = builtinLayers(policyEnvFromPaths(paths));
 
+  const profile = await loadPatchedProfile({ name: 'headless', configDir: paths.config });
+  const clock = createLocalClock();
+  const ids = createLocalIds();
+  const profilePlugin = (row, apply) => ({
+    name: row.id,
+    inject: row.inject,
+    provide: row.provide,
+    apply,
+  });
+  const composition = await assembleProfile({
+    profile,
+    catalog: {
+      '@xm/platform#localClock': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('clock', clock)),
+      '@xm/platform#localIds': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('ids', ids)),
+      '@xm/runtime#turnDriver': (row) =>
+        profilePlugin(row, (ctx) =>
+          ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
+      '@xm/kernel#policy': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('policy', layers)),
+      '@xm/tool-runtime#gateway': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('gateway', nodeToolGateway({ home: paths.home }))),
+      '@xm/tool-runtime#checkpoint': (row) =>
+        profilePlugin(row, (ctx) => {
+          ctx.provide('checkpointer', nodeCheckpointer({ blobs: stores.blobs }));
+          ctx.provide('checkpointRestorer', nodeCheckpointRestorer(stores.blobs));
+          return installCheckpoint(ctx.turnExtensions);
+        }),
+      '@xm/platform#secrets': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('secrets', {
+          backend: 'plaintext-unavailable',
+          get: async () => undefined,
+          set: async () => { throw new Error('headless smoke 不写入密钥'); },
+          delete: async () => undefined,
+          list: async () => [],
+        })),
+      '@xm/contracts#redact': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('redact', redact)),
+      '@xm/kernel#toolRegistry': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('tools', new ToolRegistry())),
+      '@xm/runtime#sessionRuntime': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('runtime', {
+          open: (options) => SessionRuntime.open({
+            ...options,
+            clock: ctx.clock,
+            ids: ctx.ids,
+          }),
+        })),
+      '@xm/runtime#multimodalGuard': (row) =>
+        profilePlugin(row, (ctx) => installMultimodalGuard(ctx.turnExtensions)),
+      '@xm/runtime#contextBuilder': (row) =>
+        profilePlugin(row, (ctx) => installContextBuilder(ctx.turnExtensions)),
+      '@xm/runtime#resultTruncation': (row) =>
+        profilePlugin(row, (ctx) => installResultTruncation(ctx.turnExtensions)),
+      '@xm/runtime#stoppingGuard': (row) =>
+        profilePlugin(row, (ctx) => installStoppingGuard(ctx.turnExtensions)),
+      '@xm/tools-core#builtinTools': (row) => profilePlugin(row, () => undefined),
+      '@xm/compose#headlessSurface': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('surface', { kind: 'headless' })),
+    },
+  });
+
   const bus = new EventBus();
   const seen = [];
   bus.subscribe((e) => seen.push(e));
 
-  const sessionId = newSessionId();
-  const runtime = await SessionRuntime.open({ sessionId, store: stores.events, bus });
+  const sessionId = composition.container.context.ids.session();
+  const runtime = await composition.container.context.runtime.open({
+    sessionId,
+    store: stores.events,
+    bus,
+  });
   await runtime.record({
     type: 'session.created',
     // 会话的工作目录就是那个临时工作区：网关据此把模型给的相对路径变成绝对路径
     payload: { cwd: workspace, modelRef: 'scripted/scripted-1', title: 'headless 冒烟' },
   });
 
-  const tools = new ToolRegistry();
+  const tools = composition.container.context.tools;
+  const extensions = composition.container.context.turnExtensions;
   tools.register(echoTool());
   tools.register(fakeDeleteTool());
   tools.register(
@@ -208,6 +286,7 @@ try {
   const reason = await runTurn(
     {
       runtime,
+      extensions,
       provider,
       tools,
       layers,
@@ -759,6 +838,38 @@ try {
   // 落盘之后、关库之前查一次——`stores.close()` 之后 `stores.blobs` 就不能再用了
   const imageStat = await stores.blobs.stat(imageRef);
 
+  // ── M3-d：真实 Agent 句柄入口（inject 不唤醒，followup 显式唤醒）──
+  const agentProvider = new ScriptedProvider({
+    turns: [
+      { chunks: [{ kind: 'text_delta', text: '收到 Agent 输入。' }, { kind: 'stop', reason: 'end_turn' }] },
+    ],
+  });
+  const agent = new Agent({
+    runtime,
+    drive: (input, context) => runTurn(
+      {
+        runtime,
+        provider: agentProvider,
+        tools,
+        layers,
+        model: 'scripted-1',
+        extensions,
+        signal: context.signal,
+        inbox: context.inbox,
+      },
+      input,
+    ),
+  });
+  await agent.inject({
+    content: [{ type: 'text', text: '后台索引已刷新' }],
+    source: { kind: 'job', jobId: 'headless-smoke' },
+  });
+  if (!agent.idle) fail('Agent.inject 错误地唤醒了空闲 Agent');
+  await agent.followup(textInput('继续处理')).completion;
+  if (!seen.some((event) => event.type === 'context.injected')) {
+    fail('Agent.inject 没有落 context.injected 持久事件');
+  }
+
   // ── M2-c：从真实工具调用生成的 v2 manifest 撤销第二次 README 写入 ──
   const undoCheckpoint = runtime.state.checkpoints.find((checkpoint) => checkpoint.callId === write2);
   let checkpointRestored = false;
@@ -779,6 +890,7 @@ try {
 
   const memoryState = runtime.state;
   await runtime.close();
+  await composition.dispose();
   await stores.close();
 
   const reopened = await openStores(paths);
@@ -918,7 +1030,8 @@ try {
         `M2-h 75% 预算→持久摘要→近期原文→重开复用跑通；` +
         `M2-i 独立 session/seq→只读探索→结论回传→完整收尾跑通；` +
         `rm -rf ~ 的四种写法全部由同一条红线拦下，普通命令照常跑；` +
-        `多模态图片贯穿 组装→runTurn→事件落库→blob 落盘 跑通`,
+        `多模态图片贯穿 组装→runTurn→事件落库→blob 落盘 跑通；` +
+        `Agent inject 不唤醒→followup 唤醒→重开放回放 跑通`,
     );
   }
 } finally {

@@ -152,6 +152,13 @@ export function sampleEvents(): XmEvent[] {
       payload: { agentId, ok: true, summary: [{ type: 'text', text: '结论' }] },
     },
     {
+      type: 'context.injected',
+      payload: {
+        content: [{ type: 'text', text: '后台结论' }],
+        source: { kind: 'subagent', agentId },
+      },
+    },
+    {
       type: 'context.compacted',
       payload: { fromSeq: 1, toSeq: 5, summaryRef: blob, tokensBefore: 100, tokensAfter: 20 },
     },

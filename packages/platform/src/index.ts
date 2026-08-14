@@ -9,5 +9,6 @@ export * from './detect.js';
 export * from './paths.js';
 export * from './node-platform.js';
 export * from './config.js';
+export * from './container-services.js';
 export * from './secret-file.js';
 export * from './secret-unavailable.js';

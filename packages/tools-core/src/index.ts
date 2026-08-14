@@ -1,16 +1,13 @@
 /**
- * `@xm/tools-core` —— 基础工具集与它们要的两个运行时零件。
+ * `@xm/tools-core` —— 可拆卸的业务工具实现。
  *
  * 这个包**要 `node:fs`**，与内核的零 I/O 正好互补：内核判定"能不能做"，
- * 这里做"具体怎么做"。两者的接缝是 `ToolSpec` 与两个端口（`ToolGateway`、`Checkpointer`），
- * 都定义在内核里——所以换一个执行后端（容器、SSH，M1-d 之后）只要换这个包。
+ * 这里做"具体怎么做"。路径能力网关与写前 checkpoint 已迁入 `@xm/tool-runtime`，
+ * 因此整体移除本包时，安全底座与无工具应用仍能存在（ADR-0063）。
  *
  * 不依赖 electron（depcruise 强制）：CLI（M3）与 headless 冒烟用的是同一批工具。
  */
 
-export * from './gateway.js';
-export * from './checkpoint.js';
-export * from './checkpoint-restore.js';
 export * from './diff.js';
 export * from './edit.js';
 export * from './git.js';

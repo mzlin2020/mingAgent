@@ -92,13 +92,41 @@ module.exports = {
       to: { path: '^packages/(runtime|storage|platform)/src' },
     },
     {
+      name: 'tools-core-不得依赖-tool-runtime',
+      comment: '业务工具只能经注入端口取得安全底座，不得直连 provider（ADR-0063）。',
+      severity: 'error',
+      from: { path: '^packages/tools-core/src' },
+      to: { path: '^packages/tool-runtime/src' },
+    },
+    {
+      name: 'tool-runtime-不得依赖-electron',
+      comment: '执行网关与 checkpoint 必须同时服务 desktop、CLI 与 headless（ADR-0063）。',
+      severity: 'error',
+      from: { path: '^packages/tool-runtime/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
+      name: 'compose-不得依赖-electron',
+      comment: 'profile 解析与容器装配是所有入口共享的纯装配层（ADR-0059）。',
+      severity: 'error',
+      from: { path: '^packages/compose/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
+      name: '只有-apps-可以依赖-compose',
+      comment: 'compose 是应用入口的组合根，不得反向渗入业务包。',
+      severity: 'error',
+      from: { path: '^packages/(?!compose/)[^/]+/src' },
+      to: { path: '^packages/compose/src' },
+    },
+    {
       name: '内核与装配层不得依赖-tools-core',
       comment:
         '原则二（docs/01）："删掉 packages/tools-core 后，内核 + UI 必须仍能启动（只是没有' +
         '工具可用）"——这条验收约束此前只写在文档里，从没在依赖图上验证过（ADR-0032 #6）。' +
         'kernel/runtime/storage/platform 反过来认识 tools-core，这条约束就直接是假的：装配层' +
         '会因为少了一个具体工具包而编译不过，而不是"没有工具可用但照常启动"。' +
-        '真正暴露的耦合是 apps/desktop/src/main/services.ts（M3 插件宿主落地前的已知缺口，' +
+        '真正暴露的耦合是 apps/desktop/src/main/desktop-host.ts（桌面 surface 的宿主桥，' +
         '见 packages/runtime/tests/tools-core-independence.test.ts 的说明），这条规则先把' +
         '"内核层"这一半锁死，不留退路。',
       severity: 'error',

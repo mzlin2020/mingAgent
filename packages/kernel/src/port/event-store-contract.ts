@@ -1,9 +1,12 @@
 import type { PersistedEvent, SessionId, XmEventType } from '@xm/contracts';
-import { createEvent, newSessionId } from '@xm/contracts';
+import { createEvent } from '@xm/contracts';
+import { createDeterministicIds } from '../container/services.js';
 import { emptySessionState } from '../state/session-state.js';
 import { serializeSessionState } from '../state/snapshot.js';
 import type { EventStore, SealedEvent } from './event-store.js';
 import { SeqConflictError, WriteLeaseError, sealEvent } from './event-store.js';
+
+const ids = createDeterministicIds();
 
 /**
  * 事件存储端口的**一致性测试套件**。
@@ -92,14 +95,14 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
   {
     name: '不存在的会话读出空序列，而不是抛错',
     async run(makeStore) {
-      assert((await drain(makeStore().read(newSessionId()))).length === 0, '应产出空序列');
+      assert((await drain(makeStore().read(ids.session()))).length === 0, '应产出空序列');
     },
   },
 
   {
     name: '首条事件必须是 session.created',
     async run(makeStore) {
-      const s = newSessionId();
+      const s = ids.session();
       const w = await makeStore().openForWrite(s);
       await rejects(
         () => w.append([notice(s, 1)]),
@@ -113,7 +116,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: '追加后能原样读回，顺序与内容不变',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       const batch = [created(s), notice(s, 2), notice(s, 3)];
       await w.append(batch);
@@ -133,7 +136,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: 'fromSeq / toSeq 是闭区间',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s), notice(s, 2), notice(s, 3), notice(s, 4)]);
 
@@ -149,7 +152,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: 'seq 出现空洞即抛 SeqConflictError，且整批不落（原子性）',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s)]);
 
@@ -172,7 +175,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: 'seq 重复即抛 —— 那意味着有第二个写者',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s), notice(s, 2)]);
       await rejects(
@@ -187,7 +190,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: '同一会话不能有第二个写者；close 之后可以重新取得',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await rejects(
         () => store.openForWrite(s),
@@ -217,7 +220,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: 'openForWrite 的失败是拒绝的 Promise，不是同步抛出',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       await store.openForWrite(s);
 
       let sync: unknown;
@@ -241,7 +244,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: '摘要投影：标题、时间与 lastSeq 随事件推进',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s, '初始标题')]);
 
@@ -262,7 +265,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: 'rebuildSummaries 与增量投影等价 —— 投影坏了能从事件流修回来',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s, 'A'), mk(s, 2, 'session.renamed', { title: 'B' }), notice(s, 3)]);
 
@@ -280,7 +283,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: '快照（ADR-0032）：没有时 readSnapshot 返回 undefined，不抛',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s)]);
       assert((await store.readSnapshot(s)) === undefined, '从未写过快照应返回 undefined');
@@ -291,7 +294,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: '快照（ADR-0032）：写入后能原样读回',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s)]);
 
@@ -312,7 +315,7 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: '快照（ADR-0032）：再次写入覆盖旧快照，只保留最新一份',
     async run(makeStore) {
       const store = makeStore();
-      const s = newSessionId();
+      const s = ids.session();
       const w = await store.openForWrite(s);
       await w.append([created(s), notice(s, 2)]);
 
@@ -334,8 +337,8 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
     name: 'listSessions 按 updatedAt 倒序',
     async run(makeStore) {
       const store = makeStore();
-      const a = newSessionId();
-      const b = newSessionId();
+      const a = ids.session();
+      const b = ids.session();
       const wa = await store.openForWrite(a);
       await wa.append([created(a, 'A')]);
       const wb = await store.openForWrite(b);

@@ -1,6 +1,7 @@
 import { app, safeStorage } from 'electron';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { Profile } from '@xm/compose';
 import type {
   BlobRef,
   CheckpointId,
@@ -10,7 +11,7 @@ import type {
   EditProposalId,
   SessionId,
 } from '@xm/contracts';
-import { Config as ConfigSchema, newCallId, newSessionId } from '@xm/contracts';
+import { Config as ConfigSchema } from '@xm/contracts';
 import type {
   OrphanedTurn,
   PlatformPort,
@@ -29,6 +30,8 @@ import {
 } from '@xm/kernel';
 import type { ConfigProblem } from '@xm/platform';
 import {
+  createLocalClock,
+  createLocalIds,
   loadConfig,
   nodePlatform,
   persistProviderConfig,
@@ -40,7 +43,7 @@ import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
 import type { ProviderStreamStatus } from '@xm/providers';
 import type { TurnDeps } from '@xm/runtime';
-import { recoverInterruptedSubagents, runSubagentExploration } from '@xm/runtime';
+import { Agent, recoverInterruptedSubagents, runSubagentExploration } from '@xm/runtime';
 import {
   EventBus,
   ScriptedProvider,
@@ -51,16 +54,14 @@ import {
   runTurn,
   scanForOrphanedSessions,
   synthesizeInterruption,
+  textInput,
 } from '@xm/runtime';
+import { nodeCheckpointer, nodeCheckpointRestorer, nodeToolGateway } from '@xm/tool-runtime';
 import type { PtySessionEvent } from '@xm/tools-core';
-import {
-  PtySessionManager,
-  nodeCheckpointer,
-  nodeCheckpointRestorer,
-  nodeToolGateway,
-} from '@xm/tools-core';
+import { PtySessionManager } from '@xm/tools-core';
 import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
+import { assembleDesktopProfile } from './desktop-profile.js';
 import { prepareReviewedProposal } from './edit-review.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
@@ -141,6 +142,7 @@ function recordPtyEvent(runtime: SessionRuntime, event: PtySessionEvent): Promis
 }
 
 export interface Services {
+  readonly profile: Profile;
   readonly platform: PlatformPort;
   readonly stores: OpenedStores;
   readonly bus: EventBus;
@@ -163,6 +165,7 @@ export interface Services {
     text: string,
     images?: readonly ImageAttachment[],
   ): Promise<string>;
+  steerUserMessage(sessionId: SessionId, text: string): Promise<string>;
   /** 按 `BlobRef` 反查图片字节，编成 data URL。渲染层此前从未反查过 blob 内容 */
   readBlob(ref: BlobRef): Promise<string>;
   /**
@@ -226,6 +229,8 @@ export async function startServices(): Promise<Services> {
   });
 
   const paths = platform.paths();
+  const clock = createLocalClock();
+  const ids = createLocalIds();
   const stores = await openStores(paths);
   const policyEnv = policyEnvFromPaths(paths);
   const bus = new EventBus();
@@ -270,6 +275,7 @@ export async function startServices(): Promise<Services> {
   const checkpointRestorer = nodeCheckpointRestorer(stores.blobs);
 
   const runtimes = new Map<SessionId, SessionRuntime>();
+  const agents = new Map<SessionId, Agent>();
   /** 每会话一个 AbortController。它的存在期就是"这一轮正在跑" */
   const running = new Map<SessionId, AbortController>();
   const withExclusiveSessionOperation = async <T>(
@@ -330,7 +336,11 @@ export async function startServices(): Promise<Services> {
     const existing = runtimes.get(sessionId);
     if (existing !== undefined) return existing;
     // 同一会话只允许一个写者（不变量四）：句柄的生命周期就是租约，缓存住它
-    const created = await SessionRuntime.open({ sessionId, store: stores.events, bus });
+    const created = await composition.container.context.runtime.open({
+      sessionId,
+      store: stores.events,
+      bus,
+    });
     runtimes.set(sessionId, created);
     refreshIndex(created.state.cwd);
     await recoverInterruptedSubagents(created, stores.events);
@@ -364,13 +374,23 @@ export async function startServices(): Promise<Services> {
         });
     },
   });
-  for (const tool of productionTools({
-    os: platform.os,
-    index: stores.index,
-    backgroundSignal: background.signal,
-    tempDir: join(paths.cache, 'tools'),
-    ptySessions,
-    updateTodos: async ({ sessionId, todos }) => {
+  const composition = await assembleDesktopProfile({
+    configDir: paths.config,
+    clock,
+    ids,
+    policy: layers,
+    gateway,
+    checkpointer,
+    checkpointRestorer,
+    secrets,
+    tools,
+    createTools: () => productionTools({
+      os: platform.os,
+      index: stores.index,
+      backgroundSignal: background.signal,
+      tempDir: join(paths.cache, 'tools'),
+      ptySessions,
+      updateTodos: async ({ sessionId, todos }) => {
       const runtime = await runtimeFor(sessionId);
       const turnId = runtime.state.activeTurn?.turnId;
       await runtime.record({
@@ -446,13 +466,19 @@ export async function startServices(): Promise<Services> {
           blobs: stores.blobs,
           prices: config.prices,
           pathCaseInsensitive: platform.os === 'windows',
+          inject: async ({ agentId, summary, untrustedContext }) => {
+            await agentFor(request.sessionId, parentRuntime).inject({
+              content: summary,
+              source: { kind: 'subagent', agentId },
+              ...(untrustedContext === undefined ? {} : { untrustedContext }),
+            });
+          },
         },
         request,
       );
-    },
-  })) {
-    tools.register(tool);
-  }
+      },
+    }),
+  });
 
   /**
    * 角色 → 模型引用（docs/08 M3 的"角色路由"在这里落下第一个真实消费者）。
@@ -527,7 +553,7 @@ export async function startServices(): Promise<Services> {
   const buildTurnDeps = async (
     sessionId: SessionId,
     runtime: SessionRuntime,
-    controller: AbortController,
+    signal: AbortSignal,
     /** 没配置真 Provider 时，兜底的本地回显要说点什么——`sendUserMessage` 传用户刚打的字 */
     demoEcho = '（崩溃恢复续跑，没有新的用户输入）',
   ): Promise<TurnDeps> => {
@@ -554,11 +580,35 @@ export async function startServices(): Promise<Services> {
       checkpointer,
       blobs: stores.blobs,
       pathCaseInsensitive: platform.os === 'windows',
-      signal: controller.signal,
+      signal,
+      extensions: composition.container.context.turnExtensions,
     };
   };
 
+  const agentFor = (sessionId: SessionId, runtime: SessionRuntime): Agent => {
+    const existing = agents.get(sessionId);
+    if (existing !== undefined) return existing;
+    const created = new Agent({
+      runtime,
+      drive: async (input, context) => {
+        const echo = input
+          .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+          .map((block) => block.text)
+          .join('\n');
+        const deps = await buildTurnDeps(sessionId, runtime, context.signal, echo);
+        return runTurn({ ...deps, inbox: context.inbox }, input);
+      },
+      onActive: (controller) => running.set(sessionId, controller),
+      onIdle: (controller) => {
+        if (running.get(sessionId) === controller) running.delete(sessionId);
+      },
+    });
+    agents.set(sessionId, created);
+    return created;
+  };
+
   return {
+    profile: composition.profile,
     platform,
     stores,
     bus,
@@ -567,7 +617,7 @@ export async function startServices(): Promise<Services> {
 
     async createSession(options: { title?: string; cwd?: string } = {}): Promise<SessionId> {
       const cwd = options.cwd ?? workspaceForNewSession(config, app.getPath('home'));
-      const sessionId = newSessionId();
+      const sessionId = ids.session();
       const runtime = await runtimeFor(sessionId);
       await runtime.record({
         type: 'session.created',
@@ -638,12 +688,8 @@ export async function startServices(): Promise<Services> {
       images?: readonly ImageAttachment[],
     ): Promise<string> {
       const runtime = await runtimeFor(sessionId);
-
-      /*
-       * 一个会话同时只跑一轮。已经在跑时**拒绝**而不是排队：
-       * 排队会让用户连点两次发送后看到两条回复依次出现，而他以为第二次覆盖了第一次。
-       */
-      if (running.has(sessionId)) return 'busy';
+      const agent = agentFor(sessionId, runtime);
+      if (running.has(sessionId) && agent.idle) return 'busy';
 
       // 图片在前、文字在后——已知的简化，等 UI 支持交替插入再放开（docs/08 M1-d）
       const blocks: ContentBlock[] = [];
@@ -653,18 +699,19 @@ export async function startServices(): Promise<Services> {
       }
       if (text.trim() !== '') blocks.push({ type: 'text', text });
 
-      const controller = new AbortController();
-      running.set(sessionId, controller);
-
-      // 必须在 runTurn 之前：turn.start 一落，"这是第一条用户消息"的判据就失真了
+      const dispatched = agent.followup(blocks);
+      if (!dispatched.awakened) return 'queued';
+      // 必须在 turn.start 之前求判据；Agent 的 drive 在微任务中开始，当前同步栈仍安全。
       autoTitleInBackground(runtime, text);
+      return dispatched.completion;
+    },
 
-      try {
-        const deps = await buildTurnDeps(sessionId, runtime, controller, text);
-        return await runTurn(deps, blocks);
-      } finally {
-        running.delete(sessionId);
-      }
+    async steerUserMessage(sessionId: SessionId, text: string): Promise<string> {
+      const runtime = await runtimeFor(sessionId);
+      const agent = agentFor(sessionId, runtime);
+      if (running.has(sessionId) && agent.idle) return 'busy';
+      const dispatched = agent.steer(textInput(text));
+      return dispatched.awakened ? dispatched.completion : 'queued';
     },
 
     /**
@@ -699,7 +746,7 @@ export async function startServices(): Promise<Services> {
       running.set(sessionId, controller);
       try {
         await synthesizeInterruption(runtime, orphan);
-        const deps = await buildTurnDeps(sessionId, runtime, controller);
+        const deps = await buildTurnDeps(sessionId, runtime, controller.signal);
         await resumeTurn(deps, orphan.turnId);
       } finally {
         running.delete(sessionId);
@@ -797,8 +844,8 @@ export async function startServices(): Promise<Services> {
           if (derived === undefined) return { applied: false };
           await runtime.record({ type: 'edit.proposed', payload: { proposal: derived } });
 
-          const callId = newCallId();
-          const deps = await buildTurnDeps(sessionId, runtime, controller);
+          const callId = ids.call();
+          const deps = await buildTurnDeps(sessionId, runtime, controller.signal);
           const provider = new ScriptedProvider({
             turns: [
               {
@@ -851,6 +898,8 @@ export async function startServices(): Promise<Services> {
      * `message.interrupted` 由 Turn 循环在收尾时落下。
      */
     interrupt(sessionId: SessionId): boolean {
+      const agent = agents.get(sessionId);
+      if (agent?.idle === false) return agent.interrupt();
       const controller = running.get(sessionId);
       if (controller === undefined) return false;
       controller.abort();
@@ -964,6 +1013,7 @@ export async function startServices(): Promise<Services> {
       ptySessions.disposeAll();
       for (const runtime of runtimes.values()) await runtime.close();
       runtimes.clear();
+      await composition.dispose();
       await stores.close();
     },
   };

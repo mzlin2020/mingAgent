@@ -66,6 +66,7 @@ interface UiState extends OrphanedSlice {
    */
   live: LiveBuffer;
   busy: boolean;
+  pendingInputs: readonly { readonly id: number; readonly kind: 'followup' | 'steer'; readonly text: string }[];
   error: string | undefined;
   /**
    * 运行状态：Provider 配没配好、密钥后端是哪一档、配置有没有问题。
@@ -104,6 +105,7 @@ interface UiState extends OrphanedSlice {
    */
   readonly clearUntrusted: () => Promise<void>;
   readonly send: (text: string, images?: readonly ImageAttachment[]) => Promise<void>;
+  readonly steer: (text: string) => Promise<void>;
   readonly stop: () => Promise<void>;
   readonly refreshStatus: () => Promise<void>;
   readonly setApiKey: (providerId: string, key: string) => Promise<void>;
@@ -125,6 +127,7 @@ function toCoreEvent(pushed: PushedEvent): AnyEvent | undefined {
 }
 
 export const useUi = create<UiState>((set, get) => {
+  let pendingId = 0;
   /**
    * 统一收口：一次 IPC 调用失败之后该往哪个状态字段写，见 `ipc-error.ts`。
    * 有 `sessionId` 的调用点传它，让 `WriteLeaseError` 能落进专门的 `sessionConflict`；
@@ -147,6 +150,7 @@ export const useUi = create<UiState>((set, get) => {
     session: undefined,
     live: EMPTY_LIVE,
     busy: false,
+    pendingInputs: [],
     error: undefined,
     status: undefined,
     sessionConflict: undefined,
@@ -194,6 +198,7 @@ export const useUi = create<UiState>((set, get) => {
         shellView: 'chat',
         session: undefined,
         live: EMPTY_LIVE,
+        pendingInputs: [],
         error: undefined,
         sessionConflict: undefined,
       });
@@ -254,12 +259,38 @@ export const useUi = create<UiState>((set, get) => {
       if (id === undefined) return;
       set({ busy: true, error: undefined });
       try {
-        await api.sendUserMessage(id, text, images);
+        const result = await api.sendUserMessage(id, text, images);
+        if (result.reason === 'queued') {
+          set({
+            pendingInputs: [
+              ...get().pendingInputs,
+              { id: ++pendingId, kind: 'followup', text },
+            ],
+          });
+        }
         await get().refreshSessions();
       } catch (e) {
         applyIpcError(e, id);
       } finally {
         set({ busy: false });
+      }
+    },
+
+    steer: async (text) => {
+      const id = get().currentId;
+      if (id === undefined) return;
+      try {
+        const result = await api.steerUserMessage(id, text);
+        if (result.reason === 'queued') {
+          set({
+            pendingInputs: [
+              ...get().pendingInputs,
+              { id: ++pendingId, kind: 'steer', text },
+            ],
+          });
+        }
+      } catch (error) {
+        applyIpcError(error, id);
       }
     },
 
@@ -304,6 +335,17 @@ export const useUi = create<UiState>((set, get) => {
 
       const e = toCoreEvent(pushed);
       if (e === undefined || !isCoreEvent(e)) return;
+      if (e.type === 'turn.start') {
+        const claimedText = e.payload.input
+          .filter((block): block is Extract<(typeof e.payload.input)[number], { type: 'text' }> =>
+            block.type === 'text',
+          )
+          .map((block) => block.text);
+        set({
+          busy: false,
+          pendingInputs: get().pendingInputs.filter((item) => !claimedText.includes(item.text)),
+        });
+      }
 
       /*
        * 两条线各走各的：

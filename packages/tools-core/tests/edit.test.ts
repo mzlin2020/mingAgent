@@ -13,10 +13,10 @@ import {
 } from '@xm/contracts';
 import type { ToolContext } from '@xm/kernel';
 import { truncateResult } from '@xm/kernel';
+import { nodeToolGateway } from '@xm/tool-runtime';
 import {
   editApplyTool,
   editPreviewTool,
-  nodeToolGateway,
   type EditProposalAccess,
 } from '@xm/tools-core';
 

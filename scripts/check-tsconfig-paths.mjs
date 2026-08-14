@@ -4,7 +4,7 @@
  *
  * 由来（2026-08-06，M1-c 推上去之后 CI 的 lint job 直接红）：
  *
- *   apps/desktop/src/main/services.ts
+ *   apps/desktop/src/main/desktop-host.ts
  *     124:19  error  Unsafe call of a type that could not be resolved
  *     …8 条
  *

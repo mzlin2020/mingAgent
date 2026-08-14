@@ -22,6 +22,7 @@ import { Todo } from '../session/todo.js';
 import { EditProposal } from '../session/edit.js';
 import { RiskLevel } from '../tool/descriptor.js';
 import { DisplayHint } from '../tool/display.js';
+export { ContextInjectedPayload, ContextInjectionSource } from './context-injected.js';
 
 /**
  * 全部事件的 payload schema。

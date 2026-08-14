@@ -2,9 +2,10 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserWindow, Menu, app, dialog } from 'electron';
+import { dumpProfile } from '@xm/compose';
 import { registerIpc } from './ipc.js';
-import type { Services } from './services.js';
-import { startServices } from './services.js';
+import type { Services } from './desktop-host.js';
+import { startServices } from './desktop-host.js';
 import { assertStorageWorks } from './self-check.js';
 import { secureNavigation } from './navigation-security.js';
 
@@ -81,6 +82,13 @@ app.whenReady().then(
     } catch (e) {
       dialog.showErrorBox('小明启动失败', e instanceof Error ? e.message : String(e));
       app.exit(1);
+      return;
+    }
+
+    if (process.argv.includes('--dump-config')) {
+      console.log(dumpProfile(services.profile));
+      await services.close();
+      app.exit(0);
       return;
     }
 

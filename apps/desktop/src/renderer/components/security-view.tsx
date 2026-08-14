@@ -205,6 +205,11 @@ export function SecurityView(): ReactNode {
           </SettingsSection>
 
           <SettingsSection title="工具" description="关闭后，小明不会在后续回合看到或调用该工具。平台不支持的工具无法启用。">
+            {settings.tools.length === 0 && (
+              <p className="rounded-card border border-border bg-surface p-3 text-meta text-muted">
+                当前 profile 未装载任何工具；对话与会话恢复仍可正常使用。
+              </p>
+            )}
             <div className="grid gap-2 md:grid-cols-2">
               {settings.tools.map((tool) => {
                 const enabled = !disabledTools.has(tool.name);

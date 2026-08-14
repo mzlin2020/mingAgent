@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "基础工具集：fs 读写列举、路径能力网关、写前还原点。要 node:fs，不依赖 electron",
+  "description": "业务工具实现：fs/shell/pty/git/web/search/edit。不含能力网关与 checkpoint",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

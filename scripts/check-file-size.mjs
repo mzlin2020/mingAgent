@@ -52,7 +52,7 @@ const ALLOWLIST = {
     '内容是一份平铺的默认规则列表（BALANCED_DEFAULT_RULES 等），行数来自条目数量' +
     '而不是职责混杂——按能力拆成多个文件需要先想清楚"规则的分组边界"，属于独立的' +
     '设计工作，不是简单的物理搬运，本轮不顺手做。',
-  'apps/desktop/src/main/services.ts':
+  'apps/desktop/src/main/desktop-host.ts':
     '整个应用唯一知道 Electron 与业务同时存在的装配文件（文件顶部注释原话）——' +
     '本质是一处，拆开多个文件反而会把"这里才是唯一装配点"这条不变量拆得不再一目了然。',
   'packages/kernel/src/policy/command-claims.ts':

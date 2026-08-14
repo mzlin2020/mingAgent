@@ -21,18 +21,21 @@
 | `port/memory-blob-store.ts` `port/blob-store-contract.ts` | 同上的参考实现与一致性用例 |
 | `port/platform.ts` | 平台端口 + `XmPaths` + `xmDataLayout()`（ADR-0014） |
 | `port/model-provider.ts` | 模型提供商端口（docs/04 §4.1 的实现级版本） |
+| `container/` | M3-a 最小插件容器：服务、插件、效果、四种类型化派发与两级扁平作用域 |
+| `container/services.ts` | `ctx.clock` / `ctx.ids` 契约与确定性测试提供者（ADR-0066） |
 
 ## 不负责什么
 
 - **任何 I/O**。零 `node:*`、零 `electron`、零网络、零文件系统（dependency-cruiser 在 CI 强制）。
   单元测试必须能在无网络、无文件系统的环境下全绿——这是原则二的具体形态。
 - 数据形状定义。那是 `@xm/contracts`。
-- 装配。把 Provider / 工具 / 存储拼成可运行的引擎是 `@xm/runtime` 的事。
+- 具体业务装配。内核只提供纯逻辑容器机制；profile 解析与 Provider / 工具 / 存储的实际接线
+  在 M3-b 的 `@xm/compose`，不会让 kernel 认识任何适配器。
 
 之所以要这么克制：内核要能在浏览器、Node、测试里以**完全相同**的方式运行。
 这既是"CLI 与桌面共用同一个引擎"的前提，也是 ADR-0001 里"未来可换外壳"那条退路的实际载体。
 
-## 四条容易被破坏的约束
+## 五条容易被破坏的约束
 
 **一、`reduce` 里瞬态事件必须是空操作。**
 `message.delta` / `tool.progress` 不得改变状态的任何一位，包括 `lastSeq`。
@@ -76,6 +79,11 @@ const rules = builtinRules(policyEnvFromPaths(platform.paths()));
 的测试能 import 它——跨包 import 一个 `.test.ts` 走不通。它因此不能依赖 vitest：
 每条用例就是一个抛异常表示失败的 async 函数。
 
+**五、容器作用域的解析关系与生命周期关系不是同一棵树。**
+`ctx.fork()` 只解析根层与本层，不能把父 fork 的局部服务或监听器隐式传给孙层；
+但父层卸载仍必须级联清理后代效果。前一半防止子 Agent 的能力随嵌套深度偷偷增长，
+后一半防止扁平解析制造无人负责的资源。见 ADR-0067。
+
 ## 相关文档
 
 - [docs/04 总体架构](../../docs/04-总体架构.md)
@@ -83,3 +91,6 @@ const rules = builtinRules(policyEnvFromPaths(platform.paths()));
 - [ADR-0003 默认权限策略](../../docs/adr/0003-默认权限策略.md)
 - [ADR-0005 工具并发与资源声明](../../docs/adr/0005-工具并发与资源声明.md)
 - [ADR-0008 事件持久化分层与演进](../../docs/adr/0008-事件持久化分层与演进.md)
+- [ADR-0052 插件容器与效果模型](../../docs/adr/0052-插件容器与效果模型.md)
+- [ADR-0067 子 Agent 作用域的两级扁平语义](../../docs/adr/0067-子Agent作用域的两级扁平语义.md)
+- [ADR-0068 插件服务声明与装配收敛](../../docs/adr/0068-插件服务声明与装配收敛.md)

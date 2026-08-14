@@ -18,6 +18,7 @@ import {
   RestoreCheckpointResult,
   ReviewEditProposalResult,
   SendUserMessageResult,
+  SteerUserMessageResult,
   SetApiKeyResult,
   SettingsResult,
   StatusResult,
@@ -39,6 +40,7 @@ interface XmBridge {
   listSessions(): Promise<unknown>;
   createSession(req: unknown): Promise<unknown>;
   sendUserMessage(req: unknown): Promise<unknown>;
+  steerUserMessage(req: unknown): Promise<unknown>;
   readSession(req: unknown): Promise<unknown>;
   readBlob(req: unknown): Promise<unknown>;
   inspectCheckpoint(req: unknown): Promise<unknown>;
@@ -101,6 +103,8 @@ export const api = {
       }),
       SendUserMessageResult,
     ),
+  steerUserMessage: (sessionId: string, text: string) =>
+    call(bridge().steerUserMessage({ sessionId, text }), SteerUserMessageResult),
   readSession: (sessionId: string) =>
     call(bridge().readSession({ sessionId }), ReadSessionResult),
   readBlob: (ref: BlobRef) => call(bridge().readBlob({ ref }), ReadBlobResult),

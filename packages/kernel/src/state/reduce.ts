@@ -4,6 +4,7 @@ import type { SessionState } from './session-state.js';
 import { compactionOf } from './context-compaction.js';
 import { taintOf } from './taint.js';
 import { appendToolResult } from './tool-result.js';
+import { appendInputMessage } from './input-message.js';
 
 /**
  * 事件 → 状态的归约。**纯函数**：不读时间、不取随机数、不碰文件系统。
@@ -61,15 +62,12 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         activeTurn: { turnId: e.payload.turnId, startedAt: e.ts },
         // 用户输入进入消息流。messageId 取事件 id：确定性且唯一，
         // reduce 不能自己生成随机 ID。
-        messages: [
-          ...state.messages,
-          {
-            id: e.id as unknown as MessageId,
-            role: 'user',
-            blocks: e.payload.input,
-            ts: e.ts,
-          },
-        ],
+        messages: appendInputMessage(
+          state.messages,
+          e.id as unknown as MessageId,
+          e.payload.input,
+          e.ts,
+        ),
         /*
          * 新一轮开始，清掉上一轮留下的错误。
          *
@@ -231,6 +229,14 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     }
 
     // ── 上下文与运维 ──────────────────────────────────────────
+    case 'context.injected':
+      return {
+        ...state,
+        messages: appendInputMessage(state.messages, e.id as unknown as MessageId, e.payload.content, e.ts),
+        untrustedContext: state.untrustedContext ?? e.payload.untrustedContext,
+        lastSeq: e.seq,
+      };
+
     case 'context.compacted':
       // 只记录标记。摘要在 blob 里，reduce 读不到 I/O——
       // 真正把旧消息换成摘要是 ContextBuilder 在装配时做的事。

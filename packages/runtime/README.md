@@ -19,8 +19,11 @@ headless 引擎。
 |---|---|
 | `src/session-runtime.ts` | 一个会话的运行时。**全系统唯一分配 `seq` 的地方** |
 | `src/event-bus.ts` | 进程内发布订阅，支持 `fromSeq` 续读 |
-| `src/turn.ts` | 极薄的 Turn 循环：Provider → 事件 → 权限闸门 → 工具 → 事件 |
-| `src/context-builder.ts` | 主请求唯一装配入口：稳定前缀、预算、回合切片、摘要生成与复用 |
+| `src/turn.ts` | 特权 Turn 驱动器：认领步骤、派发扩展点、保证事件成对 |
+| `src/turn-events.ts` | 五个回合级扩展点与工具十二步链的命名契约 |
+| `src/turn-extension-host.ts` | 容器事件到驱动器的类型化派发入口 |
+| `src/agent.ts` | `followup` / `steer` / `inject` 句柄与易失 Inbox |
+| `src/context-builder.ts` | 上下文预算插件：稳定前缀、回合切片、摘要生成与复用 |
 | `src/subagent.ts` | 串行只读派生、子工具白名单、取消/重启收尾与污点回传 |
 | `src/provider/scripted.ts` | 按剧本吐 chunk 的 Provider（冒烟、回放、评测都用它） |
 | `src/tools/demo.ts` | 两个零 I/O 的玩具工具，覆盖闸门的三条路径 |

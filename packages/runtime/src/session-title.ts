@@ -1,6 +1,6 @@
 import type { ModelRequest } from '@xm/contracts';
-import { newMessageId } from '@xm/contracts';
-import type { AbortLike, ModelProvider, SessionState } from '@xm/kernel';
+import type { AbortLike, IdService, ModelProvider, SessionState } from '@xm/kernel';
+import { createDeterministicIds } from '@xm/kernel';
 import { drainText } from './drain-text.js';
 import type { SessionRuntime } from './session-runtime.js';
 
@@ -40,6 +40,7 @@ export const MAX_TITLE_CHARS = 24;
 
 /** 送进模型的用户文本上限（码点）。命名不需要读完一篇长文 */
 export const MAX_TITLE_INPUT_CHARS = 2000;
+const fallbackTitleIds = createDeterministicIds();
 
 /**
  * 24 个中文字远在其下；给足冗余，同时保证跑飞的模型也只烧这么多。
@@ -154,7 +155,11 @@ export function sanitizeTitle(raw: string): string | undefined {
   return truncateByCodePoint(title, MAX_TITLE_CHARS);
 }
 
-export function buildTitleRequest(model: string, text: string): ModelRequest {
+export function buildTitleRequest(
+  model: string,
+  text: string,
+  ids: IdService = fallbackTitleIds,
+): ModelRequest {
   return {
     model,
     /*
@@ -164,7 +169,7 @@ export function buildTitleRequest(model: string, text: string): ModelRequest {
     system: [{ text: TITLE_SYSTEM_PROMPT, cacheable: false }],
     messages: [
       {
-        id: newMessageId(),
+        id: ids.message(),
         role: 'user',
         blocks: [{ type: 'text', text: truncateByCodePoint(text, MAX_TITLE_INPUT_CHARS) }],
         // 这条消息只活在这一次请求里，不进任何事件流，时间戳没有意义
@@ -238,7 +243,7 @@ export async function autoTitleSession(deps: AutoTitleDeps, text: string): Promi
   const provider = await openProvider();
   if (provider === undefined) return undefined;
 
-  const drained = await drainText(provider, buildTitleRequest(model, text), signal);
+  const drained = await drainText(provider, buildTitleRequest(model, text, runtime.ids), signal);
   // 取消时端口约定不发 usage、以 aborted 收尾——靠这个判，不靠文本长度猜
   if (drained.stopReason === 'aborted') return undefined;
   if (signal?.aborted === true) return undefined;

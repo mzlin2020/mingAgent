@@ -1,5 +1,4 @@
 import type { CallId, TurnId } from '@xm/contracts';
-import { newCheckpointId } from '@xm/contracts';
 import type { PermissionClaim, RegisteredTool, ToolContext } from '@xm/kernel';
 import type { TurnDeps } from './turn-types.js';
 
@@ -22,7 +21,7 @@ export async function recordTurnCheckpoint(
       type: 'checkpoint.created',
       turnId,
       payload: {
-        checkpointId: newCheckpointId(),
+        checkpointId: deps.runtime.ids.checkpoint(),
         kind: result.record.kind,
         ref: result.record.ref,
         label: result.record.label,

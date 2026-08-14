@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('xm', {
   listSessions: () => ipcRenderer.invoke(CH.listSessions),
   createSession: (req: unknown) => ipcRenderer.invoke(CH.createSession, req),
   sendUserMessage: (req: unknown) => ipcRenderer.invoke(CH.sendUserMessage, req),
+  steerUserMessage: (req: unknown) => ipcRenderer.invoke(CH.steerUserMessage, req),
   readSession: (req: unknown) => ipcRenderer.invoke(CH.readSession, req),
   inspectCheckpoint: (req: unknown) => ipcRenderer.invoke(CH.inspectCheckpoint, req),
   restoreCheckpoint: (req: unknown) => ipcRenderer.invoke(CH.restoreCheckpoint, req),

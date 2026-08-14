@@ -1,0 +1,24 @@
+{
+  "name": "@xm/tool-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "工具执行的安全底座：路径/命令/主机网关与写前 checkpoint。不依赖 electron",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@xm/contracts": "workspace:*",
+    "@xm/kernel": "workspace:*"
+  },
+  "devDependencies": {
+    "zod": "4.4.3"
+  }
+}

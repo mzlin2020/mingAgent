@@ -9,7 +9,8 @@ import { newCallId, newSessionId } from '@xm/contracts';
 import { MemoryEventStore, ToolRegistry, composeRules, type PolicyEnv } from '@xm/kernel';
 import { osFamily } from '@xm/platform';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { gitBranchTool, gitCommitTool, nodeToolGateway } from '@xm/tools-core';
+import { nodeToolGateway } from '@xm/tool-runtime';
+import { gitBranchTool, gitCommitTool } from '@xm/tools-core';
 
 const roots: string[] = [];
 const realNative = promisify(realpathCb.native);

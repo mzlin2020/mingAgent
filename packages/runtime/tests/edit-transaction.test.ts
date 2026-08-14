@@ -14,12 +14,10 @@ import {
   type PolicyEnv,
 } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
+import { nodeCheckpointer, nodeCheckpointRestorer, nodeToolGateway } from '@xm/tool-runtime';
 import {
   editApplyTool,
   editPreviewTool,
-  nodeCheckpointer,
-  nodeCheckpointRestorer,
-  nodeToolGateway,
   writeTextAtomic,
   type EditProposalAccess,
 } from '@xm/tools-core';

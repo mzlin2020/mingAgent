@@ -9,7 +9,8 @@ import {
   type BlobRef,
 } from '@xm/contracts';
 import { MemoryBlobStore, type BlobStore, type PermissionClaim, type ToolContext } from '@xm/kernel';
-import { fsWriteTool, nodeCheckpointer, nodeCheckpointRestorer } from '@xm/tools-core';
+import { nodeCheckpointer, nodeCheckpointRestorer } from '@xm/tool-runtime';
+import { fsWriteTool } from '@xm/tools-core';
 
 let root: string;
 let store: MemoryBlobStore;

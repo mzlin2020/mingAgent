@@ -6,13 +6,12 @@ import type { ResultBlock, ToolProgress } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
 import type { BlobStore, RegisteredTool, ToolContext } from '@xm/kernel';
 import { MemoryBlobStore, defineTool } from '@xm/kernel';
+import { nodeCheckpointer, nodeCheckpointRestorer } from '@xm/tool-runtime';
 import {
   coreTools,
   fsListTool,
   fsReadTool,
   fsWriteTool,
-  nodeCheckpointer,
-  nodeCheckpointRestorer,
   shellExecTool,
 } from '@xm/tools-core';
 

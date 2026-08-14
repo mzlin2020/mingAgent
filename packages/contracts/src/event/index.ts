@@ -78,6 +78,7 @@ export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({ type: z.literal('subagent.start'), payload: P.SubagentStartPayload }),
   EventEnvelope.extend({ type: z.literal('subagent.end'), payload: P.SubagentEndPayload }),
 
+  EventEnvelope.extend({ type: z.literal('context.injected'), payload: P.ContextInjectedPayload }),
   EventEnvelope.extend({
     type: z.literal('context.compacted'),
     payload: P.ContextCompactedPayload,

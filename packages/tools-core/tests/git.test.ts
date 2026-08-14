@@ -6,12 +6,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { newSessionId } from '@xm/contracts';
 import type { RegisteredTool, ToolContext } from '@xm/kernel';
 import { osFamily } from '@xm/platform';
+import { nodeToolGateway } from '@xm/tool-runtime';
 import {
   gitBranchTool,
   gitCommitTool,
   gitDiffTool,
   gitStatusTool,
-  nodeToolGateway,
 } from '../src/index.js';
 
 const roots: string[] = [];

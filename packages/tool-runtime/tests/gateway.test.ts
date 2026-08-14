@@ -9,7 +9,7 @@ import type { PermissionRequest, PolicyRuleSet } from '@xm/contracts';
 import { newRequestId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv, RegisteredTool, ToolContext } from '@xm/kernel';
 import { GatewayError, builtinLayers, defineTool, evaluate, normalizedOrThrow } from '@xm/kernel';
-import { nodeToolGateway } from '@xm/tools-core';
+import { nodeToolGateway } from '@xm/tool-runtime';
 
 /**
  * ── 能力网关（ADR-0024）──

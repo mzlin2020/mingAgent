@@ -9,7 +9,8 @@ import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { coreTools, nodeToolGateway } from '@xm/tools-core';
+import { nodeToolGateway } from '@xm/tool-runtime';
+import { coreTools } from '@xm/tools-core';
 
 /**
  * ── 敏感路径的读取拒绝，跑在真实工具上（ADR-0025）──

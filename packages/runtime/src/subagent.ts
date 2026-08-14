@@ -7,7 +7,6 @@ import type {
   StopReason,
   ToolProgress,
 } from '@xm/contracts';
-import { newAgentId, newSessionId } from '@xm/contracts';
 import type {
   AbortLike,
   EventStore,
@@ -58,6 +57,7 @@ export interface SubagentOutcome {
   readonly ok: boolean;
   readonly reason: SubagentEndReason;
   readonly summary: readonly ResultBlock[];
+  readonly injected: boolean;
 }
 
 export type SubagentExplorer = (request: SubagentExploreRequest) => Promise<SubagentOutcome>;
@@ -86,7 +86,12 @@ export const subagentExploreTool = (explore: SubagentExplorer): RegisteredTool =
         timeoutMs: input.timeoutMs,
         signal: ctx.signal,
       });
-      yield { kind: 'result', forModel: [...outcome.summary] };
+      yield {
+        kind: 'result',
+        forModel: outcome.injected
+          ? [{ type: 'text', text: '子 Agent 结论已通过 Agent.inject 注入当前会话。' }]
+          : [...outcome.summary],
+      };
     },
   });
 
@@ -104,6 +109,11 @@ export interface RunSubagentDeps {
   readonly blobs?: TurnDeps['blobs'];
   readonly prices?: TurnDeps['prices'];
   readonly pathCaseInsensitive?: boolean;
+  readonly inject?: (input: {
+    readonly agentId: AgentId;
+    readonly summary: readonly ResultBlock[];
+    readonly untrustedContext?: SessionState['untrustedContext'];
+  }) => Promise<void>;
 }
 
 /** 真实派生链路：独立 SessionRuntime、只读注册表、有界取消与 finally 收尾。 */
@@ -115,8 +125,8 @@ export async function runSubagentExploration(
     throw new Error('M2 只允许串行派生：当前父会话已有一个子 Agent 在运行。');
   }
 
-  const agentId = newAgentId();
-  const childSessionId = newSessionId();
+  const agentId = deps.parentRuntime.ids.agent();
+  const childSessionId = deps.parentRuntime.ids.session();
   const parentTurnId = deps.parentRuntime.state.activeTurn?.turnId;
   await deps.parentRuntime.record({
     type: 'subagent.start',
@@ -143,7 +153,13 @@ export async function runSubagentExploration(
   let childState: SessionState | undefined;
 
   try {
-    child = await SessionRuntime.open({ sessionId: childSessionId, store: deps.store, bus: deps.bus });
+    child = await SessionRuntime.open({
+      sessionId: childSessionId,
+      store: deps.store,
+      bus: deps.bus,
+      clock: deps.parentRuntime.clock,
+      ids: deps.parentRuntime.ids,
+    });
     await child.record({
       type: 'session.created',
       payload: {
@@ -204,7 +220,18 @@ export async function runSubagentExploration(
     });
   }
 
-  return { agentId, childSessionId, ok, reason, summary };
+  let injected = false;
+  if (deps.inject !== undefined) {
+    await deps.inject({
+      agentId,
+      summary,
+      ...(childState?.untrustedContext === undefined
+        ? {}
+        : { untrustedContext: childState.untrustedContext }),
+    });
+    injected = true;
+  }
+  return { agentId, childSessionId, ok, reason, summary, injected };
 }
 
 /** 应用重启后把父状态里未闭合的派生补成 interrupted，并保留子污点。 */

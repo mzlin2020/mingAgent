@@ -17,11 +17,13 @@ export default defineConfig({
   resolve: {
     alias: {
       // 让测试直接吃源码，省掉"改一行要先 build"的循环
+      '@xm/compose': fileURLToPath(new URL('./packages/compose/src/index.ts', import.meta.url)),
       '@xm/contracts': fileURLToPath(new URL('./packages/contracts/src/index.ts', import.meta.url)),
       '@xm/kernel': fileURLToPath(new URL('./packages/kernel/src/index.ts', import.meta.url)),
       '@xm/platform': fileURLToPath(new URL('./packages/platform/src/index.ts', import.meta.url)),
       '@xm/providers': fileURLToPath(new URL('./packages/providers/src/index.ts', import.meta.url)),
       '@xm/storage': fileURLToPath(new URL('./packages/storage/src/index.ts', import.meta.url)),
+      '@xm/tool-runtime': fileURLToPath(new URL('./packages/tool-runtime/src/index.ts', import.meta.url)),
       '@xm/tools-core': fileURLToPath(new URL('./packages/tools-core/src/index.ts', import.meta.url)),
       '@xm/runtime': fileURLToPath(new URL('./packages/runtime/src/index.ts', import.meta.url)),
     },

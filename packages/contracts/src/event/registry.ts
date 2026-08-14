@@ -95,6 +95,7 @@ export const EVENT_SPECS = {
   'subagent.end': { schema: P.SubagentEndPayload, durability: 'persisted', version: 1 },
 
   // ── 上下文与运维 ──
+  'context.injected': { schema: P.ContextInjectedPayload, durability: 'persisted', version: 1 },
   'context.compacted': { schema: P.ContextCompactedPayload, durability: 'persisted', version: 1 },
   'usage.recorded': { schema: P.UsagePayload, durability: 'persisted', version: 1 },
   'checkpoint.created': { schema: P.CheckpointCreatedPayload, durability: 'persisted', version: 1 },
