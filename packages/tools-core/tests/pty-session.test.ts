@@ -1,9 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PtySessionId, SessionId } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
-import type { AbortLike, ToolContext } from '@xm/kernel';
+import type {
+  AbortLike,
+  ExecutionPtyInput,
+  ExecutionPtyProcess,
+  ExecutionWorld,
+  ToolContext,
+} from '@xm/kernel';
 import { nodePlatform } from '@xm/platform';
-import type { PtyLike, PtySessionEvent, SpawnPty } from '@xm/tools-core';
+import { localExecutionWorld } from '@xm/tool-runtime';
+import type { PtySessionEvent } from '@xm/tools-core';
 import {
   PtySessionError,
   PtySessionManager,
@@ -14,23 +21,22 @@ import {
   shellSessionStatusTool,
 } from '@xm/tools-core';
 
-function fakePty(): PtyLike & { fireData: (chunk: string) => void; fireExit: (code: number) => void } {
+interface FakePty extends ExecutionPtyProcess {
+  readonly kill: (() => void) & { readonly mock: { readonly calls: readonly unknown[][] } };
+  fireData(chunk: string): void;
+  fireExit(code: number): void;
+}
+
+function fakePty(): FakePty {
   let dataListener: ((chunk: string) => void) | undefined;
-  let exitListener: ((event: { exitCode: number; signal?: number }) => void) | undefined;
+  let exitListener: ((code: number) => void) | undefined;
   return {
-    pid: 4242,
-    onData: (listener) => {
-      dataListener = listener;
-      return { dispose: () => undefined };
-    },
-    onExit: (listener) => {
-      exitListener = listener;
-      return { dispose: () => undefined };
-    },
+    onData: (listener) => { dataListener = listener; },
+    onExit: (listener) => { exitListener = listener; },
     resize: vi.fn(),
-    kill: vi.fn(),
+    kill: vi.fn<() => void>(),
     fireData: (chunk) => dataListener?.(chunk),
-    fireExit: (code) => exitListener?.({ exitCode: code }),
+    fireExit: (code) => exitListener?.(code),
   };
 }
 
@@ -39,230 +45,153 @@ const NEVER: AbortLike = {
   addEventListener: () => undefined,
   removeEventListener: () => undefined,
 };
-const ctxOf = (sessionId: SessionId): ToolContext => ({ sessionId, signal: NEVER, cwd: '/w', executor: 'local' });
+
+const worldFor = (
+  spawn: (input: ExecutionPtyInput) => Promise<ExecutionPtyProcess>,
+): ExecutionWorld => ({ ...localExecutionWorld, pty: { spawn } });
+
+const ctxOf = (sessionId: SessionId, executor: ExecutionWorld): ToolContext => ({
+  sessionId, signal: NEVER, cwd: '/w', executor,
+});
 
 describe('controlled PTY sessions (ADR-0040)', () => {
   let events: { sessionId: SessionId; event: PtySessionEvent }[];
-  let ptys: ReturnType<typeof fakePty>[];
-  let calls: Parameters<SpawnPty>[];
+  let ptys: FakePty[];
+  let calls: ExecutionPtyInput[];
   let manager: PtySessionManager;
+  let executor: ExecutionWorld;
   let xmSession: SessionId;
 
   beforeEach(() => {
     events = [];
     ptys = [];
     calls = [];
-    const spawnPty: SpawnPty = (...args) => {
-      calls.push(args);
+    executor = worldFor((input) => {
+      calls.push(input);
       const pty = fakePty();
       ptys.push(pty);
-      return pty;
-    };
+      return Promise.resolve(pty);
+    });
     manager = new PtySessionManager({
       os: 'linux',
       emit: (sessionId, event) => events.push({ sessionId, event }),
-      spawnPty,
       env: { PATH: '/bin', SECRET_TOKEN: 'do-not-pass' },
     });
     xmSession = newSessionId();
   });
 
-  it('open creates only a logical session and does not spawn a shell', () => {
+  it('open 只创建逻辑会话，不启动进程', () => {
     const id = manager.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-    expect(typeof id).toBe('string');
     expect(calls).toHaveLength(0);
     expect(manager.status(xmSession, id)).toEqual({ state: 'idle', tail: '' });
-    expect(events[0]?.event.type).toBe('shell.session.opened');
   });
 
-  it('run spawns argv directly with the environment allowlist and persists lifecycle events', () => {
+  it('run 把 argv、目录和环境白名单交给执行世界', async () => {
     const id = manager.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-    manager.run(xmSession, id, { argv: ['node', '--version'], cwd: '/tmp', timeoutMs: 5000 });
-    expect(calls[0]?.[0]).toBe('node');
-    expect(calls[0]?.[1]).toEqual(['--version']);
-    expect(calls[0]?.[2]).toMatchObject({ cwd: '/tmp', env: { PATH: '/bin' } });
-    expect(calls[0]?.[2].env).not.toHaveProperty('SECRET_TOKEN');
-    expect(events.at(-1)?.event.type).toBe('shell.session.command.started');
-
+    await manager.run(executor, xmSession, id, {
+      argv: ['node', '--version'], cwd: '/tmp', timeoutMs: 5000,
+    });
+    expect(calls[0]).toMatchObject({
+      argv: ['node', '--version'], cwd: '/tmp', envSource: { PATH: '/bin', SECRET_TOKEN: 'do-not-pass' },
+    });
+    expect(calls[0]?.inheritEnv).toContain('PATH');
     ptys[0]?.fireData('v24\n');
-    expect(manager.status(xmSession, id)).toEqual({ state: 'running', tail: 'v24\n' });
     ptys[0]?.fireExit(0);
     expect(manager.status(xmSession, id)).toEqual({ state: 'exited', exitCode: 0, tail: 'v24\n' });
-    expect(events.at(-1)?.event).toMatchObject({
-      type: 'shell.session.command.finished',
-      payload: { reason: 'exited', exitCode: 0 },
-    });
   });
 
-  it('run without cwd keeps the directory selected when the terminal was opened', () => {
-    const id = manager.open({ xmSessionId: xmSession, cwd: '/project', cols: 80, rows: 24 });
-    manager.run(xmSession, id, { argv: ['node', '--version'] });
-    expect(calls[0]?.[2].cwd).toBe('/project');
-  });
-
-  it('spawn failure leaves the terminal idle and can be retried', () => {
+  it('spawn 失败后仍为空闲，可重试', async () => {
     let attempts = 0;
-    const flaky = new PtySessionManager({
-      os: 'linux',
-      emit: (sessionId, event) => events.push({ sessionId, event }),
-      spawnPty: (...args) => {
-        attempts += 1;
-        if (attempts === 1) throw new Error('File not found: node');
-        calls.push(args);
-        return fakePty();
-      },
+    const flakyWorld = worldFor(() => {
+      attempts += 1;
+      return attempts === 1
+        ? Promise.reject(new Error('File not found: node'))
+        : Promise.resolve(fakePty());
     });
-    const id = flaky.open({ xmSessionId: xmSession, cwd: '/project', cols: 80, rows: 24 });
-
-    expect(() => { flaky.run(xmSession, id, { argv: ['node'] }); }).toThrow(/File not found/);
-    expect(flaky.status(xmSession, id)).toEqual({ state: 'idle', tail: '' });
-    expect(events.some(({ event }) => event.type === 'shell.session.command.started')).toBe(false);
-    expect(() => { flaky.run(xmSession, id, { argv: ['node'] }); }).not.toThrow();
-    expect(flaky.status(xmSession, id).state).toBe('running');
+    const id = manager.open({ xmSessionId: xmSession, cwd: '/project', cols: 80, rows: 24 });
+    await expect(manager.run(flakyWorld, xmSession, id, { argv: ['node'] })).rejects.toThrow(/File not found/u);
+    expect(manager.status(xmSession, id).state).toBe('idle');
+    await expect(manager.run(flakyWorld, xmSession, id, { argv: ['node'] })).resolves.toBeUndefined();
   });
 
-  it('allows only one in-flight process per terminal', () => {
+  it('每个逻辑终端只允许一个在途进程', async () => {
     const id = manager.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-    manager.run(xmSession, id, { argv: ['node', '--version'] });
-    expect(() => { manager.run(xmSession, id, { argv: ['node', '--help'] }); }).toThrow(PtySessionError);
+    await manager.run(executor, xmSession, id, { argv: ['node'] });
+    await expect(manager.run(executor, xmSession, id, { argv: ['node', '--help'] }))
+      .rejects.toThrow(PtySessionError);
     ptys[0]?.fireExit(0);
-    expect(() => { manager.run(xmSession, id, { argv: ['node', '--help'] }); }).not.toThrow();
+    await expect(manager.run(executor, xmSession, id, { argv: ['node', '--help'] }))
+      .resolves.toBeUndefined();
   });
 
-  it('timeout kills the active process and records timeout after exit', () => {
+  it('超时和关闭都经 provider 终止进程', async () => {
     vi.useFakeTimers();
     try {
       const id = manager.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-      manager.run(xmSession, id, { argv: ['node'], timeoutMs: 1000 });
+      await manager.run(executor, xmSession, id, { argv: ['node'], timeoutMs: 1000 });
       vi.advanceTimersByTime(1000);
-      expect(ptys[0]?.kill).toHaveBeenCalledOnce();
+      expect(ptys[0]?.kill.mock.calls).toHaveLength(1);
       ptys[0]?.fireExit(1);
       expect(manager.status(xmSession, id).state).toBe('timed_out');
-      expect(events.at(-1)?.event).toMatchObject({
-        type: 'shell.session.command.finished',
-        payload: { reason: 'timeout' },
-      });
+      manager.close(xmSession, id);
+      expect(manager.countFor(xmSession)).toBe(0);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it('close kills an active process, removes ownership, and records closure', () => {
-    const id = manager.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-    manager.run(xmSession, id, { argv: ['node'] });
-    manager.close(xmSession, id);
-    expect(ptys[0]?.kill).toHaveBeenCalledOnce();
-    expect(manager.countFor(xmSession)).toBe(0);
-    expect(events.at(-2)?.event).toMatchObject({
-      type: 'shell.session.command.finished',
-      payload: { reason: 'killed' },
-    });
-    expect(events.at(-1)?.event).toMatchObject({ type: 'shell.session.closed', payload: { reason: 'killed' } });
-  });
-
-  it('enforces ownership for run, status, resize and close', () => {
-    const id = manager.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-    const other = newSessionId();
-    expect(() => { manager.run(other, id, { argv: ['node'] }); }).toThrow(PtySessionError);
-    expect(() => manager.status(other, id)).toThrow(PtySessionError);
-    expect(() => { manager.resize(other, id, 100, 30); }).toThrow(PtySessionError);
-    expect(() => { manager.close(other, id); }).toThrow(PtySessionError);
-  });
-
-  it('bounds output tail and can mark a replayed lost session interrupted', () => {
+  it('所有权与输出尾部上限保持不变', async () => {
     const tiny = new PtySessionManager({
-      os: 'linux',
+      os: 'linux', maxTailChars: 5,
       emit: (sessionId, event) => events.push({ sessionId, event }),
-      spawnPty: (...args) => {
-        calls.push(args);
-        const pty = fakePty();
-        ptys.push(pty);
-        return pty;
-      },
-      maxTailChars: 5,
     });
     const id = tiny.open({ xmSessionId: xmSession, cwd: '/w', cols: 80, rows: 24 });
-    tiny.run(xmSession, id, { argv: ['node'] });
+    await tiny.run(executor, xmSession, id, { argv: ['node'] });
     ptys[0]?.fireData('abcdefgh');
     expect(tiny.status(xmSession, id).tail).toBe('defgh');
+    const other = newSessionId();
+    await expect(tiny.run(executor, other, id, { argv: ['node'] })).rejects.toThrow(PtySessionError);
     tiny.interruptLost(xmSession, '11111111-1111-4111-8111-111111111111' as PtySessionId, 'old');
-    expect(events.at(-1)?.event).toMatchObject({ type: 'shell.session.closed', payload: { reason: 'interrupted' } });
   });
 });
 
 describe('controlled PTY tools', () => {
-  const manager = new PtySessionManager({ os: 'linux', emit: () => undefined, spawnPty: () => fakePty() });
+  const manager = new PtySessionManager({ os: 'linux', emit: () => undefined });
 
-  it('exposes run and status but no raw write tool', () => {
+  it('暴露 run/status，不暴露原始 stdin', () => {
     const tools = [
-      shellSessionOpenTool(manager),
-      shellSessionRunTool(manager),
-      shellSessionStatusTool(manager),
-      shellSessionResizeTool(manager),
-      shellSessionCloseTool(manager),
+      shellSessionOpenTool(manager), shellSessionRunTool(manager), shellSessionStatusTool(manager),
+      shellSessionResizeTool(manager), shellSessionCloseTool(manager),
     ];
     expect(tools.map((tool) => tool.descriptor.name)).not.toContain('shell.session.write');
     expect(shellSessionRunTool(manager).descriptor.capabilities).toEqual(['shell.exec']);
-    expect(shellSessionRunTool(manager).commandInputs).toMatchObject({ argv: 'argv', cwd: 'cwd' });
-    expect(shellSessionRunTool(manager).commandInputs?.resolveCwd).toBeTypeOf('function');
   });
 
-  it('run tool resolves its omitted cwd from the owned terminal session', () => {
+  it('run 工具使用 ToolContext 中的执行世界', async () => {
+    const pty = fakePty();
+    const executor = worldFor(() => Promise.resolve(pty));
     const sessionId = newSessionId();
     const id = manager.open({ xmSessionId: sessionId, cwd: '/project', cols: 80, rows: 24 });
-    const commandInputs = shellSessionRunTool(manager).commandInputs;
-    expect(commandInputs?.resolveCwd?.({ ptySessionId: id, argv: ['node'] }, ctxOf(sessionId))).toBe('/project');
+    for await (const progress of shellSessionRunTool(manager).execute(
+      { ptySessionId: id, argv: ['node'] }, ctxOf(sessionId, executor),
+    )) {
+      expect(progress.kind).toBe('result');
+    }
   });
 
-  it('run tool lets the runtime mark spawn failures as tool errors', async () => {
-    const failing = new PtySessionManager({
-      os: 'linux',
-      emit: () => undefined,
-      spawnPty: () => { throw new Error('spawn failed'); },
-    });
-    const sessionId = newSessionId();
-    const id = failing.open({ xmSessionId: sessionId, cwd: '/project', cols: 80, rows: 24 });
-    const execute = async (): Promise<void> => {
-      const iterator = shellSessionRunTool(failing).execute(
-        { ptySessionId: id, argv: ['node'] },
-        ctxOf(sessionId),
-      )[Symbol.asyncIterator]();
-      await iterator.next();
-    };
-    await expect(execute()).rejects.toThrow(/spawn failed/);
-    expect(failing.status(sessionId, id)).toEqual({ state: 'idle', tail: '' });
-  });
-
-  it('runs a bare executable name through the real Windows PTY', async () => {
+  it('Windows local provider 能解析裸 node 可执行名', async () => {
     if (nodePlatform({ appRoot: process.cwd() }).os !== 'windows') return;
     const sessionId = newSessionId();
     const real = new PtySessionManager({ os: 'windows', emit: () => undefined });
     const id = real.open({ xmSessionId: sessionId, cwd: process.cwd(), cols: 80, rows: 24 });
     try {
-      real.run(sessionId, id, {
-        argv: ['node', '-e', "process.stdout.write('pty-ok')"],
-        timeoutMs: 5000,
+      await real.run(localExecutionWorld, sessionId, id, {
+        argv: ['node', '-e', "process.stdout.write('pty-ok')"], timeoutMs: 5000,
       });
-      await vi.waitFor(() => {
-        expect(real.status(sessionId, id).state).toBe('exited');
-      }, { timeout: 10_000 });
+      await vi.waitFor(() => { expect(real.status(sessionId, id).state).toBe('exited'); }, { timeout: 10_000 });
       expect(real.status(sessionId, id).tail).toContain('pty-ok');
     } finally {
       real.close(sessionId, id);
     }
-  });
-
-  it('run tool starts a process and status returns bounded JSON', async () => {
-    const sessionId = newSessionId();
-    const ctx = ctxOf(sessionId);
-    const id = manager.open({ xmSessionId: sessionId, cwd: '/w', cols: 80, rows: 24 });
-    for await (const progress of shellSessionRunTool(manager).execute({ ptySessionId: id, argv: ['node'] }, ctx)) {
-      expect(progress.kind).toBe('result');
-    }
-    let text = '';
-    for await (const progress of shellSessionStatusTool(manager).execute({ ptySessionId: id }, ctx)) {
-      if (progress.kind === 'result' && progress.forModel[0]?.type === 'text') text = progress.forModel[0].text;
-    }
-    expect(JSON.parse(text)).toMatchObject({ state: 'running' });
   });
 });

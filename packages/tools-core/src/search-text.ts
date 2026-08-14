@@ -1,8 +1,6 @@
-import { spawn } from 'node:child_process';
-import { relative } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
-import type { AbortLike, RegisteredTool, ToolContext } from '@xm/kernel';
+import type { AbortLike, ExecutionFileSystem, ExecutionProcess, OsFamily, RegisteredTool, ToolContext } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
 import { nodeTextSearch } from './search-fallback.js';
 
@@ -24,11 +22,12 @@ const MAX_COLUMNS = 4000;
 const MAX_STDERR = 16 * 1024;
 
 export interface TextSearchOptions {
+  readonly os: OsFamily;
   /** 可用于平台打包路径，也让“ripgrep 缺失”有确定性测试入口。 */
   readonly executable?: string;
 }
 
-export const textSearchTool = (options: TextSearchOptions = {}): RegisteredTool =>
+export const textSearchTool = (options: TextSearchOptions): RegisteredTool =>
   defineTool({
     name: SEARCH_TEXT,
     group: 'search',
@@ -47,6 +46,9 @@ export const textSearchTool = (options: TextSearchOptions = {}): RegisteredTool 
       }
 
       const outcome = await runRipgrep({
+        process: ctx.executor.process,
+        fs: ctx.executor.fs,
+        os: options.os,
         executable: options.executable ?? 'rg',
         pattern: input.pattern,
         path: input.path,
@@ -116,7 +118,7 @@ async function* nodeFallbackResult(
     context: input.context ?? 0,
     maxResults: input.maxResults,
     signal: ctx.signal,
-  });
+  }, ctx.executor.fs);
 
   const banner =
     `[source: node-fallback；未能启动 ${options.executable ?? 'rg'}：${spawnError}。` +
@@ -145,6 +147,9 @@ async function* nodeFallbackResult(
 }
 
 interface RunInput {
+  readonly process: ExecutionProcess;
+  readonly fs: ExecutionFileSystem;
+  readonly os: OsFamily;
   readonly executable: string;
   readonly pattern: string;
   readonly path: string;
@@ -179,8 +184,7 @@ interface RgJsonEvent {
   readonly data?: RgJsonData;
 }
 
-function runRipgrep(input: RunInput): Promise<RunOutcome> {
-  return new Promise<RunOutcome>((done) => {
+async function runRipgrep(input: RunInput): Promise<RunOutcome> {
     const args = ['--json', '--max-columns', String(MAX_COLUMNS)];
     if (input.caseSensitive === true) args.push('--case-sensitive');
     else if (input.caseSensitive === false) args.push('--ignore-case');
@@ -189,99 +193,80 @@ function runRipgrep(input: RunInput): Promise<RunOutcome> {
     for (const glob of input.globs) args.push('--glob', glob);
     args.push('--', input.pattern, input.path);
 
-    const child = spawn(input.executable, args, {
-      cwd: input.cwd,
-      shell: false,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-
     const lines: string[] = [];
     let pending = '';
     let stderr = '';
     let matches = 0;
     let limited = false;
-    let interrupted = false;
     let parseError: string | undefined;
-    let spawnError: string | undefined;
-    let settled = false;
 
-    const stop = (): void => {
-      if (!child.killed) child.kill();
-    };
-    const onAbort = (): void => {
-      interrupted = true;
-      stop();
-    };
-    input.signal.addEventListener('abort', onAbort);
-
-    const consume = (line: string): void => {
-      if (line === '' || parseError !== undefined) return;
+    const consume = (line: string): boolean => {
+      if (line === '' || parseError !== undefined) return parseError === undefined;
       let event: RgJsonEvent;
       try {
         event = JSON.parse(line) as RgJsonEvent;
       } catch (error) {
         parseError = error instanceof Error ? error.message : String(error);
-        stop();
-        return;
+        return false;
       }
-      if (event.type !== 'match' && event.type !== 'context') return;
+      if (event.type !== 'match' && event.type !== 'context') return true;
       const data = event.data;
-      if (data === undefined) return;
+      if (data === undefined) return true;
       const path = data.path?.text;
       const text = data.lines?.text;
       const lineNumber = data.line_number;
-      if (path === undefined || text === undefined || lineNumber === undefined) return;
+      if (path === undefined || text === undefined || lineNumber === undefined) return true;
 
       if (event.type === 'match') {
         matches += 1;
         if (matches > input.maxResults) {
           matches = input.maxResults;
           limited = true;
-          stop();
-          return;
+          return false;
         }
       }
       const start = event.type === 'match' ? (data.submatches?.[0]?.start ?? 0) : -1;
       const column = start < 0 ? 0 : unicodeColumn(text, start);
       lines.push(
-        `${displayPath(input.cwd, path)}:${String(lineNumber)}:${String(column)}: ${oneLine(text)}`,
+        `${displayPath(input.fs, input.cwd, path)}:${String(lineNumber)}:${String(column)}: ${oneLine(text)}`,
       );
+      return true;
     };
 
-    child.stdout.on('data', (chunk: string) => {
+    const onStdout = (chunk: string): boolean => {
       pending += chunk;
       let newline = pending.indexOf('\n');
       while (newline !== -1) {
-        consume(pending.slice(0, newline));
+        if (!consume(pending.slice(0, newline))) return false;
         pending = pending.slice(newline + 1);
         newline = pending.indexOf('\n');
       }
-    });
-    child.stderr.on('data', (chunk: string) => {
+      return true;
+    };
+    const onStderr = (chunk: string): void => {
       if (stderr.length < MAX_STDERR) stderr += chunk.slice(0, MAX_STDERR - stderr.length);
+    };
+    const run = await input.process.run({
+      argv: [input.executable, ...args],
+      cwd: input.cwd,
+      timeoutMs: 120_000,
+      signal: input.signal,
+      os: input.os,
+      maxOutputBytes: 16 * 1024 * 1024,
+      onStdout,
+      onStderr,
     });
-    child.on('error', (error: Error) => {
-      spawnError = error.message;
-    });
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      input.signal.removeEventListener('abort', onAbort);
-      consume(pending);
-      done({
-        lines,
-        matches,
-        limited,
-        interrupted,
-        code: code ?? undefined,
-        stderr: stderr.trim(),
-        ...(spawnError === undefined ? {} : { spawnError }),
-        ...(parseError === undefined ? {} : { parseError }),
-      });
-    });
-  });
+    if (pending !== '' && parseError === undefined && !run.stoppedByConsumer) consume(pending);
+    return {
+      lines,
+      matches,
+      limited,
+      interrupted: run.interrupted,
+      code: run.code,
+      stderr: stderr.trim(),
+      ...(run.spawnError === undefined ? {} : { spawnError: run.spawnError }),
+      ...(parseError === undefined ? {} : { parseError }),
+    };
 }
 
 function unicodeColumn(line: string, byteOffset: number): number {
@@ -289,8 +274,8 @@ function unicodeColumn(line: string, byteOffset: number): number {
   return Array.from(prefix).length + 1;
 }
 
-function displayPath(cwd: string, path: string): string {
-  const shown = relative(cwd, path);
+function displayPath(fs: ExecutionFileSystem, cwd: string, path: string): string {
+  const shown = fs.path.relative(cwd, path);
   return (shown === '' || shown.startsWith('..') ? path : shown).replaceAll('\\', '/');
 }
 

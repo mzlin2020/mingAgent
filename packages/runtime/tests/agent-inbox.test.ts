@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { CallId, ContentBlock } from '@xm/contracts';
@@ -155,6 +156,7 @@ describe('M3-d Agent 句柄与 Inbox', () => {
         runTurn(
           {
             runtime,
+            executor: localExecutionWorld,
             provider,
             tools,
             layers: [],

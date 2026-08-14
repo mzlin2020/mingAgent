@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
@@ -59,6 +60,7 @@ async function harness({ userRules = [], dnsLookup }: HarnessOptions = {}) {
     await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         tools,
         layers: composeRules({ env: ENV, user: userRules }),
         model: 'scripted-1',

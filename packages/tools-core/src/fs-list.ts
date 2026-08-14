@@ -1,5 +1,3 @@
-import { readdir, stat } from 'node:fs/promises';
-import { join, relative } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { RegisteredTool } from '@xm/kernel';
@@ -45,8 +43,9 @@ export const fsListTool = (): RegisteredTool =>
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const root = input.path;
-      const info = await stat(root);
-      if (!info.isDirectory()) {
+      const fs = ctx.executor.fs;
+      const info = await fs.stat(root);
+      if (!info.directory) {
         yield {
           kind: 'result',
           forModel: [{ type: 'text', text: `${root} 不是目录。用 fs.read 读它。` }],
@@ -60,23 +59,23 @@ export const fsListTool = (): RegisteredTool =>
        *  提前退出能一路传上来——半路停下却报"列全了"，就是又一次悄悄的省略 */
       const walk = async (dir: string, depth: number): Promise<boolean> => {
         if (ctx.signal.aborted) return false;
-        const entries = await readdir(dir, { withFileTypes: true });
+        const entries = [...await fs.list(dir)];
         entries.sort((a, b) => a.name.localeCompare(b.name));
 
         for (const e of entries) {
           if (lines.length >= MAX_ENTRIES) return true;
-          const full = join(dir, e.name);
-          const shown = relative(root, full) || e.name;
+          const full = fs.path.join(dir, e.name);
+          const shown = fs.path.relative(root, full) || e.name;
 
-          if (e.isDirectory()) {
+          if (e.directory) {
             const skip = NO_DESCEND.has(e.name);
             lines.push(`${shown}/${skip ? '    （未展开）' : ''}`);
             if (!skip && depth > 1 && (await walk(full, depth - 1))) return true;
-          } else if (e.isSymbolicLink()) {
+          } else if (e.symbolicLink) {
             // 符号链接**标出来**：它的判权目标由网关 realpath 决定，可能落在目录之外
             lines.push(`${shown}    → 符号链接`);
-          } else if (e.isFile()) {
-            const size = await sizeOf(full);
+          } else if (e.file) {
+            const size = await sizeOf(fs, full);
             lines.push(`${shown}    ${size}`);
           } else {
             lines.push(`${shown}    （设备/管道/套接字）`);
@@ -97,9 +96,9 @@ export const fsListTool = (): RegisteredTool =>
     },
   });
 
-async function sizeOf(file: string): Promise<string> {
+async function sizeOf(fs: import('@xm/kernel').ExecutionFileSystem, file: string): Promise<string> {
   try {
-    const s = await stat(file);
+    const s = await fs.stat(file);
     return s.size < 1024
       ? `${String(s.size)} B`
       : s.size < 1024 * 1024

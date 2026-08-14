@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ModelChunk, ModelRequest, XmEventType } from '@xm/contracts';
 import { isCoreEvent, newSessionId } from '@xm/contracts';
@@ -97,6 +98,7 @@ async function runAndInterrupt(afterMs = 0): Promise<Recorded> {
   const turn = runTurn(
     {
       runtime,
+      executor: localExecutionWorld,
       provider: new HangingProvider([
         { kind: 'text_delta', text: '我正在' },
         { kind: 'text_delta', text: '慢慢地想…' },

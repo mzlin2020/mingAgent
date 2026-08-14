@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +22,7 @@ const ctx = (aborted = false): ToolContext => ({
   sessionId: newSessionId(),
   signal: { aborted, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd: dir,
-  executor: 'local',
+  executor: localExecutionWorld,
 });
 
 /** 工具收到的一定是网关解析过的绝对路径，用例里也照这个前提喂 */

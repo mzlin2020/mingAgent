@@ -35,8 +35,10 @@ const textResult = (text: string): ToolProgress => ({
   forModel: [{ type: 'text', text } satisfies ResultBlock],
 });
 
-const available = (ctx: { readonly platform: { readonly shellSession: boolean } }): boolean =>
-  ctx.platform.shellSession;
+const available = (ctx: {
+  readonly platform: { readonly shellSession: boolean };
+  readonly executor: { readonly capabilities: { readonly pty: boolean } };
+}): boolean => ctx.platform.shellSession && ctx.executor.capabilities.pty;
 
 export const shellSessionOpenTool = (manager: PtySessionManager): RegisteredTool =>
   defineTool({
@@ -89,7 +91,7 @@ export const shellSessionRunTool = (manager: PtySessionManager): RegisteredTool 
     available,
     async *execute(input, ctx) {
       await Promise.resolve();
-      manager.run(ctx.sessionId, input.ptySessionId as PtySessionId, input);
+      await manager.run(ctx.executor, ctx.sessionId, input.ptySessionId as PtySessionId, input);
       yield textResult('命令已启动；用 shell.session.status 查询状态和输出尾部。');
     },
   });

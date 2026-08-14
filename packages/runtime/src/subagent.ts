@@ -100,6 +100,7 @@ export interface RunSubagentDeps {
   readonly store: EventStore;
   readonly bus: EventBus;
   readonly parentTools: ToolRegistry;
+  readonly executor: TurnDeps['executor'];
   readonly provider: ModelProvider;
   readonly model: string;
   readonly layers: TurnDeps['layers'];
@@ -176,6 +177,7 @@ export async function runSubagentExploration(
         runtime: child,
         provider: deps.provider,
         tools: readonlySubagentTools(deps.parentTools),
+        executor: deps.executor,
         layers: deps.layers,
         model: deps.model,
         maxIterations: request.maxTurns,

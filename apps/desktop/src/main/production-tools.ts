@@ -1,35 +1,115 @@
-import type { AbortLike, OsFamily, RegisteredTool, WorkspaceIndex } from '@xm/kernel';
+import type {
+  AbortLike,
+  OsFamily,
+  RegisteredTool,
+  WorkspaceIndex,
+} from '@xm/kernel';
+import type { EditProposal, EditProposalId, EventOf, SessionId } from '@xm/contracts';
 import type { ResultExpandOptions, SubagentExplorer, TodoUpdater } from '@xm/runtime';
 import { resultExpandTool, subagentExploreTool, todoUpdateTool } from '@xm/runtime';
-import { coreTools, editApplyTool, editPreviewTool, shellSessionTools } from '@xm/tools-core';
-import type { EditProposalAccess, PtySessionManager } from '@xm/tools-core';
 
-/** 桌面端的生产工具装配点。演示工具刻意不进这份名单。 */
-export function productionTools(options: {
+interface EditProposalAccess {
+  save(sessionId: SessionId, proposal: EditProposal): Promise<void>;
+  get(
+    sessionId: SessionId,
+    proposalId: EditProposalId,
+  ): Promise<{ readonly proposal: EditProposal; readonly applied: boolean } | undefined>;
+  markApplied(sessionId: SessionId, proposalId: EditProposalId): Promise<void>;
+}
+
+interface PtyManager {
+  has(sessionId: SessionId, ptySessionId: string): boolean;
+  disposeAll(): void;
+}
+
+interface OptionalToolsModule {
+  readonly PtySessionManager: new (options: {
+    readonly os: OsFamily;
+    readonly emit: (sessionId: SessionId, event: PtySessionEvent) => void;
+  }) => PtyManager;
+  coreTools(options: {
+    readonly os: OsFamily;
+    readonly index: WorkspaceIndex;
+    readonly backgroundSignal: AbortLike;
+    readonly tempDir: string;
+  }): readonly RegisteredTool[];
+  shellSessionTools(manager: PtyManager): readonly RegisteredTool[];
+  editPreviewTool(access: EditProposalAccess): RegisteredTool;
+  editApplyTool(access: EditProposalAccess): RegisteredTool;
+}
+
+type PtySessionEventType =
+  | 'shell.session.opened'
+  | 'shell.session.output'
+  | 'shell.session.command.started'
+  | 'shell.session.command.finished'
+  | 'shell.session.closed';
+
+export type PtySessionEvent = {
+  readonly [T in PtySessionEventType]: {
+    readonly type: T;
+    readonly payload: EventOf<T>['payload'];
+  };
+}[PtySessionEventType];
+
+export interface ProductionToolHost {
+  readonly available: boolean;
+  readonly tools: readonly RegisteredTool[];
+  hasSession(sessionId: SessionId, ptySessionId: string): boolean;
+  dispose(): void;
+}
+
+export interface ProductionToolOptions {
   readonly os: OsFamily;
-  readonly ptySessions: PtySessionManager;
   readonly updateTodos: TodoUpdater;
   readonly expandResults: ResultExpandOptions;
   readonly editProposals: EditProposalAccess;
   readonly index: WorkspaceIndex;
-  /** 应用级后台信号，交给索引的增量刷新用（ADR-0051） */
   readonly backgroundSignal: AbortLike;
-  /** 工具的临时文件目录，走应用自己的 cache 而不是世界可写的系统临时目录 */
   readonly tempDir: string;
   readonly explore: SubagentExplorer;
-}): readonly RegisteredTool[] {
-  return [
-    ...coreTools({
+  readonly emitPty: (sessionId: SessionId, event: PtySessionEvent) => void;
+}
+
+const loadOptionalTools = async (): Promise<OptionalToolsModule | undefined> => {
+  const moduleId = ['@xm', 'tools-core'].join('/');
+  try {
+    return await import(moduleId) as OptionalToolsModule;
+  } catch (error) {
+    const code = (error as { readonly code?: string }).code;
+    const missing = code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND';
+    if (missing && error instanceof Error && error.message.includes(moduleId)) return undefined;
+    throw error;
+  }
+};
+
+/** 桌面端唯一的可选业务包加载点；缺包时返回空工具宿主。 */
+export async function openProductionTools(
+  options: ProductionToolOptions,
+): Promise<ProductionToolHost> {
+  const module = await loadOptionalTools();
+  if (module === undefined) {
+    return { available: false, tools: [], hasSession: () => false, dispose: () => undefined };
+  }
+  const pty = new module.PtySessionManager({ os: options.os, emit: options.emitPty });
+  const tools = [
+    ...module.coreTools({
       os: options.os,
       index: options.index,
       backgroundSignal: options.backgroundSignal,
       tempDir: options.tempDir,
     }),
-    ...shellSessionTools(options.ptySessions),
+    ...module.shellSessionTools(pty),
     todoUpdateTool(options.updateTodos),
     resultExpandTool(options.expandResults),
-    editPreviewTool(options.editProposals),
-    editApplyTool(options.editProposals),
+    module.editPreviewTool(options.editProposals),
+    module.editApplyTool(options.editProposals),
     subagentExploreTool(options.explore),
   ];
+  return {
+    available: true,
+    tools,
+    hasSession: (sessionId, ptySessionId) => pty.has(sessionId, ptySessionId),
+    dispose: () => { pty.disposeAll(); },
+  };
 }

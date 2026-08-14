@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { ToolDescriptor, ToolProgress } from '@xm/contracts';
@@ -17,13 +18,13 @@ const ctx: ToolContext = {
   sessionId: newSessionId(),
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd: '/work',
-  executor: 'local',
+  executor: localExecutionWorld,
 };
 
 /** 默认可用性上下文：平台什么都支持、什么都没禁用 */
 const availCtx = (over: Partial<ToolAvailabilityContext> = {}): ToolAvailabilityContext => ({
   cwd: '/work',
-  executor: 'local',
+  executor: localExecutionWorld,
   platform: {
     secrets: 'keychain',
     shellSession: true,

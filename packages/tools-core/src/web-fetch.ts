@@ -1,4 +1,3 @@
-import type { LookupFunction } from 'node:net';
 import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
@@ -89,7 +88,7 @@ export const webFetchTool = (): RegisteredTool =>
 
       const headers = sanitizeHeaders(input.headers);
       const dispatcher = new Agent({
-        connect: { lookup: pinnedLookup(pinned) },
+        connect: { lookup: pinnedLookup(pinned) as never },
       });
 
       const controller = new AbortController();
@@ -192,8 +191,11 @@ function clampTimeout(overrideMs: number | undefined): number {
  * 两种形态 `LookupFunction` 的类型签名都允许，这里按 `options.all` 分流，
  * 不判断的话在真实调用中会被 `net` 内部当成"没有任何地址"直接报错。
  */
-function pinnedLookup(pinned: { readonly address: string; readonly family: 4 | 6 }): LookupFunction {
-  return (_hostname, options, callback) => {
+type LookupResult = string | readonly { readonly address: string; readonly family: 4 | 6 }[];
+type LookupCallback = (error: Error | null, result: LookupResult, family?: 4 | 6) => void;
+
+function pinnedLookup(pinned: { readonly address: string; readonly family: 4 | 6 }) {
+  return (_hostname: string, options: { readonly all?: boolean }, callback: LookupCallback) => {
     if (options.all === true) {
       callback(null, [{ address: pinned.address, family: pinned.family }]);
     } else {

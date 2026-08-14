@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -251,7 +252,7 @@ async function execute(tool: ReturnType<typeof editPreviewTool>, input: unknown)
 const context = (): ToolContext => ({
   sessionId,
   cwd: root,
-  executor: 'local',
+  executor: localExecutionWorld,
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
 });
 

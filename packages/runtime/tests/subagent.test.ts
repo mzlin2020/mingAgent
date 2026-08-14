@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { z } from 'zod';
 import type { ModelChunk } from '@xm/contracts';
 import {
@@ -95,6 +96,7 @@ describe('M2-i 隔离子 Agent', () => {
             store,
             bus,
             parentTools,
+            executor: localExecutionWorld,
             provider: childProvider,
             model: 'scripted-1',
             layers: [],
@@ -127,7 +129,10 @@ describe('M2-i 隔离子 Agent', () => {
     });
     expect(
       await runTurn(
-        { runtime: parent, provider: parentProvider, tools: parentTools, layers: [], model: 'scripted-1' },
+        {
+          runtime: parent, executor: localExecutionWorld, provider: parentProvider,
+          tools: parentTools, layers: [], model: 'scripted-1',
+        },
         textInput('请派子 Agent 调查'),
       ),
     ).toBe('end_turn');
@@ -192,7 +197,10 @@ describe('M2-i 隔离子 Agent', () => {
       chunkDelayMs: 30,
     });
     const cancelPromise = runSubagentExploration(
-      { parentRuntime: parent, store, bus, parentTools, provider: cancelProvider, model: 'scripted-1', layers: [] },
+      {
+        parentRuntime: parent, store, bus, parentTools, executor: localExecutionWorld,
+        provider: cancelProvider, model: 'scripted-1', layers: [],
+      },
       {
         parentCallId: newCallId(),
         purpose: '等待取消',
@@ -211,7 +219,10 @@ describe('M2-i 隔离子 Agent', () => {
       chunkDelayMs: 30,
     });
     const timedOut = await runSubagentExploration(
-      { parentRuntime: parent, store, bus, parentTools, provider: timeoutProvider, model: 'scripted-1', layers: [] },
+      {
+        parentRuntime: parent, store, bus, parentTools, executor: localExecutionWorld,
+        provider: timeoutProvider, model: 'scripted-1', layers: [],
+      },
       {
         parentCallId: newCallId(),
         purpose: '等待超时',
@@ -240,6 +251,7 @@ describe('M2-i 隔离子 Agent', () => {
         store,
         bus,
         parentTools: new ToolRegistry(),
+        executor: localExecutionWorld,
         provider: new ScriptedProvider({ turns: [] }),
         model: 'scripted-1',
         layers: [],

@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, XmEvent } from '@xm/contracts';
 import { isCoreEvent, newSessionId } from '@xm/contracts';
@@ -84,6 +85,7 @@ async function run(): Promise<Screen> {
   await runTurn(
     {
       runtime,
+      executor: localExecutionWorld,
       provider: new ScriptedProvider({
         turns: [
           {

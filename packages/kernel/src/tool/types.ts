@@ -10,19 +10,9 @@ import type {
   ToolProgress,
 } from '@xm/contracts';
 import type { PlatformCapabilities } from '../port/platform.js';
-
-/**
- * 取消信号的**最小结构**。
- *
- * 刻意不用 `AbortSignal`：那个类型来自 DOM lib 或 @types/node，把任一个引进来
- * 都会让内核在编译期看到 `document` / `fs` 之类的东西，削弱"内核零 I/O"的保证。
- * 真实的 AbortSignal 结构上兼容这个接口，适配层直接传进来即可。
- */
-export interface AbortLike {
-  readonly aborted: boolean;
-  addEventListener(type: 'abort', listener: () => void): void;
-  removeEventListener(type: 'abort', listener: () => void): void;
-}
+import type { ExecutionWorld } from '../port/execution-world.js';
+import type { AbortLike } from '../port/abort.js';
+export type { AbortLike } from '../port/abort.js';
 
 export interface ToolContext {
   /** 归属会话。工具产出的事件、审计记录、子 Agent 派生都要挂在它上面 */
@@ -32,7 +22,8 @@ export interface ToolContext {
   readonly signal: AbortLike;
   /** 工作区根目录。工具自己解析相对路径，内核不碰文件系统 */
   readonly cwd: string;
-  readonly executor: 'local' | 'container' | 'remote';
+  /** 当前执行世界。工具不得绕过它直接访问 Node I/O（ADR-0054）。 */
+  readonly executor: ExecutionWorld;
   /**
    * 网关在判权阶段解析出、且已经通过策略判定的主机地址（M1-d，web.fetch 的
    * IP 级 SSRF 判定）。键是 `hostInputs` 字段里那个 URL 归一后的裸主机名
@@ -56,7 +47,8 @@ export interface ToolContext {
  */
 export interface ToolAvailabilityContext {
   readonly cwd: string;
-  readonly executor: 'local' | 'container' | 'remote';
+  /** 只暴露稳定的世界身份与能力探测，不暴露会执行 I/O 的方法。 */
+  readonly executor: Pick<ExecutionWorld, 'kind' | 'capabilities'>;
   /** 主机实际功能；与“这次动作需要什么权限”的 Capability 是两个概念。 */
   readonly platform: PlatformCapabilities;
   /** 配置里显式禁用的工具名（Config.tools.disabled） */

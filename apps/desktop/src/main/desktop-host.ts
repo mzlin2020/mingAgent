@@ -14,6 +14,7 @@ import type {
 import { Config as ConfigSchema } from '@xm/contracts';
 import type {
   OrphanedTurn,
+  ExecutionWorld,
   PlatformPort,
   RuleLayer,
   SecretBackend,
@@ -56,16 +57,19 @@ import {
   synthesizeInterruption,
   textInput,
 } from '@xm/runtime';
-import { nodeCheckpointer, nodeCheckpointRestorer, nodeToolGateway } from '@xm/tool-runtime';
-import type { PtySessionEvent } from '@xm/tools-core';
-import { PtySessionManager } from '@xm/tools-core';
+import {
+  createLocalExecutionWorld,
+  nodeCheckpointer,
+  nodeCheckpointRestorer,
+  nodeToolGateway,
+} from '@xm/tool-runtime';
 import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { assembleDesktopProfile } from './desktop-profile.js';
 import { prepareReviewedProposal } from './edit-review.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
-import { productionTools } from './production-tools.js';
+import { openProductionTools, type PtySessionEvent } from './production-tools.js';
 import {
   configuredModelRef,
   guessProviderKind,
@@ -346,7 +350,7 @@ export async function startServices(): Promise<Services> {
     await recoverInterruptedSubagents(created, stores.events);
     // PTY 句柄是进程内的：重启后回放出来的会话拿不回原来的终端，只能重新开。
     for (const [ptySessionId] of created.state.ptySessions) {
-      if (!ptySessions.has(sessionId, ptySessionId)) {
+      if (!toolHost.hasSession(sessionId, ptySessionId)) {
         await created.record({
           type: 'shell.session.closed',
           payload: { ptySessionId, reason: 'interrupted', tail: '' },
@@ -364,38 +368,22 @@ export async function startServices(): Promise<Services> {
    * 那是 `record()` 自己的事，manager 不重复一份判断。record 失败（会话已关闭之类）
    * 只记日志，不让一次输出块的写入失败拖垮整个 PTY 会话。
    */
-  const ptySessions = new PtySessionManager({
+  const executor = createLocalExecutionWorld();
+  const toolHost = await openProductionTools({
     os: platform.os,
-    emit: (sessionId, event) => {
+    index: stores.index,
+    backgroundSignal: background.signal,
+    tempDir: join(paths.cache, 'tools'),
+    emitPty: (sessionId, event) => {
       runtimeFor(sessionId)
         .then((runtime) => recordPtyEvent(runtime, event))
-        .catch((err: unknown) => {
-          console.error('写入 shell.session 事件失败：', err);
-        });
+        .catch((err: unknown) => { console.error('写入 shell.session 事件失败：', err); });
     },
-  });
-  const composition = await assembleDesktopProfile({
-    configDir: paths.config,
-    clock,
-    ids,
-    policy: layers,
-    gateway,
-    checkpointer,
-    checkpointRestorer,
-    secrets,
-    tools,
-    createTools: () => productionTools({
-      os: platform.os,
-      index: stores.index,
-      backgroundSignal: background.signal,
-      tempDir: join(paths.cache, 'tools'),
-      ptySessions,
-      updateTodos: async ({ sessionId, todos }) => {
+    updateTodos: async ({ sessionId, todos }) => {
       const runtime = await runtimeFor(sessionId);
       const turnId = runtime.state.activeTurn?.turnId;
       await runtime.record({
-        type: 'todo.updated',
-        payload: { todos: [...todos] },
+        type: 'todo.updated', payload: { todos: [...todos] },
         ...(turnId === undefined ? {} : { turnId }),
       });
     },
@@ -404,9 +392,7 @@ export async function startServices(): Promise<Services> {
       resolveRef: async ({ sessionId, hash }) => {
         const runtime = await runtimeFor(sessionId);
         for await (const event of runtime.read()) {
-          if (event.type === 'tool.end' && event.payload.fullRef?.hash === hash) {
-            return event.payload.fullRef;
-          }
+          if (event.type === 'tool.end' && event.payload.fullRef?.hash === hash) return event.payload.fullRef;
         }
         return undefined;
       },
@@ -416,26 +402,20 @@ export async function startServices(): Promise<Services> {
         const runtime = await runtimeFor(sessionId);
         const turnId = runtime.state.activeTurn?.turnId;
         await runtime.record({
-          type: 'edit.proposed',
-          payload: { proposal },
+          type: 'edit.proposed', payload: { proposal },
           ...(turnId === undefined ? {} : { turnId }),
         });
       },
       get: async (sessionId, proposalId) => {
         const runtime = await runtimeFor(sessionId);
-        const item = runtime.state.editProposals.find(
-          (candidate) => candidate.proposal.proposalId === proposalId,
-        );
-        return item === undefined
-          ? undefined
-          : { proposal: item.proposal, applied: item.appliedAt !== undefined };
+        const item = runtime.state.editProposals.find((candidate) => candidate.proposal.proposalId === proposalId);
+        return item === undefined ? undefined : { proposal: item.proposal, applied: item.appliedAt !== undefined };
       },
       markApplied: async (sessionId, proposalId) => {
         const runtime = await runtimeFor(sessionId);
         const turnId = runtime.state.activeTurn?.turnId;
         await runtime.record({
-          type: 'edit.applied',
-          payload: { proposalId },
+          type: 'edit.applied', payload: { proposalId },
           ...(turnId === undefined ? {} : { turnId }),
         });
       },
@@ -447,37 +427,35 @@ export async function startServices(): Promise<Services> {
         (await providerFor(ref, async (status) => {
           await parentRuntime.record({ type: 'provider.status', payload: status });
         })) ?? onboardingProvider(request.purpose);
-      return runSubagentExploration(
-        {
-          parentRuntime,
-          store: stores.events,
-          bus,
-          parentTools: tools,
-          provider,
-          model: provider.id === 'scripted' ? 'scripted-1' : ref.model,
-          layers,
-          toolAvailability: {
-            executor: 'local',
-            platform: platform.capabilities(),
-            disabledTools: config.tools.disabled,
-          },
-          hostOs: platform.os,
-          gateway,
-          blobs: stores.blobs,
-          prices: config.prices,
-          pathCaseInsensitive: platform.os === 'windows',
-          inject: async ({ agentId, summary, untrustedContext }) => {
-            await agentFor(request.sessionId, parentRuntime).inject({
-              content: summary,
-              source: { kind: 'subagent', agentId },
-              ...(untrustedContext === undefined ? {} : { untrustedContext }),
-            });
-          },
+      return runSubagentExploration({
+        parentRuntime, store: stores.events, bus, parentTools: tools, executor, provider,
+        model: provider.id === 'scripted' ? 'scripted-1' : ref.model,
+        layers,
+        toolAvailability: { executor, platform: platform.capabilities(), disabledTools: config.tools.disabled },
+        hostOs: platform.os, gateway, blobs: stores.blobs, prices: config.prices,
+        pathCaseInsensitive: platform.os === 'windows',
+        inject: async ({ agentId, summary, untrustedContext }) => {
+          await agentFor(request.sessionId, parentRuntime).inject({
+            content: summary, source: { kind: 'subagent', agentId },
+            ...(untrustedContext === undefined ? {} : { untrustedContext }),
+          });
         },
-        request,
-      );
-      },
-    }),
+      }, request);
+    },
+  });
+  const composition = await assembleDesktopProfile({
+    configDir: paths.config,
+    clock,
+    ids,
+    executor,
+    policy: layers,
+    gateway,
+    checkpointer,
+    checkpointRestorer,
+    secrets,
+    tools,
+    createTools: () => toolHost.tools,
+    builtinToolsAvailable: toolHost.available,
   });
 
   /**
@@ -568,11 +546,12 @@ export async function startServices(): Promise<Services> {
       provider,
       tools,
       toolAvailability: {
-        executor: 'local',
+        executor,
         platform: platform.capabilities(),
         disabledTools: config.tools.disabled,
       },
       layers,
+      executor,
       model: provider.id === 'scripted' ? 'scripted-1' : model,
       hostOs: platform.os,
       prices: config.prices,
@@ -835,7 +814,7 @@ export async function startServices(): Promise<Services> {
           if (item === undefined || item.appliedAt !== undefined || item.reviewedAt !== undefined) {
             throw new Error('该编辑提案已处理或不存在。');
           }
-          const derived = await prepareReviewedProposal(item, selectedHunkIds);
+          const derived = await prepareReviewedProposal(item, selectedHunkIds, executor.fs);
 
           await runtime.record({
             type: 'edit.reviewed',
@@ -917,7 +896,7 @@ export async function startServices(): Promise<Services> {
               .get(cfg.apiKey)
               .then((value) => value !== undefined)
               .catch(() => false);
-      const availabilityBase = { cwd: paths.home, executor: 'local' as const, platform: platform.capabilities() };
+      const availabilityBase = { cwd: paths.home, executor, platform: platform.capabilities() };
       const allTools = tools.descriptors().map((tool) => tool.name);
       const platformAvailable = tools.descriptors({ ...availabilityBase, disabledTools: [] }).map((tool) => tool.name);
       const enabledTools = tools
@@ -949,7 +928,7 @@ export async function startServices(): Promise<Services> {
     },
 
     async settings(): Promise<SettingsSnapshot> {
-      return readSettingsSnapshot(config, tools, stores, platform);
+      return readSettingsSnapshot(config, tools, stores, platform, executor);
     },
 
     async updateSettings(update: SettingsUpdate): Promise<SettingsSnapshot> {
@@ -965,12 +944,12 @@ export async function startServices(): Promise<Services> {
         workspace,
         tools: { ...config.tools, disabled },
       });
-      return readSettingsSnapshot(config, tools, stores, platform);
+      return readSettingsSnapshot(config, tools, stores, platform, executor);
     },
 
     async clearSearchIndex(): Promise<SettingsSnapshot> {
       await stores.index.clear();
-      return readSettingsSnapshot(config, tools, stores, platform);
+      return readSettingsSnapshot(config, tools, stores, platform, executor);
     },
 
     /**
@@ -1010,7 +989,7 @@ export async function startServices(): Promise<Services> {
       for (const controller of running.values()) controller.abort();
       running.clear();
       // 应用关闭前先收尾所有还开着的 PTY——不等它们的空闲超时，进程不该在小明退出后还挂着
-      ptySessions.disposeAll();
+      toolHost.dispose();
       for (const runtime of runtimes.values()) await runtime.close();
       runtimes.clear();
       await composition.dispose();
@@ -1034,9 +1013,14 @@ async function readSettingsSnapshot(
   tools: ToolRegistry,
   stores: OpenedStores,
   platform: PlatformPort,
+  executor: ExecutionWorld,
 ): Promise<SettingsSnapshot> {
   const paths = platform.paths();
-  const availability = { cwd: paths.home, executor: 'local' as const, platform: platform.capabilities() };
+  const availability = {
+    cwd: paths.home,
+    executor,
+    platform: platform.capabilities(),
+  };
   const available = new Set(tools.descriptors({ ...availability, disabledTools: [] }).map((tool) => tool.name));
   const disabled = new Set(config.tools.disabled);
   const indexDb = join(stores.layout.dataDir, 'workspace-index.sqlite');

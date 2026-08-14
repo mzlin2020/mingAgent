@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -36,7 +37,7 @@ const ctx = (cwd: string): ToolContext => ({
   sessionId: newSessionId(),
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd,
-  executor: 'local',
+  executor: localExecutionWorld,
 });
 
 const tool = (over: Partial<Parameters<typeof defineTool>[0]> = {}): RegisteredTool =>

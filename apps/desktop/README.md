@@ -16,6 +16,9 @@ M2-g 在生产工具装配中注册 `search.symbol` / `search.indexed`，会话�
 
 M2-i 在生产装配中注册 `agent.explore`，按 `config.model.subagent → model.main` 回落选择模型；子会话使用同一事件库的独立 session，启动时自动把未闭合派生补成 interrupted，renderer 仍只消费父会话归约状态。
 
+M3-e 后 `production-tools.ts` 只通过动态可选边界加载 `@xm/tools-core`：包存在时注册完整业务工具，
+包物理缺席时改用无 `tools.builtin` 的 profile，桌面主进程与 renderer 仍可编译并显示空工具状态。
+
 小明的 Electron 外壳：`main` / `preload` / `renderer` 三段。
 
 **这是整个应用唯一同时认识 Electron 与业务的地方**——往下每一层都不认识 electron

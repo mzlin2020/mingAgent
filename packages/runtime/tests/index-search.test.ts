@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,7 +28,7 @@ describe('M2-g index query fallback', () => {
     );
     const index = await openWorkspaceIndex(join(data, 'index.sqlite'));
     indexes.push(index);
-    const tool = indexedTextSearchTool({ index });
+    const tool = indexedTextSearchTool({ index, os: 'linux' });
 
     const cold = await textOf(tool.execute(
       { query: 'exact needle', path: root, maxResults: 20 },
@@ -46,7 +47,7 @@ describe('M2-g index query fallback', () => {
     expect(ready.source).toBe('fts5-index');
     expect(ready.matches.map((match) => match.path)).toEqual(['a.txt', 'src/code.ts']);
 
-    const symbols = JSON.parse(await textOf(symbolSearchTool({ index }).execute(
+    const symbols = JSON.parse(await textOf(symbolSearchTool({ index, os: 'linux' }).execute(
       { query: 'indexed', path: root, maxResults: 20 },
       context(root),
     ))) as { source: string; symbols: { name: string }[] };
@@ -63,7 +64,7 @@ describe('M2-g index query fallback', () => {
       'export function refreshedFunction(): string { return "exact needle three"; }\n',
     );
     await index.refresh(root, neverAborts);
-    const refreshed = JSON.parse(await textOf(symbolSearchTool({ index }).execute(
+    const refreshed = JSON.parse(await textOf(symbolSearchTool({ index, os: 'linux' }).execute(
       { query: 'Function', path: root, maxResults: 20 },
       context(root),
     ))) as { symbols: { name: string }[] };
@@ -78,7 +79,7 @@ describe('M2-g index query fallback', () => {
     const index = await openWorkspaceIndex(join(data, 'index.sqlite'));
     indexes.push(index);
     await index.refresh(root, neverAborts);
-    const output = await textOf(indexedTextSearchTool({ index }).execute(
+    const output = await textOf(indexedTextSearchTool({ index, os: 'linux' }).execute(
       { query: 'xy', path: root, maxResults: 20 },
       context(root),
     ));
@@ -115,7 +116,7 @@ describe('M2-g index query fallback', () => {
     };
 
     const output = await withTimeout(
-      textOf(indexedTextSearchTool({ index: stalled }).execute(
+      textOf(indexedTextSearchTool({ index: stalled, os: 'linux' }).execute(
         { query: 'exact needle', path: root, maxResults: 20 },
         context(root),
       )),
@@ -138,7 +139,7 @@ describe('M2-g index query fallback', () => {
     indexes.push(index);
     await index.refresh(root, neverAborts);
 
-    const scoped = JSON.parse(await textOf(indexedTextSearchTool({ index }).execute(
+    const scoped = JSON.parse(await textOf(indexedTextSearchTool({ index, os: 'linux' }).execute(
       { query: 'scopedNeedle', path: join(root, 'src'), maxResults: 20 },
       context(root),
     ))) as { source: string; matches: { path: string }[] };
@@ -174,7 +175,7 @@ function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
 }
 
 function context(cwd: string): ToolContext {
-  return { sessionId: newSessionId(), cwd, executor: 'local', signal: neverAborts };
+  return { sessionId: newSessionId(), cwd, executor: localExecutionWorld, signal: neverAborts };
 }
 
 const neverAborts = {

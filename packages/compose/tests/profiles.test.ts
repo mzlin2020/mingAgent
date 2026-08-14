@@ -11,6 +11,7 @@ import {
   builtinProfile,
   dumpProfile,
   loadPatchedProfile,
+  withoutBuiltinTools,
 } from '@xm/compose';
 
 const roots: string[] = [];
@@ -74,6 +75,14 @@ describe('M3-b 内建 profile 与 patch', () => {
     const profile = baselineOnlyProfile('headless');
     expect(profile.rows.every((row) => row.id.startsWith('baseline.'))).toBe(true);
     expect(profile.rows.some((row) => row.id === 'baseline.tools')).toBe(true);
+  });
+
+  it('无工具发行只移除 tools.builtin，运行时与表面保持完整', () => {
+    const full = builtinProfile('headless');
+    const profile = withoutBuiltinTools(full);
+    expect(profile.rows.some((row) => row.id === 'tools.builtin')).toBe(false);
+    expect(profile.rows.some((row) => row.id === 'runtime.executor')).toBe(true);
+    expect(profile.rows.at(-1)?.id).toBe('surface.headless');
   });
 
   it('dump-config 对最终 config 做递归脱敏', () => {

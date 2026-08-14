@@ -10,6 +10,7 @@ import type {
   SessionId,
   TurnId,
 } from '@xm/contracts';
+import type { ExecutionWorld } from '../port/execution-world.js';
 
 export interface ClockService {
   now(): number;
@@ -35,6 +36,7 @@ export interface IdService {
 export interface CoreContainerServices {
   readonly clock: ClockService;
   readonly ids: IdService;
+  readonly executor: ExecutionWorld;
 }
 
 export interface DeterministicClockOptions {

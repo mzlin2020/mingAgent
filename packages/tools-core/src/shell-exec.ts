@@ -1,7 +1,6 @@
-import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import type { ResultBlock, ToolProgress } from '@xm/contracts';
-import type { OsFamily, RegisteredTool } from '@xm/kernel';
+import type { ExecutionProcess, ExecutionProcessResult, OsFamily, RegisteredTool } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
 
 export const SHELL_EXEC = 'shell.exec';
@@ -123,11 +122,12 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
 
       const [bin = '', ...args] = input.argv;
       const run = await runCommand({
+        process: ctx.executor.process,
         bin,
         args,
         cwd: input.cwd ?? ctx.cwd,
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        env: shellChildEnv(options),
+        ...shellEnvironment(options),
         os: options.os,
         signal: ctx.signal,
       });
@@ -142,149 +142,43 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
   });
 
 /** 子进程能看到的环境。白名单之外的一律不给 */
-export function shellChildEnv(options: ShellExecOptions): Record<string, string> {
-  const source = options.env ?? process.env;
-  const allowed = [...ENV_ALLOWLIST, ...(options.extraEnv ?? [])];
-  const out: Record<string, string> = {};
-  for (const key of allowed) {
-    const value = source[key];
-    if (value !== undefined) out[key] = value;
-  }
-  return out;
+export function shellEnvironment(options: ShellExecOptions): {
+  readonly inheritEnv: readonly string[];
+  readonly envSource?: Readonly<Record<string, string | undefined>>;
+} {
+  return {
+    inheritEnv: [...ENV_ALLOWLIST, ...(options.extraEnv ?? [])],
+    ...(options.env === undefined ? {} : { envSource: options.env }),
+  };
 }
 
-export interface RunOutcome {
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly code: number | undefined;
-  readonly signal: string | undefined;
-  readonly timedOut: boolean;
-  readonly interrupted: boolean;
-  readonly clipped: boolean;
-  readonly spawnError?: string;
-}
+export type RunOutcome = ExecutionProcessResult;
 
 export interface RunInput {
+  readonly process: ExecutionProcess;
   readonly bin: string;
   readonly args: readonly string[];
   readonly cwd: string;
   readonly timeoutMs: number;
-  readonly env: Record<string, string>;
+  readonly inheritEnv?: readonly string[];
+  readonly envSource?: Readonly<Record<string, string | undefined>>;
+  readonly env?: Readonly<Record<string, string>>;
   readonly os: OsFamily;
   readonly signal: { readonly aborted: boolean; addEventListener(t: 'abort', l: () => void): void; removeEventListener(t: 'abort', l: () => void): void };
 }
 
 export function runCommand(input: RunInput): Promise<RunOutcome> {
-  return new Promise<RunOutcome>((done) => {
-    const child = spawn(input.bin, [...input.args], {
-      cwd: input.cwd,
-      env: input.env,
-      shell: false,
-      // stdin 不继承：等输入的命令会永远挂着，而它挂住的是整个 Turn
-      stdio: ['ignore', 'pipe', 'pipe'],
-      /*
-       * 自成进程组。杀的时候杀整组——只杀直接子进程的话，它派生的孙进程会活下来，
-       * 而用户看到的是"已经停了"。Windows 没有进程组，那里靠 taskkill /T（见 killTree）。
-       */
-      detached: input.os !== 'windows',
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let bytes = 0;
-    let clipped = false;
-    let timedOut = false;
-    let interrupted = false;
-    let settled = false;
-
-    const collect = (chunk: Buffer, into: 'out' | 'err'): void => {
-      if (clipped) return;
-      const text = chunk.toString('utf8');
-      bytes += chunk.byteLength;
-      if (bytes > MAX_OUTPUT_BYTES) {
-        clipped = true;
-        killProcessTree(child.pid, input.os);
-        return;
-      }
-      if (into === 'out') stdout += text;
-      else stderr += text;
-    };
-
-    child.stdout.on('data', (c: Buffer) => {
-      collect(c, 'out');
-    });
-    child.stderr.on('data', (c: Buffer) => {
-      collect(c, 'err');
-    });
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      killProcessTree(child.pid, input.os);
-    }, input.timeoutMs);
-
-    const onAbort = (): void => {
-      interrupted = true;
-      killProcessTree(child.pid, input.os);
-    };
-    input.signal.addEventListener('abort', onAbort);
-
-    const finish = (outcome: Partial<RunOutcome>): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      input.signal.removeEventListener('abort', onAbort);
-      done({
-        stdout,
-        stderr,
-        code: undefined,
-        signal: undefined,
-        timedOut,
-        interrupted,
-        clipped,
-        ...outcome,
-      });
-    };
-
-    child.on('error', (e: Error) => {
-      finish({ spawnError: e.message });
-    });
-    child.on('close', (code, signal) => {
-      finish({
-        code: code ?? undefined,
-        signal: signal ?? undefined,
-      });
-    });
+  return input.process.run({
+    argv: [input.bin, ...input.args],
+    cwd: input.cwd,
+    timeoutMs: input.timeoutMs,
+    signal: input.signal,
+    os: input.os,
+    maxOutputBytes: MAX_OUTPUT_BYTES,
+    ...(input.inheritEnv === undefined ? {} : { inheritEnv: input.inheritEnv }),
+    ...(input.envSource === undefined ? {} : { envSource: input.envSource }),
+    ...(input.env === undefined ? {} : { env: input.env }),
   });
-}
-
-/**
- * 杀掉整棵进程树。
- *
- * POSIX：`kill(-pid)` 打的是**进程组**，先 TERM 给一次体面退出的机会，
- * 还在就 KILL。Windows 上没有进程组，只能靠 `taskkill /T /F`。
- */
-export function killProcessTree(pid: number | undefined, os: OsFamily): void {
-  if (pid === undefined) return;
-
-  if (os === 'windows') {
-    spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => {
-      /* 进程可能已经没了，这不是错误 */
-    });
-    return;
-  }
-
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch {
-    return; // 已经退了
-  }
-  setTimeout(() => {
-    try {
-      process.kill(-pid, 'SIGKILL');
-    } catch {
-      /* 已经退了 */
-    }
-  }, 2000).unref();
 }
 
 /** 给模型看的结果。**退出码与 stderr 都是事实，不是异常**——它要靠这些判断下一步 */

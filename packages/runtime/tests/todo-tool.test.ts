@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { ModelChunk, Todo } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
@@ -62,7 +63,7 @@ describe('todo.update', () => {
     });
 
     await runTurn(
-      { runtime, provider, tools, layers: [], model: 'scripted-1' },
+      { runtime, executor: localExecutionWorld, provider, tools, layers: [], model: 'scripted-1' },
       textInput('完成一个多步骤任务'),
     );
 
@@ -96,7 +97,7 @@ describe('todo.update', () => {
         removeEventListener: () => undefined,
       },
       cwd: '/w',
-      executor: 'local' as const,
+      executor: localExecutionWorld,
     };
 
     const consume = async (): Promise<void> => {
@@ -138,12 +139,13 @@ describe('todo.update', () => {
     await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         provider,
         tools,
         layers: [],
         model: 'scripted-1',
         toolAvailability: {
-          executor: 'local',
+          executor: localExecutionWorld,
           platform: {
             secrets: 'plaintext-unavailable',
             shellSession: true,

@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,6 +114,7 @@ describe('headless 冒烟：一轮完整对话', () => {
     const reason = await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         provider,
         tools,
         layers,
@@ -233,7 +235,10 @@ describe('headless 冒烟：一轮完整对话', () => {
     });
 
     await runTurn(
-      { runtime, provider, tools, layers, model: 'scripted-1', gateway: pureGateway(demoTargetOf) },
+      {
+        runtime, executor: localExecutionWorld, provider, tools, layers,
+        model: 'scripted-1', gateway: pureGateway(demoTargetOf),
+      },
       textInput('删掉家目录'),
     );
 

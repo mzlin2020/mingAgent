@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -19,13 +20,13 @@ let dir: string;
  */
 const hasRipgrep = spawnSync('rg', ['--version'], { stdio: 'ignore' }).status === 0;
 /** 强制走退路：给一个一定启动不了的可执行名 */
-const missingRg = { executable: 'xm-ripgrep-definitely-missing' };
+const missingRg = { os: 'linux' as const, executable: 'xm-ripgrep-definitely-missing' };
 
 const ctx = (aborted = false): ToolContext => ({
   sessionId: newSessionId(),
   signal: { aborted, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd: dir,
-  executor: 'local',
+  executor: localExecutionWorld,
 });
 
 async function run(tool: RegisteredTool, input: unknown, context = ctx()): Promise<string> {
@@ -107,7 +108,7 @@ function sharedContract(label: string, make: () => RegisteredTool): void {
 }
 
 sharedContract('Node 退路（无 ripgrep）', () => textSearchTool(missingRg));
-if (hasRipgrep) sharedContract('ripgrep', () => textSearchTool());
+if (hasRipgrep) sharedContract('ripgrep', () => textSearchTool({ os: 'linux' }));
 
 describe('search.text · 两条路径的差异如实声明', () => {
   it('Node 退路标明 source 与忽略规则差异，不伪装成 ripgrep', async () => {
@@ -132,7 +133,7 @@ describe('search.text · 两条路径的差异如实声明', () => {
     await writeFile(join(dir, 'visible.txt'), 'needle\n');
     await writeFile(join(dir, 'ignored.txt'), 'needle\n');
 
-    const out = await run(textSearchTool(), { pattern: 'needle', path: dir });
+    const out = await run(textSearchTool({ os: 'linux' }), { pattern: 'needle', path: dir });
 
     expect(out).toContain('visible.txt:1:1');
     expect(out).not.toContain('ignored.txt:1:1');

@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { ModelChunk } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
@@ -22,15 +23,9 @@ import { z } from 'zod';
  * `tool_not_found` 分支优雅降级（一条错误的 `tool_result` 回给模型），不是让
  * 整个进程炸掉——这正是"没有工具可用但照常启动"里"照常"的含义。
  *
- * **没有证明什么**：`apps/desktop` 这个真实应用删掉 `packages/tools-core` 之后
- * 仍能启动。`apps/desktop/src/main/services.ts` 目前**硬编码 import**
- * `nodeToolGateway`/`nodeCheckpointer`/`coreTools`/`shellSessionTools`/
- * `PtySessionManager`——删掉 `tools-core` 会让这个文件直接编译不过，应用根本
- * 起不来。这不是本轮修的范围：让网关/checkpointer 变成可插拔端口、`services.ts`
- * 在包不存在时优雅降级，是 M3 插件宿主落地时要做的真实设计工作（ADR-0032 决策表
- * 里明确"不提前做"的一项）。这条测试只锁住"内核层本来就没有这个耦合"这一半，
- * 且专门在这份注释里把另一半的缺口写清楚，不让这条测试的绿色误导人以为整个
- * 验收约束已经满足。
+ * M3-e 之后，这组无 `tools-core` import 的运行时用例与物理删包演练分工明确：本文件固定
+ * 空工具运行语义；`pnpm typecheck` / `pnpm smoke` 在包缺席时走 no-tools profile，固定真实
+ * desktop 与 headless 装配也不依赖业务包存在。两条都通过才算兑现原则二。
  */
 describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032 #6）', () => {
   it('工具注册表一个工具都没有时，完整的一轮对话仍然能跑完（会话创建/落库/回放/流式全部正常）', async () => {
@@ -48,7 +43,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
     const tools = new ToolRegistry();
     expect(tools.descriptors({
       cwd: '/w',
-      executor: 'local',
+      executor: localExecutionWorld,
       platform: {
         secrets: 'plaintext-unavailable',
         shellSession: false,
@@ -77,6 +72,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
     const reason = await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         provider,
         tools,
         layers,
@@ -133,6 +129,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
     const reason = await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         provider,
         tools,
         layers,
@@ -199,6 +196,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
     const reason = await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         provider,
         tools,
         layers: builtinLayers(policyEnvFromPaths(paths)),
@@ -207,7 +205,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
         gateway: pureGateway(demoTargetOf),
         pathCaseInsensitive: platform.os === 'windows',
         toolAvailability: {
-          executor: 'local',
+          executor: localExecutionWorld,
           platform: platform.capabilities(),
           disabledTools: ['demo.blocked'],
         },

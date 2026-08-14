@@ -74,10 +74,18 @@ module.exports = {
       to: { path: 'node_modules/electron' },
     },
     {
+      name: 'tools-core-零-node内置',
+      comment:
+        '业务工具只能经 ToolContext.executor 使用文件、进程与 PTY；直接 import node:* 会绕过' +
+        '整个执行世界接缝，使容器/远端 provider 失去约束力（ADR-0054 / ADR-0063）。',
+      severity: 'error',
+      from: { path: '^packages/tools-core/src' },
+      to: { dependencyTypes: ['core'] },
+    },
+    {
       name: 'tools-core-不得依赖-electron',
       comment:
-        '基础工具集要能在 CLI（M3）与 headless 冒烟下使用，也要能在换掉执行后端时原样复用' +
-        '（M1-d 的 container / ssh 执行器）。它用 node:fs 是本分，认识 electron 就不是了。',
+        '基础工具集要能在 CLI 与 headless 冒烟下使用，也要能在换掉执行后端时原样复用。',
       severity: 'error',
       from: { path: '^packages/tools-core/src' },
       to: { path: 'node_modules/electron' },

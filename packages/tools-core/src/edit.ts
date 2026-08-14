@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
 import { z } from 'zod';
 import {
   EditProposal,
@@ -10,10 +8,9 @@ import {
   type SessionId,
   type ToolProgress,
 } from '@xm/contracts';
-import type { RegisteredTool } from '@xm/kernel';
+import type { ExecutionFileSystem, RegisteredTool } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
 import { unifiedDiff } from './diff.js';
-import { writeTextAtomic } from './fs-write.js';
 
 export const EDIT_PREVIEW = 'edit.preview';
 export const EDIT_APPLY = 'edit.apply';
@@ -64,14 +61,15 @@ const MAX_EDIT_FILE_BYTES = 2 * 1024 * 1024;
 
 export async function createEditProposal(
   input: readonly EditPreviewFile[],
+  fs: ExecutionFileSystem,
   signal?: { readonly aborted: boolean },
 ): Promise<Proposal> {
   assertUniquePaths(input.map((file) => file.path));
   const files = [];
   for (const [fileIndex, file] of input.entries()) {
     if (signal?.aborted === true) throw new Error('编辑预览已取消。');
-    await assertEditableSize(file.path);
-    const beforeBytes = await readFile(file.path);
+    await assertEditableSize(fs, file.path);
+    const beforeBytes = await fs.read(file.path);
     const before = decodeUtf8(beforeBytes, file.path);
     let after = before;
     const hunks = [];
@@ -86,8 +84,8 @@ export async function createEditProposal(
     }
     files.push({
       path: file.path,
-      beforeHash: hash(beforeBytes),
-      afterHash: hash(Buffer.from(after, 'utf8')),
+      beforeHash: await fs.sha256(beforeBytes),
+      afterHash: await fs.sha256(Buffer.from(after, 'utf8')),
       replacements: file.replacements,
       diff: unifiedDiff(file.path, before, after),
       hunks,
@@ -109,7 +107,7 @@ export const editPreviewTool = (access: EditProposalAccess): RegisteredTool =>
     pathInputs: ['files[].path'],
     resources: (input) => input.files.map((file) => ({ kind: 'path', mode: 'read', glob: file.path })),
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
-      const proposal = await createEditProposal(input.files, ctx.signal);
+      const proposal = await createEditProposal(input.files, ctx.executor.fs, ctx.signal);
       await access.save(ctx.sessionId, proposal);
       yield { kind: 'result', forModel: [{ type: 'text', text: previewEnvelope(proposal) }] };
     },
@@ -148,7 +146,7 @@ function previewEnvelope(proposal: Proposal): string {
 
 export const editApplyTool = (
   access: EditProposalAccess,
-  writeFile: (path: string, content: string) => Promise<void> = writeTextAtomic,
+  writeFile?: (path: string, content: string) => Promise<void>,
 ): RegisteredTool =>
   defineTool({
     name: EDIT_APPLY,
@@ -169,7 +167,7 @@ export const editApplyTool = (
         return;
       }
       assertApplyInput(state.proposal, input.files);
-      const prepared = await prepareApply(state.proposal);
+      const prepared = await prepareApply(state.proposal, ctx.executor.fs);
       if (prepared === 'already-applied') {
         await access.markApplied(ctx.sessionId, input.proposalId);
         yield result(`编辑提案 ${input.proposalId} 已在磁盘生效，已补记完成事件。`);
@@ -178,7 +176,7 @@ export const editApplyTool = (
 
       for (const file of prepared) {
         if (ctx.signal.aborted) throw new Error('应用编辑提案前已取消，尚未写盘。');
-        await writeFile(file.path, file.content);
+        await (writeFile ?? ctx.executor.fs.writeTextAtomic)(file.path, file.content);
       }
       await access.markApplied(ctx.sessionId, input.proposalId);
       yield result(`已应用编辑提案 ${input.proposalId}：${String(prepared.length)} 个文件。`);
@@ -187,11 +185,12 @@ export const editApplyTool = (
 
 async function prepareApply(
   proposal: Proposal,
+  fs: ExecutionFileSystem,
 ): Promise<readonly { readonly path: string; readonly content: string }[] | 'already-applied'> {
   const current = await Promise.all(
     proposal.files.map(async (file) => {
-      const bytes = await readFile(file.path);
-      return { file, bytes, hash: hash(bytes), text: decodeUtf8(bytes, file.path) };
+      const bytes = await fs.read(file.path);
+      return { file, bytes, hash: await fs.sha256(bytes), text: decodeUtf8(bytes, file.path) };
     }),
   );
   if (current.every((item) => item.hash === item.file.afterHash)) return 'already-applied';
@@ -199,13 +198,13 @@ async function prepareApply(
   if (drifted.length > 0) {
     throw new Error(`内容已漂移，零文件写入：${drifted.map((item) => item.file.path).join('、')}`);
   }
-  return current.map(({ file, text }) => {
+  return Promise.all(current.map(async ({ file, text }) => {
     const content = applyReplacements(text, file.replacements, file.path);
-    if (hash(Buffer.from(content, 'utf8')) !== file.afterHash) {
+    if (await fs.sha256(Buffer.from(content, 'utf8')) !== file.afterHash) {
       throw new Error(`提案重算结果不一致，零文件写入：${file.path}`);
     }
     return { path: file.path, content };
-  });
+  }));
 }
 
 function assertApplyInput(
@@ -246,8 +245,8 @@ const countOccurrences = (text: string, needle: string): number => {
   return count;
 };
 
-async function assertEditableSize(path: string): Promise<void> {
-  const info = await stat(path);
+async function assertEditableSize(fs: ExecutionFileSystem, path: string): Promise<void> {
+  const info = await fs.stat(path);
   if (info.size > MAX_EDIT_FILE_BYTES) {
     throw new Error(
       `${path} 共 ${String(info.size)} 字节，超过精确编辑上限 ${String(MAX_EDIT_FILE_BYTES)} 字节。`,
@@ -262,7 +261,6 @@ const decodeUtf8 = (bytes: Uint8Array, path: string): string => {
     throw new Error(`编辑只支持 UTF-8 文本：${path}`, { cause: error });
   }
 };
-const hash = (bytes: Uint8Array): string => createHash('sha256').update(bytes).digest('hex');
 const assertUniquePaths = (paths: readonly string[]): void => {
   if (new Set(paths).size !== paths.length) throw new Error('同一编辑请求不能重复包含同一路径。');
 };

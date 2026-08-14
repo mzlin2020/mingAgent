@@ -1,6 +1,8 @@
 # `@xm/tools-core`
 
-Node 侧内建工具与能力网关：文件读写/列表、`search.text`、`web.fetch`、`shell.exec`、checkpoint 与受控 PTY。
+可选的内建业务工具：文件读写/列表、搜索、网页抓取、命令、Git、编辑与受控 PTY。
+本包零 `node:*`，文件、子进程和 PTY 全部经 `ToolContext.executor`；能力网关、checkpoint 与
+local provider 位于 `@xm/tool-runtime`。因此本包可以物理删除，内核与 UI 仍能以空工具 profile 启动。
 
 M2-b 的 `search.text` 以 argv 方式执行 ripgrep JSON，路径仍经过能力网关并声明 `fs.read`；结果明确说明 ignore、二进制跳过、全局上限、中断和 ripgrep 缺失，不另开文件 I/O 旁路。
 

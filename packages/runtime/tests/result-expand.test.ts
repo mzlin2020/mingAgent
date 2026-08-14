@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { BlobRef, ModelChunk } from '@xm/contracts';
@@ -88,7 +89,7 @@ describe('result.expand', () => {
     });
 
     await runTurn(
-      { runtime, provider, tools, layers: [], model: 'scripted-1', blobs },
+      { runtime, executor: localExecutionWorld, provider, tools, layers: [], model: 'scripted-1', blobs },
       textInput('读取长结果的一小段'),
     );
 
@@ -121,7 +122,7 @@ describe('result.expand', () => {
         sessionId: newSessionId(),
         signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
         cwd: '/w',
-        executor: 'local',
+        executor: localExecutionWorld,
       },
     )) {
       progress.push(item);

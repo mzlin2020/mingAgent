@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { ModelChunk } from '@xm/contracts';
 import { newSessionId } from '@xm/contracts';
@@ -54,6 +55,7 @@ describe('单次模型输出达到上限', () => {
     const reason = await runTurn(
       {
         runtime: rt,
+        executor: localExecutionWorld,
         provider,
         tools: new ToolRegistry(),
         layers: builtinLayers(ENV),
@@ -76,6 +78,7 @@ describe('单次模型输出达到上限', () => {
     const reason = await runTurn(
       {
         runtime: rt,
+        executor: localExecutionWorld,
         provider,
         tools: new ToolRegistry(),
         layers: builtinLayers(ENV),

@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { execFileSync } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -268,7 +269,7 @@ async function execute(
 
 function context(cwd: string, aborted = false): ToolContext {
   return {
-    sessionId: newSessionId(), cwd, executor: 'local',
+    sessionId: newSessionId(), cwd, executor: localExecutionWorld,
     signal: { aborted, addEventListener: () => undefined, removeEventListener: () => undefined },
   };
 }

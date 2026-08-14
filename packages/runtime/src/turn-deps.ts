@@ -3,6 +3,7 @@ import type {
   AbortLike,
   BlobStore,
   Checkpointer,
+  ExecutionWorld,
   ModelProvider,
   OsFamily,
   RuleLayer,
@@ -16,6 +17,7 @@ export interface TurnCoreDeps {
   readonly runtime: SessionRuntime;
   readonly provider: ModelProvider;
   readonly tools: ToolRegistry;
+  readonly executor: ExecutionWorld;
   readonly toolAvailability?: Omit<ToolAvailabilityContext, 'cwd'>;
   readonly layers: readonly RuleLayer[];
   readonly model: string;

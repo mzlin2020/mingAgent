@@ -32,6 +32,7 @@ import {
 import { createLocalClock, createLocalIds, nodePlatform } from '../packages/platform/dist/index.js';
 import { openStores } from '../packages/storage/dist/index.js';
 import {
+  createLocalExecutionWorld,
   nodeCheckpointer,
   nodeCheckpointRestorer,
   nodeToolGateway,
@@ -88,6 +89,7 @@ try {
   const profile = await loadPatchedProfile({ name: 'headless', configDir: paths.config });
   const clock = createLocalClock();
   const ids = createLocalIds();
+  const executor = createLocalExecutionWorld();
   const profilePlugin = (row, apply) => ({
     name: row.id,
     inject: row.inject,
@@ -106,6 +108,8 @@ try {
           ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
       '@xm/kernel#policy': (row) =>
         profilePlugin(row, (ctx) => ctx.provide('policy', layers)),
+      '@xm/tool-runtime#localExecutor': (row) =>
+        profilePlugin(row, (ctx) => ctx.provide('executor', executor)),
       '@xm/tool-runtime#gateway': (row) =>
         profilePlugin(row, (ctx) => ctx.provide('gateway', nodeToolGateway({ home: paths.home }))),
       '@xm/tool-runtime#checkpoint': (row) =>
@@ -231,6 +235,7 @@ try {
           store: stores.events,
           bus,
           parentTools: tools,
+          executor,
           provider: new ScriptedProvider({
             turns: [
               { chunks: [...toolCall(childRead, 'fs.read', { path: 'src/symbol.ts' }), { kind: 'stop', reason: 'tool_use' }] },
@@ -286,6 +291,7 @@ try {
   const reason = await runTurn(
     {
       runtime,
+      executor,
       extensions,
       provider,
       tools,
@@ -333,6 +339,7 @@ try {
   const fileReason = await runTurn(
     {
       runtime,
+      executor,
       provider: fileProvider,
       tools,
       layers,
@@ -356,6 +363,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           {
@@ -391,6 +399,7 @@ try {
     await runTurn(
       {
         runtime,
+        executor,
         provider: new ScriptedProvider({
           turns: [
             {
@@ -438,6 +447,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           {
@@ -470,6 +480,7 @@ try {
     await runTurn(
       {
         runtime,
+        executor,
         provider: new ScriptedProvider({
           turns: [
             {
@@ -528,6 +539,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           { chunks: [
@@ -564,6 +576,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           { chunks: [...toolCall(coldSymbolCall, 'search.symbol', { query: 'smokeSymbol', path: '.' }), { kind: 'stop', reason: 'tool_use' }] },
@@ -588,6 +601,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           { chunks: [
@@ -691,6 +705,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           {
@@ -758,6 +773,7 @@ try {
     await runTurn(
       {
         runtime,
+        executor,
         provider: new ScriptedProvider({
           turns: [
             { chunks: [...toolCall(newCallId(), 'shell.exec', { argv }), { kind: 'stop', reason: 'tool_use' }] },
@@ -784,6 +800,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         turns: [
           {
@@ -820,6 +837,7 @@ try {
   await runTurn(
     {
       runtime,
+      executor,
       provider: new ScriptedProvider({
         capabilities: { vision: true },
         turns: [
@@ -846,9 +864,11 @@ try {
   });
   const agent = new Agent({
     runtime,
+    executor,
     drive: (input, context) => runTurn(
       {
         runtime,
+        executor,
         provider: agentProvider,
         tools,
         layers,

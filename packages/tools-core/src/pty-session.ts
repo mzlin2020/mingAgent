@@ -1,10 +1,7 @@
-import type { IPty } from 'node-pty';
-import { spawn as ptySpawn } from 'node-pty';
 import type { PtySessionId, SessionId } from '@xm/contracts';
 import { newPtySessionId } from '@xm/contracts';
-import type { OsFamily } from '@xm/kernel';
-import { killProcessTree, shellChildEnv } from './shell-exec.js';
-import { resolvePtyExecutable } from './pty-executable.js';
+import type { ExecutionPtyProcess, ExecutionWorld, OsFamily } from '@xm/kernel';
+import { shellEnvironment } from './shell-exec.js';
 
 export const SHELL_SESSION_OPEN = 'shell.session.open';
 export const SHELL_SESSION_RUN = 'shell.session.run';
@@ -58,25 +55,12 @@ export type PtySessionEvent =
 
 export class PtySessionError extends Error {}
 
-export type PtyLike = Pick<IPty, 'pid' | 'onData' | 'onExit' | 'resize' | 'kill'>;
-export type SpawnPty = (
-  file: string,
-  args: readonly string[],
-  options: {
-    readonly cwd: string;
-    readonly cols: number;
-    readonly rows: number;
-    readonly env: Record<string, string>;
-  },
-) => PtyLike;
-
 export interface PtySessionManagerOptions {
   readonly os: OsFamily;
   readonly emit: (xmSessionId: SessionId, event: PtySessionEvent) => void;
   readonly maxSessionsPerXmSession?: number;
   readonly idleTimeoutMs?: number;
   readonly maxTailChars?: number;
-  readonly spawnPty?: SpawnPty;
   readonly extraEnv?: readonly string[];
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
@@ -97,7 +81,7 @@ interface Entry {
   readonly cwd: string;
   cols: number;
   rows: number;
-  pty: PtyLike | undefined;
+  pty: ExecutionPtyProcess | undefined;
   tail: string;
   status: PtySessionStatus['state'];
   exitCode: number | undefined;
@@ -116,8 +100,7 @@ export class PtySessionManager {
   readonly #maxSessions: number;
   readonly #idleTimeoutMs: number;
   readonly #maxTailChars: number;
-  readonly #spawnPty: SpawnPty;
-  readonly #env: Record<string, string>;
+  readonly #environment: ReturnType<typeof shellEnvironment>;
   readonly #os: OsFamily;
 
   constructor(options: PtySessionManagerOptions) {
@@ -125,9 +108,8 @@ export class PtySessionManager {
     this.#maxSessions = options.maxSessionsPerXmSession ?? DEFAULT_MAX_SESSIONS;
     this.#idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.#maxTailChars = options.maxTailChars ?? DEFAULT_MAX_TAIL_CHARS;
-    this.#spawnPty = options.spawnPty ?? defaultSpawnPty;
     this.#os = options.os;
-    this.#env = shellChildEnv({
+    this.#environment = shellEnvironment({
       os: options.os,
       ...(options.extraEnv === undefined ? {} : { extraEnv: options.extraEnv }),
       ...(options.env === undefined ? {} : { env: options.env }),
@@ -180,7 +162,8 @@ export class PtySessionManager {
     return ptySessionId;
   }
 
-  run(
+  async run(
+    executor: ExecutionWorld,
     xmSessionId: SessionId,
     ptySessionId: PtySessionId,
     input: {
@@ -188,21 +171,21 @@ export class PtySessionManager {
       readonly cwd?: string | undefined;
       readonly timeoutMs?: number | undefined;
     },
-  ): void {
+  ): Promise<void> {
     const entry = this.#own(xmSessionId, ptySessionId);
     if (entry.pty !== undefined) throw new PtySessionError('这个终端已有命令在运行，请等待或先关闭会话。');
-    const [file, ...args] = input.argv;
+    const [file] = input.argv;
     if (file === undefined || file === '') throw new PtySessionError('argv 至少需要一个非空程序名。');
 
     const cwd = input.cwd ?? entry.cwd;
     const timeoutMs = input.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
-    const executable = resolvePtyExecutable(file, { os: this.#os, cwd, env: this.#env });
-    if (executable === undefined) throw new PtySessionError(`找不到可执行程序：${file}`);
-    const pty = this.#spawnPty(executable, args, {
+    const pty = await executor.pty.spawn({
+      argv: input.argv,
       cwd,
       cols: entry.cols,
       rows: entry.rows,
-      env: this.#env,
+      os: this.#os,
+      ...this.#environment,
     });
     entry.tail = '';
     entry.exitCode = undefined;
@@ -215,13 +198,12 @@ export class PtySessionManager {
       payload: { ptySessionId, argv: [...input.argv], cwd, timeoutMs },
     });
     pty.onData((chunk) => { this.#onData(ptySessionId, chunk); });
-    pty.onExit(({ exitCode }) => { this.#onExit(ptySessionId, exitCode); });
+    pty.onExit((exitCode) => { this.#onExit(ptySessionId, exitCode); });
     entry.commandTimer = setTimeout(() => {
       const current = this.#sessions.get(ptySessionId);
       if (current?.pty !== pty) return;
       current.commandReason = 'timeout';
       current.status = 'timed_out';
-      killProcessTree(pty.pid, this.#os);
       pty.kill();
     }, timeoutMs);
     entry.commandTimer.unref();
@@ -251,7 +233,6 @@ export class PtySessionManager {
       entry.status = 'killed';
       const pty = entry.pty;
       entry.pty = undefined;
-      killProcessTree(pty.pid, this.#os);
       try {
         pty.kill();
       } catch {
@@ -278,7 +259,6 @@ export class PtySessionManager {
       if (entry.commandTimer !== undefined) clearTimeout(entry.commandTimer);
       try {
         if (entry.pty !== undefined) {
-          killProcessTree(entry.pty.pid, this.#os);
           entry.pty.kill();
         }
       } catch {
@@ -344,7 +324,6 @@ export class PtySessionManager {
         entry.pty = undefined;
         if (entry.commandTimer !== undefined) clearTimeout(entry.commandTimer);
         entry.commandTimer = undefined;
-        killProcessTree(pty.pid, this.#os);
         try {
           pty.kill();
         } catch {
@@ -370,12 +349,3 @@ export class PtySessionManager {
 function clip(text: string, max: number): string {
   return text.length <= max ? text : text.slice(text.length - max);
 }
-
-const defaultSpawnPty: SpawnPty = (file, args, options) =>
-  ptySpawn(file, [...args], {
-    name: 'xterm-color',
-    cols: options.cols,
-    rows: options.rows,
-    cwd: options.cwd,
-    env: options.env,
-  });

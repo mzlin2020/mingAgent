@@ -3,7 +3,7 @@ import type { AnyEvent, PersistedEvent } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
 import type { PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, composeRules } from '@xm/kernel';
-import { nodeToolGateway } from '@xm/tool-runtime';
+import { localExecutionWorld, nodeToolGateway } from '@xm/tool-runtime';
 import { coreTools } from '@xm/tools-core';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 import { realpath as realpathCb } from 'node:fs';
@@ -122,6 +122,7 @@ async function harness() {
     await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         tools,
         layers: composeRules({ env: ENV }),
         model: 'scripted-1',

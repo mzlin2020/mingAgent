@@ -1,8 +1,8 @@
 /**
  * `@xm/tools-core` —— 可拆卸的业务工具实现。
  *
- * 这个包**要 `node:fs`**，与内核的零 I/O 正好互补：内核判定"能不能做"，
- * 这里做"具体怎么做"。路径能力网关与写前 checkpoint 已迁入 `@xm/tool-runtime`，
+ * 这个包只描述"具体怎么做"，真实 I/O 一律经 `ToolContext.executor`。
+ * 路径能力网关、写前 checkpoint 与 local provider 位于 `@xm/tool-runtime`，
  * 因此整体移除本包时，安全底座与无工具应用仍能存在（ADR-0063）。
  *
  * 不依赖 electron（depcruise 强制）：CLI（M3）与 headless 冒烟用的是同一批工具。
@@ -19,7 +19,6 @@ export * from './search-fallback.js';
 export * from './search-text.js';
 export * from './shell-exec.js';
 export * from './pty-session.js';
-export * from './pty-executable.js';
 export * from './pty-tools.js';
 export * from './web-fetch.js';
 
@@ -65,13 +64,14 @@ export const coreTools = (options: CoreToolsOptions): RegisteredTool[] => [
   fsReadTool(),
   fsListTool(),
   fsWriteTool(),
-  textSearchTool(),
+  textSearchTool({ os: options.os }),
   shellExecTool(options),
   ...gitTools(options),
   ...(options.index === undefined
     ? []
     : indexSearchTools({
         index: options.index,
+        os: options.os,
         ...(options.backgroundSignal === undefined
           ? {}
           : { backgroundSignal: options.backgroundSignal }),

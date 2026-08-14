@@ -35,7 +35,6 @@ lines.push(
   '- `gateway` 与 `checkpoint` 实现位于 `@xm/tool-runtime`；`@xm/tools-core` 只保留业务工具。',
   '- 用户 patch 只从显式的用户 `configDir/profiles/<name>.patch.json` 读取。',
   '- `--dump-config` 输出在写往 stdout 前统一经过脱敏。',
-  '',
 );
 
 const expected = `${lines.join('\n')}\n`;

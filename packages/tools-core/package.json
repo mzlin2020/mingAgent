@@ -19,7 +19,6 @@
   "dependencies": {
     "@xm/contracts": "workspace:*",
     "@xm/kernel": "workspace:*",
-    "node-pty": "^1.1.0",
     "undici": "7.29.0",
     "zod": "4.4.3"
   }

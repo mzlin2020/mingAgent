@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -179,7 +180,7 @@ const context = (): ToolContext => ({
   sessionId: newSessionId(),
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd: root,
-  executor: 'local',
+  executor: localExecutionWorld,
 });
 
 async function sha256(data: Uint8Array): Promise<string> {

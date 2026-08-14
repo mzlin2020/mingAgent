@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { createHash } from 'node:crypto';
 
 import type { ModelChunk } from '@xm/contracts';
@@ -97,6 +98,7 @@ describe('M2-h ContextBuilder', () => {
 
     const deps = {
       runtime,
+      executor: localExecutionWorld,
       provider: new ScriptedProvider({
         capabilities: { maxContext: 200_000, maxOutput: 1_000 },
         turns: [],
@@ -149,13 +151,14 @@ describe('M2-h ContextBuilder', () => {
     tools.register(todoUpdateTool(async () => Promise.resolve()));
     const deps = {
       runtime,
+      executor: localExecutionWorld,
       provider,
       tools,
       layers: [],
       model: 'scripted-1',
       blobs,
       hostOs: 'linux' as const,
-      toolAvailability: { executor: 'local' as const, platform: PLATFORM, disabledTools: [] },
+      toolAvailability: { executor: localExecutionWorld, platform: PLATFORM, disabledTools: [] },
     };
 
     expect(await runTurn(deps, textInput('当前消息必须原样保留'))).toBe('end_turn');
@@ -193,7 +196,7 @@ describe('M2-h ContextBuilder', () => {
     const disabled = await new ContextBuilder({
       ...replayDeps,
       toolAvailability: {
-        executor: 'local',
+        executor: localExecutionWorld,
         platform: PLATFORM,
         disabledTools: ['todo.update'],
       },
@@ -224,7 +227,10 @@ describe('M2-h ContextBuilder', () => {
       turns: [],
     });
     const reason = await runTurn(
-      { runtime, provider, tools: new ToolRegistry(), layers: [], model: 'scripted-1' },
+      {
+        runtime, executor: localExecutionWorld, provider,
+        tools: new ToolRegistry(), layers: [], model: 'scripted-1',
+      },
       textInput('当前输入'),
     );
     expect(reason).toBe('error');

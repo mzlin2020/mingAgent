@@ -14,11 +14,15 @@ import {
   type PolicyEnv,
 } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
-import { nodeCheckpointer, nodeCheckpointRestorer, nodeToolGateway } from '@xm/tool-runtime';
+import {
+  localExecutionWorld,
+  nodeCheckpointer,
+  nodeCheckpointRestorer,
+  nodeToolGateway,
+} from '@xm/tool-runtime';
 import {
   editApplyTool,
   editPreviewTool,
-  writeTextAtomic,
   type EditProposalAccess,
 } from '@xm/tools-core';
 
@@ -54,7 +58,7 @@ describe('M2-d 多文件事务真实链路', () => {
     tools.register(editApplyTool(access, async (path, content) => {
       writes += 1;
       if (writes === 2) throw new Error('injected second write failure');
-      await writeTextAtomic(path, content);
+      await localExecutionWorld.fs.writeTextAtomic(path, content);
     }));
     const env: PolicyEnv = {
       home: root,
@@ -64,6 +68,7 @@ describe('M2-d 多文件事务真实链路', () => {
     };
     const deps = {
       runtime,
+      executor: localExecutionWorld,
       tools,
       layers: composeRules({ env }),
       model: 'scripted-1',

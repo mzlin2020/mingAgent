@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "工具执行的安全底座：路径/命令/主机网关与写前 checkpoint。不依赖 electron",
+  "description": "工具执行的安全底座：网关、checkpoint 与 local ExecutionWorld provider。不依赖 electron",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -16,7 +16,8 @@
   "sideEffects": false,
   "dependencies": {
     "@xm/contracts": "workspace:*",
-    "@xm/kernel": "workspace:*"
+    "@xm/kernel": "workspace:*",
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "zod": "4.4.3"

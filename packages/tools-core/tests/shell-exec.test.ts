@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { spawnSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -62,7 +63,7 @@ const ctx = (signal: AbortLike = NEVER): ToolContext => ({
   sessionId: newSessionId(),
   signal,
   cwd: dir,
-  executor: 'local',
+  executor: localExecutionWorld,
 });
 
 /** 跑一次，把结果里的文本拼起来 */

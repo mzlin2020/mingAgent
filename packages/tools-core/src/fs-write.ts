@@ -1,5 +1,3 @@
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { RegisteredTool } from '@xm/kernel';
@@ -64,7 +62,7 @@ export const fsWriteTool = (): RegisteredTool =>
         return;
       }
 
-      const existed = await exists(input.path);
+      const existed = await exists(ctx.executor.fs, input.path);
       yield { kind: 'progress', message: existed ? `覆盖 ${input.path}` : `新建 ${input.path}` };
 
       // 取消检查放在真正动手之前。之后就不再检查了——一次 rename 中途"停下来"
@@ -74,7 +72,7 @@ export const fsWriteTool = (): RegisteredTool =>
         return;
       }
 
-      await writeTextAtomic(input.path, input.content);
+      await ctx.executor.fs.writeTextAtomic(input.path, input.content);
 
       yield {
         kind: 'result',
@@ -88,31 +86,9 @@ export const fsWriteTool = (): RegisteredTool =>
     },
   });
 
-export async function writeTextAtomic(path: string, content: string): Promise<void> {
-  const dir = dirname(path);
-  await mkdir(dir, { recursive: true });
-
-  // 临时文件与目标**同目录**：跨设备的 rename 不是原子的，而 /tmp 经常是另一个挂载点
-  const tmp = join(dir, `.xm-write-${String(process.pid)}-${String(Date.now())}.tmp`);
-  const handle = await open(tmp, 'wx');
+const exists = async (fs: import('@xm/kernel').ExecutionFileSystem, path: string): Promise<boolean> => {
   try {
-    await handle.writeFile(content, 'utf8');
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-
-  try {
-    await rename(tmp, path);
-  } catch (e) {
-    await rm(tmp, { force: true });
-    throw e;
-  }
-}
-
-const exists = async (path: string): Promise<boolean> => {
-  try {
-    await stat(path);
+    await fs.stat(path);
     return true;
   } catch {
     return false;

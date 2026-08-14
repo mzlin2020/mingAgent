@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -47,10 +48,10 @@ describe('diff review main workflow', () => {
   it('只选一个 hunk 时生成收窄提案；拒绝全部不生成提案', async () => {
     const { state, a, b } = await proposalFixture();
     const selected = state.proposal.files[0]!.hunks![0]!.hunkId;
-    const derived = await prepareReviewedProposal(state, [selected]);
+    const derived = await prepareReviewedProposal(state, [selected], localExecutionWorld.fs);
     expect(derived?.files).toHaveLength(1);
     expect(derived?.files[0]!.replacements).toHaveLength(1);
-    expect(await prepareReviewedProposal(state, [])).toBeUndefined();
+    expect(await prepareReviewedProposal(state, [], localExecutionWorld.fs)).toBeUndefined();
 
     let applied = false;
     const sessionId = newSessionId();
@@ -77,7 +78,9 @@ describe('diff review main workflow', () => {
     const { state, a } = await proposalFixture();
     await writeFile(a, '用户改过');
     const selected = state.proposal.files[0]!.hunks![0]!.hunkId;
-    await expect(prepareReviewedProposal(state, [selected])).rejects.toThrow(/漂移/u);
+    await expect(
+      prepareReviewedProposal(state, [selected], localExecutionWorld.fs),
+    ).rejects.toThrow(/漂移/u);
   });
 });
 
@@ -97,7 +100,7 @@ async function proposalFixture(): Promise<{ state: EditProposalState; a: string;
       ],
     },
     { path: b, replacements: [{ oldText: 'B=旧', newText: 'B=新', expectedMatches: 1 }] },
-  ]);
+  ], localExecutionWorld.fs);
   return {
     a,
     b,
@@ -108,6 +111,6 @@ async function proposalFixture(): Promise<{ state: EditProposalState; a: string;
 const context = (sessionId: ReturnType<typeof newSessionId>, cwd: string): ToolContext => ({
   sessionId,
   cwd,
-  executor: 'local',
+  executor: localExecutionWorld,
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
 });

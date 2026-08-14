@@ -1,11 +1,18 @@
 import { redact } from '@xm/contracts';
 import type { ProfileRow } from '@xm/compose';
-import { assembleProfile, loadPatchedProfile, type AssembledProfile, type PluginCatalog } from '@xm/compose';
+import {
+  assembleProfile,
+  loadPatchedProfile,
+  withoutBuiltinTools,
+  type AssembledProfile,
+  type PluginCatalog,
+} from '@xm/compose';
 import type {
   Checkpointer,
   CheckpointRestorer,
   ClockService,
   ContainerPlugin,
+  ExecutionWorld,
   IdService,
   RegisteredTool,
   RuleLayer,
@@ -33,6 +40,7 @@ export interface SessionRuntimeFactory {
 export interface DesktopProfileServices {
   readonly clock: ClockService;
   readonly ids: IdService;
+  readonly executor: ExecutionWorld;
   readonly turnExtensions: TurnExtensionHost;
   readonly policy: readonly RuleLayer[];
   readonly gateway: ToolGateway;
@@ -49,6 +57,7 @@ export interface DesktopProfileOptions {
   readonly configDir: string;
   readonly clock: ClockService;
   readonly ids: IdService;
+  readonly executor: ExecutionWorld;
   readonly policy: readonly RuleLayer[];
   readonly gateway: ToolGateway;
   readonly checkpointer: Checkpointer;
@@ -56,6 +65,7 @@ export interface DesktopProfileOptions {
   readonly secrets: SecretStore;
   readonly tools: ToolRegistry;
   readonly createTools: () => readonly RegisteredTool[];
+  readonly builtinToolsAvailable?: boolean;
 }
 
 const plugin = (
@@ -71,10 +81,15 @@ const plugin = (
 export const assembleDesktopProfile = async (
   options: DesktopProfileOptions,
 ): Promise<AssembledProfile<DesktopProfileServices>> => {
-  const profile = await loadPatchedProfile({ name: 'desktop', configDir: options.configDir });
+  const patched = await loadPatchedProfile({ name: 'desktop', configDir: options.configDir });
+  const profile = options.builtinToolsAvailable === false
+    ? withoutBuiltinTools(patched)
+    : patched;
   const catalog: PluginCatalog<DesktopProfileServices> = {
     '@xm/platform#localClock': (row) => plugin(row, (ctx) => ctx.provide('clock', options.clock)),
     '@xm/platform#localIds': (row) => plugin(row, (ctx) => ctx.provide('ids', options.ids)),
+    '@xm/tool-runtime#localExecutor': (row) =>
+      plugin(row, (ctx) => ctx.provide('executor', options.executor)),
     '@xm/runtime#turnDriver': (row) =>
       plugin(row, (ctx) => ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
     '@xm/kernel#policy': (row) => plugin(row, (ctx) => ctx.provide('policy', options.policy)),

@@ -49,7 +49,7 @@ export interface ModelProvider {
   capabilities(model: string): ModelCapabilities;
 
   /**
-   * 取消信号用 `AbortLike`（定义在 `tool/types.ts`），不是 `AbortSignal`：
+   * 取消信号用 `AbortLike`（定义在 `port/abort.ts`），不是 `AbortSignal`：
    * 后者来自 DOM lib 或 @types/node，把任一个引进内核都会削弱"零 I/O"的编译期保证。
    * 真实的 `AbortSignal` 结构上兼容，适配层直接传即可。
    *

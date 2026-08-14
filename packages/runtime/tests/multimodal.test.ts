@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ContentBlock, XmEventType } from '@xm/contracts';
@@ -54,6 +55,7 @@ describe('runTurn 的能力闸门：图片', () => {
       runTurn(
         {
           runtime: h.runtime,
+          executor: localExecutionWorld,
           // 默认 ScriptedProvider 的 capabilities.vision === false
           provider: new ScriptedProvider({ turns: [] }),
           tools: h.tools,
@@ -79,6 +81,7 @@ describe('runTurn 的能力闸门：图片', () => {
     const reason = await runTurn(
       {
         runtime: h.runtime,
+        executor: localExecutionWorld,
         provider: new ScriptedProvider({
           capabilities: { vision: true },
           turns: [
@@ -113,6 +116,7 @@ describe('runTurn 的能力闸门：图片', () => {
       runTurn(
         {
           runtime: h.runtime,
+          executor: localExecutionWorld,
           provider: new ScriptedProvider({ turns: [] }),
           tools: h.tools,
           layers: h.layers,

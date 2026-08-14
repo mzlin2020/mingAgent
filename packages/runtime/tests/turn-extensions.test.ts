@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { PersistedEvent } from '@xm/contracts';
@@ -90,6 +91,7 @@ const scenario = async (options: {
   await runTurn(
     {
       runtime,
+      executor: localExecutionWorld,
       provider,
       tools,
       layers: options.layers ?? [],

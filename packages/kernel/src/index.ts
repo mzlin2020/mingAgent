@@ -33,11 +33,13 @@ export * from './port/workspace-index.js';
 export * from './model/cost.js';
 
 export * from './port/event-store.js';
+export * from './port/execution-world.js';
 export * from './port/summary-projection.js';
 export * from './port/memory-event-store.js';
 export * from './port/event-store-contract.js';
 
 export * from './port/blob-store.js';
+export * from './port/abort.js';
 export * from './port/memory-blob-store.js';
 export * from './port/blob-store-contract.js';
 

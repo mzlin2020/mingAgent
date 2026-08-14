@@ -74,9 +74,6 @@ importers:
       '@xm/tool-runtime':
         specifier: workspace:*
         version: link:../../packages/tool-runtime
-      '@xm/tools-core':
-        specifier: workspace:*
-        version: link:../../packages/tools-core
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
@@ -132,6 +129,10 @@ importers:
       zustand:
         specifier: ^5.0.14
         version: 5.0.14(@types/react@19.2.18)(react@19.2.8)
+    optionalDependencies:
+      '@xm/tools-core':
+        specifier: workspace:*
+        version: link:../../packages/tools-core
 
   packages/compose:
     dependencies:
@@ -223,6 +224,9 @@ importers:
       '@xm/kernel':
         specifier: workspace:*
         version: link:../kernel
+      node-pty:
+        specifier: ^1.1.0
+        version: 1.1.0
     devDependencies:
       zod:
         specifier: 4.4.3
@@ -236,9 +240,6 @@ importers:
       '@xm/kernel':
         specifier: workspace:*
         version: link:../kernel
-      node-pty:
-        specifier: ^1.1.0
-        version: 1.1.0
       undici:
         specifier: 7.29.0
         version: 7.29.0

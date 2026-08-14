@@ -1,10 +1,8 @@
-import { mkdir, readFile, rm, mkdtemp } from 'node:fs/promises';
-import { join } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { OsFamily, RegisteredTool, ToolContext } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
-import { runCommand, shellChildEnv, type RunOutcome } from './shell-exec.js';
+import { runCommand, shellEnvironment, type RunOutcome } from './shell-exec.js';
 
 export const GIT_STATUS = 'git.status';
 export const GIT_DIFF = 'git.diff';
@@ -212,9 +210,9 @@ async function commit(
     if (scope.length === 0) return failure('empty_commit', input, ctx, '所列路径没有可提交改动。');
 
     // Trace2 的临时目录放应用自己的目录，不放用户仓库的 `.git/`（见 GitToolsOptions.tempDir）
-    await mkdir(options.tempDir, { recursive: true });
-    const traceDir = await mkdtemp(join(options.tempDir, 'xm-git-trace-'));
-    const tracePath = join(traceDir, 'trace.json');
+    await ctx.executor.fs.mkdir(options.tempDir);
+    const traceDir = await ctx.executor.fs.mkdtemp(ctx.executor.fs.path.join(options.tempDir, 'xm-git-trace-'));
+    const tracePath = ctx.executor.fs.path.join(traceDir, 'trace.json');
     try {
       const run = await runGit(input.argv, cwd, options, ctx, { GIT_TRACE2_EVENT: tracePath });
       if (run.code === 0) {
@@ -226,14 +224,14 @@ async function commit(
       }
       const commonCommit = commonFailure(run, input.argv, cwd);
       if (commonCommit?.kind === 'interrupted') return commonCommit;
-      const hook = await failedHook(tracePath);
+      const hook = await failedHook(ctx, tracePath);
       return {
         ...(commonCommit ?? failure('command_failed', input, ctx, 'git commit 失败。')),
         ...(hook === undefined ? {} : { kind: 'hook_failed', hook }),
         scope,
       };
     } finally {
-      await rm(traceDir, { recursive: true, force: true });
+      await ctx.executor.fs.remove(traceDir, { recursive: true, force: true });
     }
   } finally {
     /*
@@ -310,12 +308,13 @@ async function runGit(
   if (ctx.signal.aborted) return interruptedOutcome();
   const [bin = '', ...args] = argv;
   return runCommand({
+    process: ctx.executor.process,
     bin, args, cwd, timeoutMs: 120_000, os: options.os, signal: ctx.signal,
+    ...shellEnvironment({
+      os: options.os,
+      ...(options.env === undefined ? {} : { env: options.env }),
+    }),
     env: {
-      ...shellChildEnv({
-        os: options.os,
-        ...(options.env === undefined ? {} : { env: options.env }),
-      }),
       GIT_TERMINAL_PROMPT: '0',
       GIT_OPTIONAL_LOCKS: '0',
       /*
@@ -361,9 +360,9 @@ const failure = (
   ok: false, kind, argv: input.argv, cwd: input.cwd ?? ctx.cwd, message, stdout: '', stderr: '',
 });
 
-async function failedHook(path: string): Promise<string | undefined> {
+async function failedHook(ctx: ToolContext, path: string): Promise<string | undefined> {
   let text: string;
-  try { text = await readFile(path, 'utf8'); } catch { return undefined; }
+  try { text = new TextDecoder().decode(await ctx.executor.fs.read(path)); } catch { return undefined; }
   const hooks = new Map<number, string>();
   for (const line of text.split(/\r?\n/u)) {
     if (line === '') continue;
@@ -383,5 +382,8 @@ async function failedHook(path: string): Promise<string | undefined> {
 const sameArgv = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((value, index) => value === right[index]);
 
-const interruptedOutcome = (): RunOutcome => ({ stdout: '', stderr: '', code: undefined, signal: undefined, timedOut: false, interrupted: true, clipped: false });
+const interruptedOutcome = (): RunOutcome => ({
+  stdout: '', stderr: '', code: undefined, signal: undefined, timedOut: false,
+  interrupted: true, clipped: false, stoppedByConsumer: false,
+});
 const jsonResult = (value: unknown): ToolProgress => ({ kind: 'result', forModel: [{ type: 'text', text: JSON.stringify(value) }] });

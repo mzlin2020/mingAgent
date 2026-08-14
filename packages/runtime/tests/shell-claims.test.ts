@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { realpath as realpathCb } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -59,6 +60,7 @@ async function harness(userRules: PolicyRuleSet = []) {
     await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         tools,
         layers: composeRules({ env: ENV, user: userRules }),
         model: 'scripted-1',

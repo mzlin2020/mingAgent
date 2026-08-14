@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { Capability, PersistedEvent } from '@xm/contracts';
@@ -111,6 +112,7 @@ async function harness(extra?: ReturnType<typeof spyTool>) {
 
   const deps = {
     runtime,
+    executor: localExecutionWorld,
     tools,
     layers: builtinLayers(ENV),
     model: 'scripted-1',

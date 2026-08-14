@@ -1,5 +1,3 @@
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { RegisteredTool } from '@xm/kernel';
@@ -47,8 +45,8 @@ export const fsReadTool = (): RegisteredTool =>
     resources: (input) => [{ kind: 'path', mode: 'read', glob: input.path }],
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
-      const info = await stat(input.path);
-      if (info.isDirectory()) {
+      const info = await ctx.executor.fs.stat(input.path);
+      if (info.directory) {
         yield text(`${input.path} 是一个目录，不是文件。用 fs.list 列出它的内容。`);
         return;
       }
@@ -56,7 +54,7 @@ export const fsReadTool = (): RegisteredTool =>
       const from = input.offset ?? 1;
       const upto = input.limit === undefined ? Infinity : from + input.limit - 1;
 
-      const outcome = await readLines(input.path, from, upto, ctx.signal.aborted);
+      const outcome = await readLines(ctx.executor.fs, input.path, from, upto, ctx.signal.aborted);
       if (outcome.binary) {
         yield text(
           `${input.path} 看起来是二进制文件（前几千字节里有空字节），` +
@@ -91,6 +89,7 @@ interface ReadOutcome {
 }
 
 async function readLines(
+  fs: import('@xm/kernel').ExecutionFileSystem,
   path: string,
   from: number,
   upto: number,
@@ -105,10 +104,10 @@ async function readLines(
   let binary = false;
   let stoppedEarly = false;
 
-  const stream = createReadStream(path, { encoding: 'utf8', highWaterMark: 64 * 1024 });
+  const decoder = new TextDecoder('utf-8');
 
-  for await (const chunk of stream) {
-    const piece = chunk as string;
+  for await (const chunk of fs.readChunks(path, 64 * 1024)) {
+    const piece = decoder.decode(chunk, { stream: true });
     // 空字节是二进制最可靠的信号。只看开头几块——整份扫一遍等于把文件读完，
     // 而"读完才发现不该读"正是这个函数要避免的事
     if (bytes < 8192 && piece.includes('\0')) {
@@ -132,7 +131,7 @@ async function readLines(
       break;
     }
   }
-  stream.destroy();
+  pending += decoder.decode();
 
   if (!binary && pending !== '') {
     scanned += 1;

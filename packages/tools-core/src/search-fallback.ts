@@ -1,7 +1,4 @@
-import { createReadStream } from 'node:fs';
-import { readdir, stat } from 'node:fs/promises';
-import { relative, resolve, sep } from 'node:path';
-import type { AbortLike } from '@xm/kernel';
+import type { AbortLike, ExecutionFileSystem } from '@xm/kernel';
 
 /**
  * `search.text` 在宿主没有 ripgrep 时的纯 Node 退路（ADR-0051）。
@@ -68,7 +65,10 @@ export interface FallbackSearchOutcome {
   readonly patternError?: string;
 }
 
-export async function nodeTextSearch(input: FallbackSearchInput): Promise<FallbackSearchOutcome> {
+export async function nodeTextSearch(
+  input: FallbackSearchInput,
+  fs: ExecutionFileSystem,
+): Promise<FallbackSearchOutcome> {
   let pattern: RegExp;
   try {
     pattern = new RegExp(input.pattern, smartCaseFlags(input.pattern, input.caseSensitive));
@@ -84,14 +84,14 @@ export async function nodeTextSearch(input: FallbackSearchInput): Promise<Fallba
 
   const globs = input.globs.map(compileGlob);
   const state: MutableOutcome = { lines: [], matches: 0, limited: false, interrupted: false };
-  for await (const file of walk(input.path, input.signal)) {
+  for await (const file of walk(fs, input.path, input.signal)) {
     if (input.signal.aborted) {
       state.interrupted = true;
       break;
     }
     if (state.limited) break;
-    if (!matchesGlobs(relativeTo(input.path, file), globs)) continue;
-    await scanFile(file, pattern, input, state);
+    if (!matchesGlobs(relativeTo(fs, input.path, file), globs)) continue;
+    await scanFile(fs, file, pattern, input, state);
   }
   return state;
 }
@@ -113,18 +113,18 @@ function smartCaseFlags(pattern: string, caseSensitive: boolean | undefined): st
   return /[A-Z]/u.test(pattern) ? 'u' : 'iu';
 }
 
-async function* walk(root: string, signal: AbortLike): AsyncIterable<string> {
+async function* walk(fs: ExecutionFileSystem, root: string, signal: AbortLike): AsyncIterable<string> {
   let info;
   try {
-    info = await stat(root);
+    info = await fs.stat(root);
   } catch {
     return;
   }
-  if (info.isFile()) {
+  if (info.file) {
     yield root;
     return;
   }
-  if (!info.isDirectory()) return;
+  if (!info.directory) return;
 
   const pending = [root];
   while (pending.length > 0) {
@@ -133,7 +133,7 @@ async function* walk(root: string, signal: AbortLike): AsyncIterable<string> {
     if (directory === undefined) continue;
     let children;
     try {
-      children = await readdir(directory, { withFileTypes: true });
+      children = [...await fs.list(directory)];
     } catch {
       // 读不了的目录跳过而不是整体失败：一个没权限的子目录不该让整次搜索作废
       continue;
@@ -141,12 +141,12 @@ async function* walk(root: string, signal: AbortLike): AsyncIterable<string> {
     children.sort((a, b) => a.name.localeCompare(b.name));
     for (const child of children) {
       if (child.name.startsWith('.')) continue;
-      const absolute = resolve(directory, child.name);
+      const absolute = fs.path.resolve(directory, child.name);
       // 不跟随符号链接：否则一个指回上层的链接就能让遍历打转
-      if (child.isSymbolicLink()) continue;
-      if (child.isDirectory()) {
+      if (child.symbolicLink) continue;
+      if (child.directory) {
         if (!SKIP_DIRECTORIES.has(child.name)) pending.push(absolute);
-      } else if (child.isFile()) {
+      } else if (child.file) {
         yield absolute;
       }
     }
@@ -154,6 +154,7 @@ async function* walk(root: string, signal: AbortLike): AsyncIterable<string> {
 }
 
 async function scanFile(
+  fs: ExecutionFileSystem,
   file: string,
   pattern: RegExp,
   input: FallbackSearchInput,
@@ -161,17 +162,17 @@ async function scanFile(
 ): Promise<void> {
   let info;
   try {
-    info = await stat(file);
+    info = await fs.stat(file);
   } catch {
     return;
   }
   if (info.size > MAX_FILE_BYTES) return;
 
-  const text = await readTextFile(file);
+  const text = await readTextFile(fs, file);
   if (text === undefined) return;
 
   const lines = text.split('\n');
-  const shown = displayPath(input.cwd, file);
+  const shown = displayPath(fs, input.cwd, file);
   /** 行号 → column。匹配行给真实列号，上下文行给 0，不伪装成匹配（与 ripgrep 路径同一约定） */
   const selected = new Map<number, number>();
 
@@ -205,12 +206,11 @@ async function scanFile(
 }
 
 /** 读成文本；二进制（含 NUL）或解码失败一律跳过，与 ripgrep 的二进制处理一致。 */
-async function readTextFile(file: string): Promise<string | undefined> {
-  const chunks: Buffer[] = [];
+async function readTextFile(fs: ExecutionFileSystem, file: string): Promise<string | undefined> {
+  const chunks: Uint8Array[] = [];
   let probed = false;
   try {
-    for await (const chunk of createReadStream(file)) {
-      const buffer = chunk as Buffer;
+    for await (const buffer of fs.readChunks(file)) {
       if (!probed) {
         probed = true;
         if (buffer.subarray(0, BINARY_PROBE_BYTES).includes(0)) return undefined;
@@ -221,7 +221,14 @@ async function readTextFile(file: string): Promise<string | undefined> {
     return undefined;
   }
   try {
-    return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks));
+    const size = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+    const joined = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder('utf-8', { fatal: true }).decode(joined);
   } catch {
     return undefined;
   }
@@ -279,13 +286,13 @@ function matchesGlobs(relativePath: string, globs: readonly CompiledGlob[]): boo
   return included && !globs.filter((glob) => glob.negated).some(test);
 }
 
-const relativeTo = (root: string, file: string): string => {
-  const rel = relative(root, file);
-  return (rel === '' ? file : rel).split(sep).join('/');
+const relativeTo = (fs: ExecutionFileSystem, root: string, file: string): string => {
+  const rel = fs.path.relative(root, file);
+  return (rel === '' ? file : rel).replaceAll('\\', '/');
 };
 
-const displayPath = (cwd: string, path: string): string => {
-  const shown = relative(cwd, path);
+const displayPath = (fs: ExecutionFileSystem, cwd: string, path: string): string => {
+  const shown = fs.path.relative(cwd, path);
   return (shown === '' || shown.startsWith('..') ? path : shown).replaceAll('\\', '/');
 };
 

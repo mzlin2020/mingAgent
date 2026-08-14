@@ -8,3 +8,4 @@
 export * from './gateway.js';
 export * from './checkpoint.js';
 export * from './checkpoint-restore.js';
+export * from './executor-local.js';

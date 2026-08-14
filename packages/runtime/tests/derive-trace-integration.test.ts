@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ModelChunk } from '@xm/contracts';
 import { isCoreEvent, newCallId, newSessionId } from '@xm/contracts';
@@ -76,6 +77,7 @@ describe('deriveTraces 反映一次真实 runTurn 的执行路径', () => {
     const reason = await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         provider,
         tools,
         layers,

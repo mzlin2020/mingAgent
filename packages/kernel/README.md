@@ -21,6 +21,7 @@
 | `port/memory-blob-store.ts` `port/blob-store-contract.ts` | 同上的参考实现与一致性用例 |
 | `port/platform.ts` | 平台端口 + `XmPaths` + `xmDataLayout()`（ADR-0014） |
 | `port/model-provider.ts` | 模型提供商端口（docs/04 §4.1 的实现级版本） |
+| `port/execution-world.ts` | M3-e 执行世界接缝：fs / process / pty 定义与稳定能力描述 |
 | `container/` | M3-a 最小插件容器：服务、插件、效果、四种类型化派发与两级扁平作用域 |
 | `container/services.ts` | `ctx.clock` / `ctx.ids` 契约与确定性测试提供者（ADR-0066） |
 

@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { realpath as realpathCb } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,6 +61,7 @@ async function harness(userRules: PolicyRuleSet = []) {
     await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         tools,
         layers: composeRules({ env: ENV, user: userRules }),
         model: 'scripted-1',
@@ -147,6 +149,7 @@ describe('🔴 私钥读不出来', () => {
     await runTurn(
       {
         runtime,
+        executor: localExecutionWorld,
         tools,
         layers: composeRules({ env: ENV }),
         model: 'scripted-1',

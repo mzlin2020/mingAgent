@@ -1,4 +1,3 @@
-import { relative } from 'node:path';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { AbortLike, RegisteredTool, ToolContext, WorkspaceIndex, WorkspaceIndexState } from '@xm/kernel';
@@ -110,7 +109,7 @@ function queryScope(
   readonly query: { readonly root: string; readonly query: string; readonly limit: number; readonly pathPrefix?: string };
 } {
   const root = ctx.cwd;
-  const prefix = relativePrefix(root, input.path);
+  const prefix = relativePrefix(ctx.executor.fs, root, input.path);
   return {
     state: stateOf(options.index, root),
     query: {
@@ -123,8 +122,12 @@ function queryScope(
 }
 
 /** `path` 落在工作区之外（或就是工作区本身）时不加前缀，由 fallback 去处理范围。 */
-function relativePrefix(root: string, path: string): string | undefined {
-  const rel = relative(root, path).split('\\').join('/');
+function relativePrefix(
+  fs: import('@xm/kernel').ExecutionFileSystem,
+  root: string,
+  path: string,
+): string | undefined {
+  const rel = fs.path.relative(root, path).split('\\').join('/');
   if (rel === '' || rel.startsWith('..') || rel.includes(':')) return undefined;
   return rel;
 }
@@ -136,7 +139,9 @@ async function* fallback(
   state: WorkspaceIndexState,
 ): AsyncIterable<ToolProgress> {
   const tool = textSearchTool(
-    options.executable === undefined ? {} : { executable: options.executable },
+    options.executable === undefined
+      ? { os: options.os }
+      : { os: options.os, executable: options.executable },
   );
   for await (const progress of tool.execute(
     {

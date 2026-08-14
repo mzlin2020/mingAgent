@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import type { Capability, PersistedEvent } from '@xm/contracts';
@@ -138,6 +139,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
     await runTurn(
       {
         runtime: h.runtime,
+        executor: localExecutionWorld,
         provider,
         tools: h.tools,
         layers: builtinLayers(ENV),
@@ -166,6 +168,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
     const layers = builtinLayers(ENV);
     const deps = {
       runtime: h.runtime,
+      executor: localExecutionWorld,
       tools: h.tools,
       layers,
       model: 'scripted-1',
@@ -211,6 +214,7 @@ describe('读过网页之后再要求 push（docs/06 §9 验收项）', () => {
     await runTurn(
       {
         runtime: h.runtime,
+        executor: localExecutionWorld,
         provider: new ScriptedProvider({
           turns: [
             { chunks: callChunks('git.push', '{"remote":"origin"}') },

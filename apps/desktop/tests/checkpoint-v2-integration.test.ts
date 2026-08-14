@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,7 +39,7 @@ describe('Checkpoint v2 重启集成', () => {
       {
         sessionId,
         cwd: join(root, 'workspace'),
-        executor: 'local',
+        executor: localExecutionWorld,
         signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
       },
       [{ capability: 'fs.write', target }],

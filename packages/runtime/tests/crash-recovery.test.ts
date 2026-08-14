@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { newCallId, newMessageId, newSessionId, newTurnId } from '@xm/contracts';
 import { MemoryEventStore, ToolRegistry, builtinLayers, emptySessionState, reduce } from '@xm/kernel';
@@ -259,6 +260,7 @@ describe('崩溃恢复：scanForOrphanedSessions / abandonOrphanedTurn / resumeT
     const reason = await resumeTurn(
       {
         runtime: revived,
+        executor: localExecutionWorld,
         provider: new ScriptedProvider({ turns: [{ chunks: [{ kind: 'stop', reason: 'end_turn' }] }] }),
         tools: new ToolRegistry(),
         layers: builtinLayers(ENV),

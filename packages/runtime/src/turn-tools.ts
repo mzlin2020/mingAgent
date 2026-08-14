@@ -114,7 +114,7 @@ async function prepareCall(
     callId: call.callId,
     signal: deps.signal ?? NEVER_TURN_ABORTS,
     cwd: deps.runtime.state.cwd,
-    executor: 'local',
+    executor: deps.executor,
   };
   let claims = claimsOfCapabilities(tool.descriptor.capabilities, '');
   if (deps.gateway !== undefined) {
@@ -165,6 +165,7 @@ function evaluateClaims(
     const verdict = evaluate({
       request: requestOf(deps, call, tool, claim),
       layers: deps.layers,
+      executor: deps.executor.kind,
       ...(deps.pathCaseInsensitive === undefined
         ? {}
         : { pathCaseInsensitive: deps.pathCaseInsensitive }),

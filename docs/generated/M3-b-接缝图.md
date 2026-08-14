@@ -16,11 +16,12 @@
 | `desktop` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `desktop` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `desktop` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `desktop` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `desktop` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `desktop` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `desktop` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `desktop` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
-| `desktop` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer` | — |
+| `desktop` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `desktop` | 业务 | `surface.desktop` | `@xm/desktop#desktopSurface` | `runtime`<br>`tools` | `surface` |
 | `headless` | 特权基线 | `baseline.clock` | `@xm/platform#localClock` | — | `clock` |
 | `headless` | 特权基线 | `baseline.ids` | `@xm/platform#localIds` | — | `ids` |
@@ -32,11 +33,12 @@
 | `headless` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `headless` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `headless` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `headless` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `headless` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `headless` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `headless` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `headless` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
-| `headless` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer` | — |
+| `headless` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `headless` | 业务 | `surface.headless` | `@xm/compose#headlessSurface` | `runtime`<br>`tools` | `surface` |
 | `cli` | 特权基线 | `baseline.clock` | `@xm/platform#localClock` | — | `clock` |
 | `cli` | 特权基线 | `baseline.ids` | `@xm/platform#localIds` | — | `ids` |
@@ -48,11 +50,12 @@
 | `cli` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `cli` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `cli` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `cli` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `cli` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `cli` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `cli` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `cli` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
-| `cli` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer` | — |
+| `cli` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `cli` | 业务 | `surface.cli` | `@xm/compose#cliSurface` | `runtime`<br>`tools` | `surface` |
 | `test` | 特权基线 | `baseline.clock` | `@xm/kernel#deterministicClock` | — | `clock` |
 | `test` | 特权基线 | `baseline.ids` | `@xm/kernel#deterministicIds` | — | `ids` |
@@ -64,11 +67,12 @@
 | `test` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `test` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `test` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `test` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `test` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `test` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `test` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `test` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
-| `test` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer` | — |
+| `test` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `test` | 业务 | `surface.test` | `@xm/compose#testSurface` | `runtime`<br>`tools` | `surface` |
 
 ## 固定边界

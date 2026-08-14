@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import { redact, type PersistedEvent } from '@xm/contracts';
 import type {
@@ -6,6 +7,7 @@ import type {
   ClockService,
   ContainerPlugin,
   IdService,
+  ExecutionWorld,
   RuleLayer,
   SecretStore,
   ToolGateway,
@@ -47,6 +49,7 @@ interface RuntimeFactory {
 interface Services {
   clock: ClockService;
   ids: IdService;
+  executor: ExecutionWorld;
   turnExtensions: TurnExtensionHost;
   policy: readonly RuleLayer[];
   gateway: ToolGateway;
@@ -72,6 +75,8 @@ const plugin = (
 const catalogFor = (clock: ClockService, ids: IdService): PluginCatalog<Services> => ({
   '@xm/kernel#deterministicClock': (row) => plugin(row, (ctx) => ctx.provide('clock', clock)),
   '@xm/kernel#deterministicIds': (row) => plugin(row, (ctx) => ctx.provide('ids', ids)),
+  '@xm/tool-runtime#localExecutor': (row) =>
+    plugin(row, (ctx) => ctx.provide('executor', localExecutionWorld)),
   '@xm/runtime#turnDriver': (row) =>
     plugin(row, (ctx) => ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
   '@xm/kernel#policy': (row) => plugin(row, (ctx) => ctx.provide('policy', [])),
@@ -162,6 +167,7 @@ const runScenario = async (composed: boolean): Promise<string> => {
   await runTurn(
     {
       runtime,
+      executor: localExecutionWorld,
       provider,
       tools,
       layers: [],

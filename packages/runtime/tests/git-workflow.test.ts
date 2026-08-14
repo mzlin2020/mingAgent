@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { execFileSync } from 'node:child_process';
 import { realpath as realpathCb } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -43,6 +44,7 @@ describe('M2-f Git 生产分发链路', () => {
     };
     const deps = {
       runtime,
+      executor: localExecutionWorld,
       tools,
       layers: composeRules({ env }),
       model: 'scripted-git',

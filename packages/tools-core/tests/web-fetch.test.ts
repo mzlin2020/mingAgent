@@ -1,3 +1,4 @@
+import { localExecutionWorld } from '@xm/tool-runtime';
 import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -61,7 +62,7 @@ const ctx = (pinned?: { address: string; family: 4 | 6 }): ToolContext => ({
   sessionId: newSessionId(),
   signal: { aborted: false, addEventListener: () => undefined, removeEventListener: () => undefined },
   cwd: '/',
-  executor: 'local',
+  executor: localExecutionWorld,
   ...(pinned === undefined
     ? {}
     : { pinnedHosts: new Map([[HOSTNAME, pinned]]) }),

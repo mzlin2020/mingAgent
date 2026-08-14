@@ -68,6 +68,12 @@ const baselineRows = (deterministic: boolean): readonly ProfileRow[] => [
 
 const businessRows = (surface: BuiltinProfileName): readonly ProfileRow[] => [
   {
+    id: 'runtime.executor',
+    plugin: '@xm/tool-runtime#localExecutor',
+    inject: [],
+    provide: ['executor'],
+  },
+  {
     id: 'runtime.multimodal',
     plugin: '@xm/runtime#multimodalGuard',
     inject: ['turnExtensions'],
@@ -94,7 +100,7 @@ const businessRows = (surface: BuiltinProfileName): readonly ProfileRow[] => [
   {
     id: 'tools.builtin',
     plugin: '@xm/tools-core#builtinTools',
-    inject: ['runtime', 'tools', 'gateway', 'checkpointer'],
+    inject: ['runtime', 'tools', 'gateway', 'checkpointer', 'executor'],
     provide: [],
   },
   {
@@ -121,6 +127,15 @@ export const builtinProfile = (name: BuiltinProfileName): Profile => ({
 export const baselineOnlyProfile = (name: BuiltinProfileName): Profile => ({
   name,
   rows: cloneRows(baselineRows(name === 'test')),
+});
+
+/**
+ * 保留完整运行时与表面，只移除可选的内建工具包。
+ * 用于发行裁剪和 `tools-core` 物理缺席时的空工具世界。
+ */
+export const withoutBuiltinTools = (profile: Profile): Profile => ({
+  name: profile.name,
+  rows: cloneRows(profile.rows.filter((row) => row.id !== 'tools.builtin')),
 });
 
 export const isBuiltinProfileName = (name: string): name is BuiltinProfileName =>
