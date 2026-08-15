@@ -1,13 +1,14 @@
 import type { AbortLike } from '../tool/types.js';
 import { DispatchAbortedError, EventDefinitionError } from './errors.js';
+import { mergeAbort } from './signal.js';
 import type {
   AnyEventPoint,
   EmitEvent,
   EventMode,
   ParallelEvent,
   SerialEvent,
+  WaterfallCore,
   WaterfallEvent,
-  WaterfallNext,
 } from './types.js';
 
 type UnknownListener = (...args: unknown[]) => unknown;
@@ -147,18 +148,31 @@ export class ContainerEvents {
     event: AnyEventPoint,
     signal: AbortLike,
     args: unknown[],
-    inner: WaterfallNext<R>,
+    inner: WaterfallCore<R>,
   ): Promise<R> {
     this.#assertDispatchMode(event, 'waterfall');
     const listeners = [...this.#visible(scope, event.name)];
-    const next = async (): Promise<R> => {
+    const disposers: (() => void)[] = [];
+    // 每一层递进来的 signal 都并进来，绝不替换掉已有的——收紧是结构性的（ADR-0062 §二.2）。
+    let current = signal;
+    const next = async (narrower?: AbortLike): Promise<R> => {
+      if (narrower !== undefined && narrower !== current) {
+        const merged = mergeAbort(current, narrower);
+        current = merged.signal;
+        disposers.push(merged.dispose);
+      }
+      const effective = current;
       const listener = listeners.shift();
-      if (listener === undefined) return abortable(event.name, signal, inner);
-      return abortable(event.name, signal, () =>
-        listener(signal, ...args, next) as R | Promise<R>,
+      if (listener === undefined) return abortable(event.name, effective, () => inner(effective));
+      return abortable(event.name, effective, () =>
+        listener(effective, ...args, next) as R | Promise<R>,
       );
     };
-    return next();
+    try {
+      return await next();
+    } finally {
+      for (const dispose of disposers) dispose();
+    }
   }
 
   #visible(scope: EventScope, name: string): readonly UnknownListener[] {

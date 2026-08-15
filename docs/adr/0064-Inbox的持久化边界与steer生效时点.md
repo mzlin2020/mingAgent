@@ -60,6 +60,28 @@
 
 内存里的那个队列因此只是一个**待送达指针**，不是真相的持有者。它丢了不影响正确性。
 
+> **2026-08-15 补记（M3-d 复审）：注入的投影不能破坏消息形状。**
+>
+> "按 seq 折进消息历史"这句话漏了一个约束：注入可以发生在**回合进行中**——
+> 子 Agent 回传就是这条路（ADR-0056 §四，desktop 的 explore 已经这样接线）。此刻消息历史
+> 末尾往往已经是一条 user 消息（上一步的 tool_result 桶），照字面新起一条就会得到
+> `assistant(tool_use) → user(注入) → user(tool_result)`：两条相邻 user 消息，且
+> `tool_result` 不再紧跟发起它的 assistant 消息。**Provider 两条都不接受（400）。**
+>
+> 这个缺陷有一个很坏的性质：`ScriptedProvider` 不校验消息形状，**全套测试与 headless
+> 冒烟都是绿的**，只有真实 Provider 才会红——正好是本仓库最该警惕的那种"绿色的勾撒谎"。
+>
+> 定案，两条一起才成立：
+> 1. `context.injected` 的投影在末尾已是 user 消息时**并进那一条**，不新起（`appendInjectedMessage`）；
+> 2. `tool_result` 插在那条 user 消息里**已有 tool_result 之后、其它内容之前**，
+>    既保住并行调用的相对顺序，也保住"`tool_result` 必须打头"这条 Provider 契约。
+>
+> `turn.start` 刻意不走第 1 条：回合切片（ADR-0048）按 `turn.start` 时的消息条数记录起点，
+> 合并会把切片起点算错。
+>
+> 反向演练：回合中注入一次、连续注入两次，两种情形下消息角色都必须严格交替，
+> 且发给 Provider 的那一份也交替（`packages/runtime/tests/agent-inbox.test.ts`）。
+
 ### 二、未认领的 `followup` / `steer` 不落库，崩溃即丢失
 
 明确写下这条语义，不留给读者猜：
@@ -68,6 +90,13 @@
 |---|---|
 | 已调用 `followup()` / `steer()`，尚未被认领 | **易失**。进程崩溃即丢失 |
 | 已被认领，进入某个回合 | 持久——认领的那一刻随 `turn.start` 的 `input` 落库 |
+
+> **2026-08-15 补记（M3-d 复审）：点停止 = 中止当前步骤 **且** 丢掉未认领的排队输入。**
+>
+> 初版的 `Agent.interrupt()` 只 abort 了在跑的那一步，队列原样留着。表现是：用户排了两条、
+> 点了停止，那两条静静躺在队列里；下一次发消息时它们被一起认领发出去——用户会认为
+> "我明明停过了"。未认领输入本来就是 at-most-once，停止是它最正当的一个丢弃时机。
+> 反向演练见 `packages/runtime/tests/agent-inbox.test.ts`。
 
 这是 **at-most-once**，且与今天的行为一致：现在用户在 `sendUserMessage()` 之前打的字
 本来也只在渲染层的输入框里。把"排队中"的消息落库会让一条从未生效的消息永久留在

@@ -72,12 +72,13 @@ M3-b 已迁移到 `ctx.clock` / `ctx.ids`，清单为零。profile 接缝图用 
 
 ```
 Surfaces (apps/desktop, 未来 apps/cli)
+   ↓ 组合根 @xm/compose      profile 解析 · patch 合并 · 基线断言 · 容器装配
    ↓ Session API（事件流订阅 + 命令下发）
-Runtime  @xm/runtime      装配层：事件总线 · 唯一 seq 分配点 · Turn 循环 · 崩溃恢复
+Runtime  @xm/runtime      装配层：事件总线 · 唯一 seq 分配点 · Turn 驱动器 + 命名扩展点 · 崩溃恢复
    ↓ Ports（纯接口，全部定义在 kernel/src/port/）
-Kernel   @xm/kernel       纯逻辑 · 零 I/O · 零 node:* · 能在浏览器里跑
+Kernel   @xm/kernel       纯逻辑 · 零 I/O · 零 node:* · 能在浏览器里跑（含插件容器 container/）
    ↑ Adapters 实现 Ports
-platform · storage · providers · tools-core
+platform · storage · providers · tool-runtime · tools-core
 ```
 
 **内核不知道任何适配器的存在。** 这条由 `.dependency-cruiser.cjs` 的 20 条规则强制，

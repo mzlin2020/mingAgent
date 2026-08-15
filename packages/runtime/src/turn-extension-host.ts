@@ -134,9 +134,14 @@ export class TurnExtensionHost {
     return this.#ctx.waterfall(TOOL_PRE_EXECUTE, signalOf(input), input, core);
   }
 
+  /**
+   * ⑧ 的核心收到的是**这条链上已经收紧过的** signal：环绕插件 `next(更短的signal)` 递进来的
+   * 每一个都与原始 signal 取并集（ADR-0055 硬约束 3）。驱动器必须把它交给工具体，
+   * 否则"只许替换 signal"这条允许项在代码里根本不存在。
+   */
   execute(
     input: ToolExecuteInput,
-    core: () => Promise<ToolExecutionResult>,
+    core: (signal: AbortLike) => Promise<ToolExecutionResult>,
   ): Promise<ToolExecutionResult> {
     return this.#ctx.waterfall(TOOL_EXECUTE, signalOf(input), input, core);
   }

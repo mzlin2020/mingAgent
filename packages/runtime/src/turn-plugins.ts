@@ -23,6 +23,9 @@ export const installContextBuilder = (host: TurnExtensionHost): (() => unknown) 
   host.onPreStep(async (_signal, input, next): Promise<TurnPreStepResult> => {
     const downstream = await next();
     if (input.kind !== 'request') return downstream;
+    // ADR-0055：包装 next() 的监听器有责任保留下游的修改。下游已经产出请求就用它的，
+    // ContextBuilder 只负责“没人产出时兜底产出一份”——否则 patch 插到本行之后的插件会被静默吞掉。
+    if (downstream.kind === 'request') return downstream;
     return { kind: 'request', request: await new ContextBuilder(input.deps).build(input.turnId) };
   });
 

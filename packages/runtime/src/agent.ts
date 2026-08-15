@@ -60,6 +60,12 @@ export class AgentInbox {
   snapshot(): readonly PendingInboxItem[] {
     return [...this.#steers, ...this.#followups];
   }
+
+  /** 用户点停止时清空易失队列，见 Agent.interrupt()。 */
+  clear(): void {
+    this.#steers.length = 0;
+    this.#followups.length = 0;
+  }
 }
 
 export class Agent {
@@ -113,7 +119,15 @@ export class Agent {
     // 刻意不调用 #activate：inject 只改变下一次已被唤醒请求的历史，不唤醒空闲 Agent。
   }
 
+  /**
+   * 停止 = 中止在跑的那一步 **且** 丢掉还没被认领的排队输入。
+   *
+   * 只 abort 不清队列会留下一个用户看得见的怪事：点了停止，队列里那两条消息还躺着，
+   * 下一次发消息时它们被一起认领发出去——用户会认为"我明明停过了"。ADR-0064 已经把未认领
+   * 输入定成易失（at-most-once），停止是它最正当的一个丢弃时机。
+   */
   interrupt(): boolean {
+    this.#inbox.clear();
     if (this.#controller === undefined) return false;
     this.#controller.abort();
     return true;

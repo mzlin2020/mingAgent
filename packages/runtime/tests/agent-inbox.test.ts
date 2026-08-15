@@ -191,6 +191,113 @@ describe('M3-d Agent 句柄与 Inbox', () => {
     await runtime.close();
   });
 
+  /*
+   * 回合进行中的注入是**产品默认路径**：子 Agent 的结论就是这样回传父会话的（ADR-0056 §四，
+   * desktop 的 explore 已经这样接线）。它必须不破坏发给 Provider 的消息形状——
+   * 角色严格交替、`tool_result` 打头，两条都由真实 Provider 强制，而 ScriptedProvider 不查。
+   */
+  it('工具执行途中注入：消息角色仍严格交替，tool_result 仍打头', async () => {
+    const { runtime, ids } = await setup();
+    const tools = new ToolRegistry();
+    const agent = new Agent({ runtime, drive: () => Promise.resolve('end_turn') });
+    tools.register(
+      defineTool({
+        name: 'test.spawn',
+        group: 'test',
+        description: '执行途中往父会话注入结论',
+        inputSchema: z.strictObject({}),
+        risk: 'safe',
+        capabilities: ['env.read'],
+        async *execute() {
+          await agent.inject({
+            content: [{ type: 'text', text: '子 Agent 结论' }],
+            source: { kind: 'subagent', agentId: ids.agent() },
+          });
+          yield { kind: 'result', forModel: [{ type: 'text', text: '已注入' }] };
+        },
+      }),
+    );
+    const callId: CallId = ids.call();
+    const provider = new ScriptedProvider({
+      turns: [
+        {
+          chunks: [
+            { kind: 'tool_call_start', id: callId, name: 'test.spawn' },
+            { kind: 'tool_call_delta', id: callId, argsJson: '{}' },
+            { kind: 'tool_call_end', id: callId },
+            { kind: 'stop', reason: 'tool_use' },
+          ],
+        },
+        { chunks: [{ kind: 'stop', reason: 'end_turn' }] },
+      ],
+    });
+    await runTurn(
+      { runtime, executor: localExecutionWorld, provider, tools, layers: [], model: 'scripted-1' },
+      textInput('派生一个子 Agent'),
+    );
+
+    const roles = runtime.state.messages.map((message) => message.role);
+    expect(roles.every((role, index) => index === 0 || role !== roles[index - 1])).toBe(true);
+    // 注入内容并进了那一步的 user 消息，而不是自己另起一条把 tool_result 挤走
+    const bucket = runtime.state.messages.find((message) =>
+      message.blocks.some((block) => block.type === 'tool_result'),
+    );
+    expect(bucket?.blocks[0]?.type).toBe('tool_result');
+    expect(textOf(bucket?.blocks ?? [])).toBe('子 Agent 结论');
+    // 真正发给 Provider 的那一份也必须是交替的
+    const sent = provider.requests.at(-1)?.messages.map((message) => message.role) ?? [];
+    expect(sent.every((role, index) => index === 0 || role !== sent[index - 1])).toBe(true);
+    await runtime.close();
+  });
+
+  it('连续两次注入并进同一条 user 消息，不产生相邻同角色消息', async () => {
+    const { runtime, ids } = await setup();
+    const agent = new Agent({ runtime, drive: () => Promise.resolve('end_turn') });
+    await agent.inject({
+      content: [{ type: 'text', text: 'CI 通过' }],
+      source: { kind: 'job', jobId: 'ci-1' },
+    });
+    await agent.inject({
+      content: [{ type: 'text', text: '部署完成' }],
+      source: { kind: 'subagent', agentId: ids.agent() },
+    });
+    expect(runtime.state.messages.map((message) => message.role)).toEqual(['user']);
+    expect(textOf(runtime.state.messages[0]?.blocks ?? [])).toBe('CI 通过|部署完成');
+    await runtime.close();
+  });
+
+  it('点停止同时丢掉未认领的排队输入，下一条消息不会把它们一起带出去', async () => {
+    const { runtime } = await setup();
+    const seen: string[] = [];
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const agent = new Agent({
+      runtime,
+      drive: async (input, context) => {
+        seen.push(textOf(input));
+        await gate;
+        return context.signal.aborted ? 'aborted' : 'end_turn';
+      },
+    });
+    const first = agent.followup(textInput('A'));
+    agent.followup(textInput('B'));
+    agent.steer(textInput('S'));
+    expect(agent.pending()).toHaveLength(2);
+
+    expect(agent.interrupt()).toBe(true);
+    expect(agent.pending()).toEqual([]);
+    release?.();
+    await first.completion;
+
+    const second = agent.followup(textInput('C'));
+    release?.();
+    await second.completion;
+    expect(seen).toEqual(['A', 'C']);
+    await runtime.close();
+  });
+
   it('带 net.fetch 来源的注入把污点粘性并入回放状态', async () => {
     const { runtime, ids } = await setup();
     const agent = new Agent({ runtime, drive: () => Promise.resolve('end_turn') });

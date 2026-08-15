@@ -40,7 +40,7 @@ async function driveTurnLoop(
     // 驱动器的停止条件全部来自 turn/stopping 插件或取消信号。
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
     while (true) {
-      if (deps.signal?.aborted === true) {
+      if (isAborted(deps)) {
         reason = 'aborted';
         break;
       }
@@ -58,6 +58,10 @@ async function driveTurnLoop(
           attempt: iteration,
         });
         if (decision === 'retry') continue;
+      }
+      if (isAborted(deps)) {
+        reason = 'aborted';
+        break;
       }
       const afterStream = await requireStopping(extensions, {
         deps,
@@ -77,6 +81,19 @@ async function driveTurnLoop(
       if (afterStream.action === 'continue') continue;
       for (const call of streamed.calls) await dispatchCall(deps, extensions, turnId, call);
 
+      /*
+       * 取消要在派发扩展点**之前**兑现成 'aborted'。
+       *
+       * 扩展点派发对已 abort 的 signal 一律抛 DispatchAbortedError（ADR-0062 §二.2），
+       * 而用户点停止最常见的时机恰恰是"工具正跑着"——此时若直接进 turn/stopping，
+       * runTurn 会以异常收场而不是干净地返回 'aborted'，桌面那边表现为
+       * sendUserMessage 报错 + Agent 循环里一条未处理的 rejection。
+       * 停止是驱动器的固有责任（ADR-0055 §四），不能指望插件替它兜。
+       */
+      if (isAborted(deps)) {
+        reason = 'aborted';
+        break;
+      }
       const afterTools = await requireStopping(extensions, {
         deps,
         turnId,
@@ -98,6 +115,12 @@ async function driveTurnLoop(
   }
   return reason;
 }
+
+/*
+ * 走一次函数调用是刻意的：`aborted` 会在 await 之间被异步改写，而 TS 的控制流分析
+ * 会把循环顶部那次检查的结果一路窄化下去，导致后面两处守卫被判成"不可能成立"。
+ */
+const isAborted = (deps: TurnDeps): boolean => deps.signal?.aborted === true;
 
 async function requireStopping(
   extensions: TurnExtensionHost,

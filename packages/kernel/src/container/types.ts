@@ -31,7 +31,16 @@ export type SerialListener<A extends unknown[], R> = (
   signal: AbortLike,
   ...args: A
 ) => R | false | null | undefined | Promise<R | false | null | undefined>;
-export type WaterfallNext<R> = () => R | Promise<R>;
+/**
+ * 环绕中间件手里的 `next`。
+ *
+ * 可选参数 `narrower` 是 ADR-0055 硬约束 3 允许的那一件事：为这一次调用套一个**更短**的
+ * 截止时间。派发方把它与当前生效的 signal 取并集后交给后续监听器与最内层核心，
+ * 因此它只能收紧——延长或摘掉在结构上做不到。
+ */
+export type WaterfallNext<R> = (narrower?: AbortLike) => Promise<R>;
+/** 最内层核心：由派发方提供，收到的是这条链上已经收紧过的 signal。 */
+export type WaterfallCore<R> = (signal: AbortLike) => R | Promise<R>;
 export type WaterfallListener<A extends unknown[], R> = (
   signal: AbortLike,
   ...args: [...A, WaterfallNext<R>]
@@ -89,7 +98,7 @@ export interface ContainerContextApi<S extends object> {
   waterfall<A extends unknown[], R>(
     event: WaterfallEvent<A, R>,
     signal: AbortLike,
-    ...args: [...A, WaterfallNext<R>]
+    ...args: [...A, WaterfallCore<R>]
   ): Promise<R>;
 }
 

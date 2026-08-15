@@ -1,10 +1,11 @@
 import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ModelChunk, ModelRequest, XmEventType } from '@xm/contracts';
-import { isCoreEvent, newSessionId } from '@xm/contracts';
+import { isCoreEvent, newCallId, newSessionId } from '@xm/contracts';
 import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
-import { MemoryEventStore, ToolRegistry, builtinLayers, emptySessionState, reduce } from '@xm/kernel';
-import { EventBus, SessionRuntime, runTurn, textInput } from '@xm/runtime';
+import { MemoryEventStore, ToolRegistry, builtinLayers, defineTool, emptySessionState, reduce } from '@xm/kernel';
+import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
+import { z } from 'zod';
 
 /**
  * 停止按钮的端到端验证 —— 闭合 ADR-0021 留下的「没人发 message.interrupted」。
@@ -186,5 +187,76 @@ describe('停止按钮', () => {
     const r = await runAndInterrupt(0);
     expect(r.reason).toBe('aborted');
     expect(r.types.at(-1)).toBe('turn.end');
+  });
+
+  /**
+   * 用户点停止最常见的时机是"工具正跑着"，而这条路径在 M3-c 之前根本没有用例
+   * ——上面三条全部在模型流式输出阶段 abort。
+   *
+   * M3-c 之后，扩展点派发对已 abort 的 signal 一律抛（ADR-0062 §二.2），于是工具执行完
+   * 紧接着的 `turn/stopping` 会把整个 `runTurn` 掀成异常，而不是干净地返回 'aborted'。
+   * 桌面那边表现为 sendUserMessage 报错 + Agent 循环里一条未处理的 rejection。
+   */
+  it('🔴 工具执行途中点停止：干净返回 aborted，不是把 runTurn 掀成异常', async () => {
+    const store = new MemoryEventStore();
+    const sessionId = newSessionId();
+    const runtime = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });
+    await runtime.record({
+      type: 'session.created',
+      payload: { cwd: '/w', modelRef: 'scripted/scripted-1' },
+    });
+    const controller = new AbortController();
+    let ran = false;
+    const tools = new ToolRegistry();
+    tools.register(
+      defineTool({
+        name: 'test.stopped-midway',
+        group: 'test',
+        description: '执行途中被停止',
+        inputSchema: z.strictObject({}),
+        risk: 'safe',
+        capabilities: ['env.read'],
+        async *execute() {
+          ran = true;
+          controller.abort();
+          await Promise.resolve();
+          yield { kind: 'result' as const, forModel: [{ type: 'text' as const, text: 'done' }] };
+        },
+      }),
+    );
+    const callId = newCallId();
+    const provider = new ScriptedProvider({
+      turns: [
+        {
+          chunks: [
+            { kind: 'tool_call_start', id: callId, name: 'test.stopped-midway' },
+            { kind: 'tool_call_delta', id: callId, argsJson: '{}' },
+            { kind: 'tool_call_end', id: callId },
+            { kind: 'stop', reason: 'tool_use' },
+          ] satisfies ModelChunk[],
+        },
+        { chunks: [{ kind: 'stop', reason: 'end_turn' }] satisfies ModelChunk[] },
+      ],
+    });
+    const reason = await runTurn(
+      {
+        runtime,
+        executor: localExecutionWorld,
+        provider,
+        tools,
+        layers: builtinLayers(ENV),
+        model: 'scripted-1',
+        signal: controller.signal,
+      },
+      textInput('跑一下'),
+    );
+    expect({ ran, reason }).toEqual({ ran: true, reason: 'aborted' });
+
+    // 中断照旧只留一对成对的回合事件，没有孤儿
+    const types: XmEventType[] = [];
+    for await (const e of store.read(sessionId)) types.push(e.type);
+    expect(types.filter((type) => type === 'turn.start')).toHaveLength(1);
+    expect(types.at(-1)).toBe('turn.end');
+    await runtime.close();
   });
 });

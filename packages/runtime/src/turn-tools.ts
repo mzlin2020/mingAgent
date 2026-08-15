@@ -244,8 +244,8 @@ async function executeCall(
   const input = { deps, turnId, call, ...prepared };
   let result: ToolExecutionResult;
   try {
-    result = await extensions.execute(input, () =>
-      executeToolBody(deps, turnId, call, prepared, startedAt),
+    result = await extensions.execute(input, (signal) =>
+      executeToolBody(deps, turnId, call, prepared, startedAt, signal),
     );
     result = await extensions.postExecute({ ...input, result });
   } catch (error) {
@@ -262,7 +262,7 @@ async function executeCall(
     return;
   }
 
-  if (!isExecutionReceipt(result.receipt)) {
+  if (!isExecutionReceipt(result.receipt, call.callId, prepared.tool.descriptor.name)) {
     await failCall(
       deps,
       turnId,
@@ -293,7 +293,14 @@ async function executeToolBody(
   call: PendingCall,
   prepared: PreparedCall,
   startedAt: number,
+  signal: AbortLike,
 ): Promise<ToolExecutionResult> {
+  /*
+   * ⑧ 唯一被允许改的东西在这里落地：环绕插件收紧过的 signal 换进 ToolContext。
+   * 其余字段一律沿用 prepareCall 的产物——尤其 `input`，它在 ④ 之后就冻结了，
+   * 换掉它等于重开判定与执行之间的 TOCTOU 窗口（ADR-0018）。
+   */
+  const ctx = signal === prepared.ctx.signal ? prepared.ctx : Object.freeze({ ...prepared.ctx, signal });
   await deps.runtime.record({
     type: 'tool.start',
     turnId,
@@ -314,7 +321,7 @@ async function executeToolBody(
   let forModel: ResultBlock[] = [];
   let error: ReturnType<typeof xmError> | undefined;
   try {
-    for await (const progress of prepared.tool.execute(prepared.input, prepared.ctx)) {
+    for await (const progress of prepared.tool.execute(prepared.input, ctx)) {
       if (progress.kind === 'progress') {
         await deps.runtime.record({
           type: 'tool.progress',

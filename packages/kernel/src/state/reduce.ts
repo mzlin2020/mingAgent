@@ -4,7 +4,7 @@ import type { SessionState } from './session-state.js';
 import { compactionOf } from './context-compaction.js';
 import { taintOf } from './taint.js';
 import { appendToolResult } from './tool-result.js';
-import { appendInputMessage } from './input-message.js';
+import { appendInjectedMessage, appendInputMessage } from './input-message.js';
 
 /**
  * 事件 → 状态的归约。**纯函数**：不读时间、不取随机数、不碰文件系统。
@@ -232,7 +232,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     case 'context.injected':
       return {
         ...state,
-        messages: appendInputMessage(state.messages, e.id as unknown as MessageId, e.payload.content, e.ts),
+        messages: appendInjectedMessage(state.messages, e.id as unknown as MessageId, e.payload.content, e.ts),
         untrustedContext: state.untrustedContext ?? e.payload.untrustedContext,
         lastSeq: e.seq,
       };
