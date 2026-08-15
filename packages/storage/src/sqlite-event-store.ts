@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Database as Db, Statement } from 'better-sqlite3';
 import type { PersistedEvent, SessionId } from '@xm/contracts';
-import { isCoreEvent, isPersistedEvent, parseStoredEvent } from '@xm/contracts';
+import { isPersistedEvent, parseStoredEvent } from '@xm/contracts';
 import type {
   EventStore,
   ReadOptions,
@@ -108,6 +108,8 @@ export class SqliteEventStore implements EventStore {
   readonly #open = new Set<SessionId>();
   /** 库的身份。内存库彼此独立，所以各给一个唯一值而不是共用 `:memory:` 这个字符串 */
   readonly #dbKey: string;
+  /** 类型过滤读的分页语句，按占位符个数缓存，见 `#typedPage()` */
+  readonly #typedPages = new Map<number, Statement>();
   #closed = false;
 
   constructor(options: SqliteEventStoreOptions) {
@@ -147,6 +149,23 @@ export class SqliteEventStore implements EventStore {
       this.#db.close();
       throw e;
     }
+  }
+
+  /**
+   * 带类型过滤的分页语句。占位符个数随类型个数变，所以只能按个数缓存，不能预编译一条。
+   * 缓存的键是"几个占位符"而不是"哪些类型"——同样两个类型的查询共用同一条编译结果。
+   */
+  #typedPage(count: number): Statement {
+    const cached = this.#typedPages.get(count);
+    if (cached !== undefined) return cached;
+    const placeholders = Array.from({ length: count }, () => '?').join(', ');
+    const prepared = this.#db.prepare(`
+      SELECT * FROM events
+      WHERE session_id = ? AND seq >= ? AND seq <= ? AND type IN (${placeholders})
+      ORDER BY seq LIMIT ?
+    `);
+    this.#typedPages.set(count, prepared);
+    return prepared;
   }
 
   #prepareStatements(): Statements {
@@ -213,8 +232,15 @@ export class SqliteEventStore implements EventStore {
     const to = options?.toSeq ?? Number.MAX_SAFE_INTEGER;
     let from = options?.fromSeq ?? 1;
 
+    const types = options?.types;
+    // 空清单是"什么都不要"，不是"不过滤"。`IN ()` 在 SQL 里根本不合法，
+    // 让它退回全量读会把一次精确的空查询变成一次全表扫描。
+    if (types?.length === 0) return;
+    const page = types === undefined ? this.#st.selectPage : this.#typedPage(types.length);
+    const filter = types ?? [];
+
     for (;;) {
-      const rows = this.#st.selectPage.all(sessionId, from, to, READ_PAGE) as EventRow[];
+      const rows = page.all(sessionId, from, to, ...filter, READ_PAGE) as EventRow[];
       for (const row of rows) yield toEvent(row);
       if (rows.length < READ_PAGE) return;
       const last = rows[rows.length - 1];
@@ -497,7 +523,7 @@ function toEvent(row: EventRow): PersistedEvent {
     ...(row.turn_id === null ? {} : { turnId: row.turn_id }),
   });
 
-  if (!isCoreEvent(parsed) || !isPersistedEvent(parsed)) {
+  if (!isPersistedEvent(parsed)) {
     throw new Error(
       `库里的事件 "${row.type}"（seq=${String(row.seq)}）不是持久化事件。` +
         `它本就不该被写进来——这条记录只可能是绕过 sealEvent() 产生的（不变量二、六）。`,

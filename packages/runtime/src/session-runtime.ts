@@ -11,11 +11,13 @@ import type {
   ClockService,
   EventStore,
   IdService,
+  InvariantRegistry,
   ReadOptions,
   SessionState,
   SessionWriter,
 } from '@xm/kernel';
 import {
+  InvariantError,
   createDeterministicClock,
   createDeterministicIds,
   deserializeSessionState,
@@ -60,6 +62,8 @@ export class SessionRuntime {
   readonly sessionId: SessionId;
   readonly clock: ClockService;
   readonly ids: IdService;
+  /** 运行时不变量注册表；没装就是没有这道自省闸门（ADR-0060） */
+  readonly #invariants: InvariantRegistry | undefined;
 
   #state: SessionState;
   #closed = false;
@@ -82,6 +86,7 @@ export class SessionRuntime {
     clock: ClockService,
     ids: IdService,
     lastSnapshotSeq: number,
+    invariants: InvariantRegistry | undefined,
   ) {
     this.sessionId = sessionId;
     this.#store = store;
@@ -91,6 +96,7 @@ export class SessionRuntime {
     this.clock = clock;
     this.ids = ids;
     this.#lastSnapshotSeq = lastSnapshotSeq;
+    this.#invariants = invariants;
   }
 
   /**
@@ -106,6 +112,7 @@ export class SessionRuntime {
     readonly bus: EventBus;
     readonly clock?: ClockService;
     readonly ids?: IdService;
+    readonly invariants?: InvariantRegistry;
   }): Promise<SessionRuntime> {
     const { sessionId, store, bus } = options;
     const writer = await store.openForWrite(sessionId);
@@ -124,6 +131,7 @@ export class SessionRuntime {
       options.clock ?? fallbackClock,
       options.ids ?? fallbackIds,
       snapshot?.seq ?? 0,
+      options.invariants,
     );
   }
 
@@ -203,10 +211,22 @@ export class SessionRuntime {
       await this.#writer.append([sealEvent(event as XmEvent as PersistedEvent)]);
     }
 
+    const before = this.#state;
     this.#state = reduce(this.#state, event);
     this.#bus.publish(event);
 
     if (persisted) await this.#maybeSnapshot();
+
+    /*
+     * 运行时不变量（ADR-0060）。**排在广播之后**：事件已经落库、已经发出去了，
+     * 这一步是"报告"不是"回滚"——不变量讲的是事件流上的关系，而那条关系已经成立或
+     * 已经破了，把事件收回去只会让日志与状态对不上。抛出让调用方当场知道，
+     * 而不是等三个月后有人发现某条规则从来没生效过。
+     *
+     * 没装注册表（生产 profile 可以不装）时这一步完全不存在，零开销。
+     */
+    const violations = this.#invariants?.check({ event, before, after: this.#state }) ?? [];
+    if (violations.length > 0) throw new InvariantError(violations);
 
     return event;
   }

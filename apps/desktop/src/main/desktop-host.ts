@@ -12,9 +12,11 @@ import type {
   ContentBlock,
   SessionId,
   ToolCardPair,
+  XmEvent,
 } from '@xm/contracts';
-import { Config as ConfigSchema, isCoreEvent } from '@xm/contracts';
+import { Config as ConfigSchema } from '@xm/contracts';
 import type {
+  ExtRecordSummary,
   OrphanedTurn,
   ExecutionWorld,
   PlatformPort,
@@ -31,6 +33,7 @@ import {
   projectSessionCards,
   readBlob as readBlobBytes,
   serializeSessionState,
+  summarizeExtRecords,
 } from '@xm/kernel';
 import type { ConfigProblem } from '@xm/platform';
 import {
@@ -224,10 +227,18 @@ export interface Services {
   close(): Promise<void>;
 }
 
-/** `readSession` 的返回形状：序列化状态 + 按 `callId` 索引的全量卡片 */
+/** `readSession` 的返回形状：序列化状态 + 按 `callId` 索引的全量卡片 + 插件记录汇总 */
 export type ReadSessionPayload = SerializedSessionState & {
   readonly cards: readonly (readonly [CallId, ToolCardPair])[];
+  readonly extRecords: readonly ExtRecordSummary[];
 };
+
+/**
+ * 当前装着的插件。**插件宿主还没落地（M4），所以它现在恒为空集**——
+ * 于是库里出现的任何插件记录都会如实标成"来自未安装的扩展"。
+ * 这不是占位符：在没有宿主的今天，那句话本来就是对的。
+ */
+const INSTALLED_PLUGIN_IDS: ReadonlySet<string> = new Set<string>();
 
 export async function startServices(): Promise<Services> {
   /*
@@ -798,9 +809,17 @@ export async function startServices(): Promise<Services> {
      */
     async readSession(sessionId: SessionId): Promise<ReadSessionPayload> {
       const runtime = await runtimeFor(sessionId);
+      /*
+       * 插件记录走一次按类型过滤的读，而不是往 `SessionState` 里加字段（ADR-0057 §三）。
+       * 代价是打开会话多一次带条件的查询；换来的是"删掉插件仍能 reduce 历史会话"
+       * 这件事在类型上就是显然的——核心状态里根本没有插件的位置。
+       */
+      const extEvents: XmEvent[] = [];
+      for await (const e of runtime.read({ types: ['ext.persisted'] })) extEvents.push(e);
       return {
         ...serializeSessionState(runtime.state),
         cards: [...projectSessionCards(runtime.state, tools).entries()],
+        extRecords: summarizeExtRecords(extEvents, INSTALLED_PLUGIN_IDS),
       };
     },
 
@@ -852,7 +871,6 @@ export async function startServices(): Promise<Services> {
     },
 
     cardForEvent(event) {
-      if (!isCoreEvent(event)) return undefined;
       if (event.type !== 'tool.start' && event.type !== 'tool.end') return undefined;
       const state = runtimes.get(event.sessionId)?.state;
       if (state === undefined) return undefined;

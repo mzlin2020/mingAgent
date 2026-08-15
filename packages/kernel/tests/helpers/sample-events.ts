@@ -3,6 +3,7 @@ import {
   ALL_EVENT_TYPES,
   EMPTY_USAGE,
   XmEvent as XmEventSchema,
+  isPersistedType,
   newAgentId,
   newCallId,
   newCheckpointId,
@@ -190,6 +191,19 @@ export function sampleEvents(): XmEvent[] {
         fatal: false,
       },
     },
+    /*
+     * 插件事件（ADR-0057）。`ghost` 是一个**没装着**的插件——这正是最该被样本覆盖的
+     * 情形：持久化包含性、reduce 恒等、快照往返三件事都必须在"没人能解释这条记录"
+     * 的前提下成立。
+     */
+    {
+      type: 'ext.persisted',
+      payload: { pluginId: 'ghost', name: 'commit.created', version: 1, data: { sha: 'abc' } },
+    },
+    {
+      type: 'ext.transient',
+      payload: { pluginId: 'ghost', name: 'index.progress', version: 1, data: { done: 3 } },
+    },
     { type: 'turn.end', payload: { turnId, reason: 'end_turn' } },
   ];
 
@@ -203,14 +217,14 @@ export function sampleEvents(): XmEvent[] {
     XmEventSchema.parse({
       id: newEventId(),
       sessionId,
-      // 瞬态事件不占 seq 空间（见 kernel/state/reduce.ts）
-      seq:
-        r.type === 'message.delta' ||
-        r.type === 'provider.status' ||
-        r.type === 'tool.progress' ||
-        r.type === 'shell.session.output'
-          ? Math.max(seq, 1)
-          : ++seq,
+      /*
+       * 瞬态事件不占 seq 空间（见 kernel/state/reduce.ts）。
+       *
+       * 判据取自注册表的 `durability` 标注，**不是**手写一份瞬态类型名单：
+       * 名单会漏——它当初就漏掉了新加的 `ext.transient`，而漏掉的表现是
+       * "持久化包含性测试红了"，不是"少测了一种事件"。边界不会漏。
+       */
+      seq: isPersistedType(r.type) ? ++seq : Math.max(seq, 1),
       ts: 1_754_300_000_000 + seq,
       turnId,
       type: r.type,

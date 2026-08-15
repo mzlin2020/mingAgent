@@ -7,6 +7,7 @@ import {
 } from './errors.js';
 import { ContainerEvents } from './events.js';
 import { EffectOwner } from './lifecycle.js';
+import { ServiceScope } from './scope.js';
 import type {
   AnyEventPoint,
   ContainerContext,
@@ -20,49 +21,18 @@ import type {
   WaterfallNext,
 } from './types.js';
 
-interface ServiceEntry {
-  readonly value: unknown;
-  readonly owner: EffectOwner;
-}
-
-class ServiceScope extends EffectOwner {
-  readonly id: number;
-  readonly rootId: number;
-  readonly rootScope: ServiceScope;
-  readonly #services = new Map<string, ServiceEntry>();
-
-  constructor(id: number, root?: ServiceScope) {
-    super(root === undefined ? '根作用域' : `fork 作用域 #${String(id)}`);
-    this.id = id;
-    this.rootScope = root ?? this;
-    this.rootId = this.rootScope.id;
-  }
-
-  resolve(key: string): ServiceEntry | undefined {
-    return this.#services.get(key) ??
-      (this === this.rootScope ? undefined : this.rootScope.#services.get(key));
-  }
-
-  own(key: string): ServiceEntry | undefined {
-    return this.#services.get(key);
-  }
-
-  register(key: string, value: unknown, owner: EffectOwner): EffectDisposer {
-    this.assertActive();
-    if (this.#services.has(key)) {
-      throw new ServiceConflictError(key, `${this.label} 已有提供者`);
-    }
-    const entry = { value, owner };
-    this.#services.set(key, entry);
-    return () => {
-      if (this.#services.get(key) === entry) this.#services.delete(key);
-    };
-  }
-}
-
 interface ContainerRuntime {
   readonly events: ContainerEvents;
   createScope(root?: ServiceScope): ServiceScope;
+  /**
+   * 正在 `apply()` 的插件行，只用于自省归属（`mounts()`）。
+   *
+   * 为什么不能用 `ctx.pluginName`：扩展点的注册几乎都发生在**别人的 ctx** 上——
+   * `installStoppingGuard(ctx.turnExtensions)` 里那个 host 是 `baseline.turn-driver`
+   * 造的，于是所有监听器都会记成驱动器自己挂的。真正的答案是"装配到哪一行时挂上的"，
+   * 而那只有容器知道。
+   */
+  currentPlugin: string | undefined;
 }
 
 const CONTEXT_METHODS = new Set([
@@ -114,7 +84,14 @@ class ContextController<S extends object> {
       fork: () => this.#fork(),
       dispose: () => this.disposeContext(),
       on: (event: AnyEventPoint, listener: (...args: unknown[]) => unknown) =>
-        this.owner.effect(() => this.runtime.events.register(this.scope, event, listener)),
+        this.owner.effect(() =>
+          this.runtime.events.register(
+            this.scope,
+            event,
+            listener,
+            this.runtime.currentPlugin ?? this.pluginName,
+          ),
+        ),
       emit: (event: AnyEventPoint, ...args: unknown[]) => {
         this.runtime.events.emit(this.scope, event, args);
       },
@@ -224,6 +201,7 @@ export class PluginContainer<S extends object = Record<never, never>> {
     this.#runtime = {
       events: new ContainerEvents(),
       createScope: (root?: ServiceScope) => new ServiceScope(scopeCounter++, root),
+      currentPlugin: undefined,
     };
     this.#root = this.#runtime.createScope();
     this.context = new ContextController<S>(
@@ -238,6 +216,11 @@ export class PluginContainer<S extends object = Record<never, never>> {
 
   provide<K extends ServiceKey<S>>(key: K, value: S[K]): EffectDisposer {
     return this.context.provide(key, value);
+  }
+
+  /** 每个扩展点上当前挂着哪些插件行、按什么顺序（ADR-0052 对策二、ADR-0060 §二） */
+  mounts(): ReturnType<ContainerEvents['mounts']> {
+    return this.#runtime.events.mounts();
   }
 
   use(plugin: ContainerPlugin<S>): PluginHandle {
@@ -300,6 +283,8 @@ export class PluginContainer<S extends object = Record<never, never>> {
       provide,
       () => handle.dispose(),
     ).proxy();
+    const outer = this.#runtime.currentPlugin;
+    this.#runtime.currentPlugin = handle.name;
     try {
       const cleanup = await handle.plugin.apply(ctx);
       if (cleanup !== undefined) {
@@ -317,6 +302,8 @@ export class PluginContainer<S extends object = Record<never, never>> {
     } catch (error) {
       await handle.dispose();
       throw error;
+    } finally {
+      this.#runtime.currentPlugin = outer;
     }
   }
 

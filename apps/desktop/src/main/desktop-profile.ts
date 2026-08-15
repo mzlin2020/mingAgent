@@ -9,6 +9,7 @@ import {
 } from '@xm/compose';
 import type {
   Checkpointer,
+  InvariantRegistry,
   CheckpointRestorer,
   ClockService,
   ContainerPlugin,
@@ -23,6 +24,7 @@ import { ToolRegistry } from '@xm/kernel';
 import {
   SessionRuntime,
   TurnExtensionHost,
+  createInvariantRegistry,
   createTurnExtensionHost,
   installCheckpoint,
   installContextBuilder,
@@ -42,6 +44,7 @@ export interface DesktopProfileServices {
   readonly ids: IdService;
   readonly executor: ExecutionWorld;
   readonly turnExtensions: TurnExtensionHost;
+  readonly invariants: InvariantRegistry;
   readonly policy: readonly RuleLayer[];
   readonly gateway: ToolGateway;
   readonly checkpointer: Checkpointer;
@@ -90,6 +93,12 @@ export const assembleDesktopProfile = async (
     '@xm/platform#localIds': (row) => plugin(row, (ctx) => ctx.provide('ids', options.ids)),
     '@xm/tool-runtime#localExecutor': (row) =>
       plugin(row, (ctx) => ctx.provide('executor', options.executor)),
+    '@xm/runtime#invariants': (row) =>
+      plugin(row, (ctx) => {
+        const { registry, dispose } = createInvariantRegistry();
+        ctx.provide('invariants', registry);
+        return dispose;
+      }),
     '@xm/runtime#turnDriver': (row) =>
       plugin(row, (ctx) => ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
     '@xm/kernel#policy': (row) => plugin(row, (ctx) => ctx.provide('policy', options.policy)),
@@ -106,10 +115,16 @@ export const assembleDesktopProfile = async (
     '@xm/kernel#toolRegistry': (row) => plugin(row, (ctx) => ctx.provide('tools', options.tools)),
     '@xm/runtime#sessionRuntime': (row) =>
       plugin(row, (ctx) => ctx.provide('runtime', {
+        /*
+         * `invariants` 走 `has()` 而不是 inject：它是可关掉的一行（见 profiles.ts），
+         * 写进 inject 就等于"生产装配去掉自省"变成"生产装配起不来"。
+         * 这里是惰性求值——`open` 被调用时，全部行早就应用完了。
+         */
         open: (runtimeOptions) => SessionRuntime.open({
           ...runtimeOptions,
           clock: ctx.clock,
           ids: ctx.ids,
+          ...(ctx.has('invariants') ? { invariants: ctx.invariants } : {}),
         }),
       })),
     '@xm/runtime#multimodalGuard': (row) =>

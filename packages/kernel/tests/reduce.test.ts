@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import type { XmEvent } from '@xm/contracts';
 import {
   XmEvent as XmEventSchema,
-  isCoreEvent,
   newEventId,
   newSessionId,
   newTurnId,
@@ -19,7 +18,7 @@ const FIXTURE = fileURLToPath(
 const fixture = (): XmEvent[] =>
   (JSON.parse(readFileSync(FIXTURE, 'utf8')) as unknown[])
     .map((r) => parseStoredEvent(r))
-    .filter(isCoreEvent);
+
 
 describe('reduce：fixture 会话归约出的状态', () => {
   const events = fixture();

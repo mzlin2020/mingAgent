@@ -1,7 +1,7 @@
 import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, XmEvent } from '@xm/contracts';
-import { isCoreEvent, newSessionId } from '@xm/contracts';
+import { newSessionId } from '@xm/contracts';
 import type { LiveBuffer, SessionState } from '@xm/kernel';
 import {
   MemoryEventStore,
@@ -54,7 +54,6 @@ class Screen {
   }
 
   apply(e: AnyEvent): void {
-    if (!isCoreEvent(e)) return;
     const core: XmEvent = e;
     this.state = reduce(this.state, core);
     this.live = applyLive(this.live, core);

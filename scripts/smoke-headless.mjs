@@ -49,6 +49,7 @@ import {
   EventBus,
   ScriptedProvider,
   SessionRuntime,
+  createInvariantRegistry,
   createTurnExtensionHost,
   TODO_UPDATE,
   demoTargetOf,
@@ -103,6 +104,12 @@ try {
         profilePlugin(row, (ctx) => ctx.provide('clock', clock)),
       '@xm/platform#localIds': (row) =>
         profilePlugin(row, (ctx) => ctx.provide('ids', ids)),
+      '@xm/runtime#invariants': (row) =>
+        profilePlugin(row, (ctx) => {
+          const { registry, dispose } = createInvariantRegistry();
+          ctx.provide('invariants', registry);
+          return dispose;
+        }),
       '@xm/runtime#turnDriver': (row) =>
         profilePlugin(row, (ctx) =>
           ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
@@ -136,6 +143,7 @@ try {
             ...options,
             clock: ctx.clock,
             ids: ctx.ids,
+            ...(ctx.has('invariants') ? { invariants: ctx.invariants } : {}),
           }),
         })),
       '@xm/runtime#multimodalGuard': (row) =>
@@ -151,6 +159,17 @@ try {
         profilePlugin(row, (ctx) => ctx.provide('surface', { kind: 'headless' })),
     },
   });
+
+  /*
+   * 在容器还活着的时候把注册表与条数取出来：末尾那次断言发生在 `dispose()` 之后，
+   * 而卸载会**撤销**全部注册（M3-a 的效果模型），那时 `size` 本来就该是 0。
+   * `violations` 是本次运行的账本，不随卸载清空。
+   */
+  const invariants = composition.container.context.invariants;
+  const invariantCount = invariants.size;
+  if (invariantCount === 0) {
+    fail('不变量注册表是空的 —— 这道闸门装上了但一条断言都没有，等于没装');
+  }
 
   const bus = new EventBus();
   const seen = [];
@@ -1037,9 +1056,25 @@ try {
     fail('重开库回放出的消息里没有图片块 —— 多模态输入没有活过事件流的往返');
   }
 
+  /*
+   * 自省闸门（ADR-0060）：整趟冒烟跑完，一条不变量违例都不许有。
+   *
+   * 断言的是**清单**而不是"有没有抛出"：`executeCall` 会把工具执行里的任何异常
+   * 翻译成一条失败的 `tool.end`，于是一次真实的违例被抛出之后会安静地变成
+   * "某个工具失败了"。M3-g 的反向演练里就是这么被吞掉的。
+   */
+  if (invariants.violations.length > 0) {
+    fail(
+      `运行时不变量被破坏：${invariants.violations
+        .map((v) => `[${v.package}] ${v.invariant}（seq=${String(v.seq)}）`)
+        .join('；')}`,
+    );
+  }
+
   if (process.exitCode !== 1) {
     console.log(
-      `✓ headless 冒烟通过：${String(types.length)} 条持久事件、` +
+      `✓ headless 冒烟通过：${String(invariantCount)} 条运行时不变量零违例、` +
+      `${String(types.length)} 条持久事件、` +
         `${String(seen.length)} 条总线事件，回放状态一致；` +
         `主 DoD 任务跑通（fs.list → fs.read → fs.write ×2，零权限事件）；` +
         `M2-b 搜索→截断→会话内范围展开跑通；` +

@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { PERSISTED_EVENT_TYPES, isCoreEvent, parseStoredEvent } from '@xm/contracts';
+import { PERSISTED_EVENT_TYPES, parseStoredEvent } from '@xm/contracts';
 
 /**
  * Fixture 回归 —— docs/10 §12 验收项。
@@ -32,7 +32,7 @@ describe('历史事件 fixture 全部可解析', () => {
 
         // 持久化流的 seq 必须从 1 起、无空洞（docs/10 §4.1）
         const persistedSeqs = events
-          .filter((e) => isCoreEvent(e) && PERSISTED_EVENT_TYPES.includes(e.type))
+          .filter((e) => PERSISTED_EVENT_TYPES.includes(e.type))
           .map((e) => e.seq);
         expect(persistedSeqs).toEqual(persistedSeqs.map((_, i) => i + 1));
       });

@@ -162,6 +162,34 @@ export function NoticeBanner(): ReactNode {
 }
 
 /**
+ * 库里躺着一批插件写的记录，而写它的插件当前没装着（ADR-0057 §三）。
+ *
+ * ── 为什么要显示这个 ──
+ *
+ * `reduce()` 对插件事件恒等，所以这些记录不会出现在消息流里的任何位置。
+ * 而历史事件流是只增不改的，删掉别人的记录是更糟的选择——于是默认结果是
+ * **它们完全沉默地躺在库里**。用户那边看到的不是"有一批我读不懂的记录"，
+ * 是"我的东西没了"。这个横幅就是把沉默换成一句说明。
+ *
+ * 装着的插件不显示：它们的记录由插件自己的投影负责渲染，不归这里管。
+ */
+export function ExtRecordsBanner(): ReactNode {
+  const records = useUi((s) => s.extRecords).filter((r) => !r.installed);
+  if (records.length === 0) return null;
+
+  return (
+    <div className="rounded-card border border-border bg-surface-2 px-4 py-3 text-meta text-muted">
+      {records.map((r) => (
+        <p key={r.pluginId}>
+          这个会话里有 {r.count} 条来自未安装的扩展 <code>{r.pluginId}</code> 的记录
+          （{r.names.join('、')}）。它们仍在事件流里，只是当前没有能解释它们的扩展。
+        </p>
+      ))}
+    </div>
+  );
+}
+
+/**
  * 本会话读过外部内容（网页 / 终端回显 / 截屏），因此进入了不可信上下文（ADR-0019）。
  *
  * ── 为什么这个横幅必须存在（ADR-0039 之后它是唯一的人类介入点）──

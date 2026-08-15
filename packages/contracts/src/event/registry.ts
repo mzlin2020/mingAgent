@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { Durability } from './envelope.js';
+import { ExtEventPayload } from './ext.js';
 import * as P from './payloads.js';
 
 /**
@@ -116,6 +117,10 @@ export const EVENT_SPECS = {
   },
   'notice.posted': { schema: P.NoticePayload, durability: 'persisted', version: 1 },
   'error.raised': { schema: P.ErrorPayload, durability: 'persisted', version: 1 },
+
+  // ── 插件自定义事件（ADR-0057）── 此后不再为插件新增类型，见 event/ext.ts
+  'ext.persisted': { schema: ExtEventPayload, durability: 'persisted', version: 1 },
+  'ext.transient': { schema: ExtEventPayload, durability: 'transient', version: 1 },
 } as const satisfies Record<string, EventSpec>;
 
 export type XmEventType = keyof typeof EVENT_SPECS;
@@ -134,8 +139,7 @@ export type PersistedEventType = {
 
 export const ALL_EVENT_TYPES = Object.keys(EVENT_SPECS) as XmEventType[];
 
-export const isKnownEventType = (t: string): t is XmEventType =>
-  Object.hasOwn(EVENT_SPECS, t) && !t.startsWith(EXT_EVENT_PREFIX);
+export const isKnownEventType = (t: string): t is XmEventType => Object.hasOwn(EVENT_SPECS, t);
 
 export const durabilityOf = (t: XmEventType): Durability => EVENT_SPECS[t].durability;
 
@@ -149,13 +153,19 @@ export const TRANSIENT_EVENT_TYPES: readonly XmEventType[] = ALL_EVENT_TYPES.fil
 );
 
 /**
- * 插件自定义事件的前缀。
+ * 插件自定义事件的两个信封类型（ADR-0057）。
  *
- * 核心**不校验** `ext.*` 的 payload（由插件清单里声明的 schema 在插件宿主边界校验），
- * 核心的 reducer 一律忽略它们，只转发给订阅了该插件的渲染器。
+ * 核心**不解释** `data`（由插件注册的 schema 在写入边界校验），`reduce()` 对它们恒等——
+ * **核心状态永远不依赖扩展事件**，否则删掉插件就无法 reduce 历史会话，直接违反原则二。
  *
- * **核心状态永远不依赖扩展事件**——否则删掉插件就无法 reduce 历史会话，直接违反原则二。
+ * 注意这里是**两个具体类型**而不是一个前缀匹配：`ext.` 前缀只用于拼展示用的完整标识
+ * （`ext.<pluginId>.<name>`，见 `event/ext.ts`）。曾经有一个按前缀放行的 loose 分支，
+ * 它意味着任何 `ext.` 开头的 type 都能绕过 schema 校验落库——ADR-0057 的"失败关闭"
+ * 与那条分支不能共存。
  */
-export const EXT_EVENT_PREFIX = 'ext.';
+export const EXT_EVENT_TYPES = ['ext.persisted', 'ext.transient'] as const;
 
-export const isExtEventType = (t: string): boolean => t.startsWith(EXT_EVENT_PREFIX);
+export type ExtEventType = (typeof EXT_EVENT_TYPES)[number];
+
+export const isExtEventType = (t: string): t is ExtEventType =>
+  (EXT_EVENT_TYPES as readonly string[]).includes(t);

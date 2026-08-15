@@ -76,6 +76,9 @@ const created = (s: SessionId, title?: string): SealedEvent =>
 const notice = (s: SessionId, seq: number): SealedEvent =>
   mk(s, seq, 'notice.posted', { level: 'info', code: 'x', message: `#${String(seq)}` });
 
+const ext = (s: SessionId, seq: number, pluginId: string): SealedEvent =>
+  mk(s, seq, 'ext.persisted', { pluginId, name: 'sample', version: 1, data: { seq } });
+
 const drain = async (it: AsyncIterable<PersistedEvent>): Promise<PersistedEvent[]> => {
   const out: PersistedEvent[] = [];
   for await (const e of it) out.push(e);
@@ -145,6 +148,29 @@ export const EVENT_STORE_CONTRACT: readonly EventStoreCase[] = [
 
       const tail = await drain(store.read(s, { fromSeq: 3 }));
       assert(tail.map((e) => e.seq).join(',') === '3,4', '省略 toSeq 应读到末尾');
+    },
+  },
+
+  {
+    name: 'types 过滤只影响读回哪些，不影响顺序与 seq',
+    async run(makeStore) {
+      const store = makeStore();
+      const s = ids.session();
+      const w = await store.openForWrite(s);
+      await w.append([created(s), notice(s, 2), ext(s, 3, 'git'), notice(s, 4), ext(s, 5, 'mcp')]);
+
+      const onlyExt = await drain(store.read(s, { types: ['ext.persisted'] }));
+      assert(onlyExt.map((e) => e.seq).join(',') === '3,5', 'seq 应是原始 seq，不是重新编号的');
+      assert(onlyExt.every((e) => e.type === 'ext.persisted'), '不该混进别的类型');
+
+      const both = await drain(store.read(s, { types: ['ext.persisted', 'notice.posted'] }));
+      assert(both.map((e) => e.seq).join(',') === '2,3,4,5', '多类型过滤仍按 seq 升序');
+
+      const none = await drain(store.read(s, { types: [] }));
+      assert(none.length === 0, '空类型清单是"什么都不要"，不是"不过滤"');
+
+      const ranged = await drain(store.read(s, { fromSeq: 4, types: ['ext.persisted'] }));
+      assert(ranged.map((e) => e.seq).join(',') === '5', 'types 应与 fromSeq/toSeq 叠加而不是互斥');
     },
   },
 

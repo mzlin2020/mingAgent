@@ -41,9 +41,12 @@ export class MemoryEventStore implements EventStore {
   async *read(sessionId: SessionId, options?: ReadOptions): AsyncIterable<PersistedEvent> {
     const from = options?.fromSeq ?? 1;
     const to = options?.toSeq ?? Number.MAX_SAFE_INTEGER;
+    const types = options?.types;
     // 会话不存在 = 空序列，不抛（见端口注释）
     for (const e of this.#cells.get(sessionId)?.events ?? []) {
-      if (e.seq >= from && e.seq <= to) yield e;
+      if (e.seq < from || e.seq > to) continue;
+      if (types !== undefined && !types.includes(e.type)) continue;
+      yield e;
     }
   }
 

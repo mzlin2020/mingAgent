@@ -173,6 +173,23 @@ export const SerializedSessionStateResult = z.object({
  * 之后的增量由事件推送上的 `card` 字段补（见 `PushedEvent`）——两条路投影出来的
  * 是同一个纯函数的结果，不存在"实时看到的卡片"与"重开会话看到的卡片"不一致的可能。
  */
+/**
+ * 会话里出现过的插件记录，按 `pluginId` 汇总（ADR-0057 §三）。
+ *
+ * 它**不是**会话状态的一部分：`reduce()` 对插件事件恒等，一个字段都没为它们让步。
+ * 这份汇总来自一次按类型过滤的读，只为回答"库里躺着的这些记录是谁写的"——
+ * 没有它，一个未安装插件留下的历史在界面上就是彻底的沉默，而沉默等于"我的东西没了"。
+ */
+export const ExtRecordSummarySchema = z.strictObject({
+  pluginId: z.string(),
+  count: z.number().int().nonnegative(),
+  firstSeq: z.number().int().positive(),
+  lastSeq: z.number().int().positive(),
+  names: z.array(z.string()),
+  installed: z.boolean(),
+});
+
 export const ReadSessionResult = SerializedSessionStateResult.extend({
   cards: z.array(z.tuple([CallId, ToolCardPair])),
+  extRecords: z.array(ExtRecordSummarySchema),
 });

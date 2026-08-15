@@ -50,4 +50,10 @@ export * from './tool/present.js';
 
 export * from './trace/derive-trace.js';
 
+export * from './introspect/invariant.js';
+export * from './invariant.js';
+
+export * from './plugin/ext-event.js';
+export * from './plugin/ext-record.js';
+
 export * from './container/index.js';

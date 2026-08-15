@@ -14,15 +14,19 @@ TypeScript 单语言 monorepo（pnpm workspace）+ Electron 外壳 + React 渲�
 `docs/experience/m2/收官记录.md`）。**下一阶段是 M3「微内核化重构」**——2026-08-14 新增的里程碑，
 原 M3–M6 顺延为 M4–M7；规划见 `docs/11-微内核与插件容器.md` 与 `docs/M3-阶段划分.md`，
 决策见 ADR-0052 ~ 0068（其中 0062–0066 是 2026-08-14 规划复审的产物，
-复审结论见 `docs/11 §10`）。**M3-a～M3-f 已完成并通过全量门禁**：
+复审结论见 `docs/11 §10`）。**M3-a～M3-g 已完成并通过全量门禁**：
 `@xm/kernel/src/container/`、确定性 `clock` / `ids`、`@xm/compose` profile 装配和
 `@xm/tool-runtime` 已存在，desktop/headless 共用装配器；Turn 命名扩展点、工具十二步链、
 执行收据、Agent 句柄、持久注入与 `ctx.executor` local 执行世界已落地；业务工具整包零
 `node:*`，物理删除 `tools-core` 后仍能通过 typecheck 与空工具 headless 冒烟。
 M3-f 已落地四种卡片的纯函数投影、渲染器注册表与 `ui.cardAction` 动作通道，
 `main/edit-review.ts` 与渲染层的 diff 专用组件已物理删除。
+M3-g 已落地 `ext.persisted` / `ext.transient` 两个信封（未声明即拒绝、`reduce()` 恒等）、
+运行时不变量注册表（各包 `src/invariant.ts` 伴生模块 + `check:invariants`）与
+四张生成表进 `pnpm verify`。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
-M3-a～M3-f 证据见 `docs/experience/m3/`；下一段是 M3-g 扩展事件通道与自省闸门。
+M3-a～M3-g 证据见 `docs/experience/m3/`；下一段是 M3-h（Code Mode），
+但它**卡在 `docs/09` 的 H2 隔离机制定案上**——H2 没定就不开工。
 
 **ADR-0061（Code Mode）是 🟡 Proposed，不是 Accepted**——它承诺的隔离属性普通 Node worker
 给不了，机制待 `docs/09` 的 H2 定案。别照着它开工。
@@ -65,10 +69,12 @@ pnpm exec vitest run packages/providers/tests/live.test.ts
 测试工程，但仍检查其余包与 desktop main/renderer。
 
 单项闸门也可以单独跑：`pnpm depcruise`、`pnpm size`、`pnpm check:file-size`、
-`pnpm check:paths`、`pnpm check:workflows`、`pnpm toolchain`。
+`pnpm check:paths`、`pnpm check:workflows`、`pnpm toolchain`、`pnpm check:invariants`。
 M3 起新增 `pnpm check:determinism`：冻结 M0–M2 留下的时间/ID 直调，禁止数量继续增长；
 M3-b 已迁移到 `ctx.clock` / `ctx.ids`，清单为零。profile 接缝图用 `pnpm generate:seams` 更新，
-`pnpm verify` 会检查它是否漂移。
+另外四张自省表（事件生产消费、扩展点挂载、工具目录、配置目录）用 `pnpm generate:docs` 更新；
+`pnpm verify` 会检查它们是否漂移。M3-g 起还有 `pnpm check:invariants`：
+拒收缺伴生模块、无理由的空 installer、以及断言"某某存在"的伪不变量。
 
 ## 架构：依赖方向是唯一的硬约束
 

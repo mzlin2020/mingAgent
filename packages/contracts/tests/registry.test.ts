@@ -29,8 +29,9 @@ describe('事件注册表', () => {
    * 新增瞬态事件必须显式改这个断言 —— 因为每加一个瞬态事件，
    * "状态完全由持久化流决定"这条不变量的检验面就大一分（ADR-0008）。
    */
-  it('瞬态事件只有流式增量、Provider 状态、工具进度与终端输出', () => {
+  it('瞬态事件只有流式增量、Provider 状态、工具进度、终端输出与插件瞬态信封', () => {
     expect([...TRANSIENT_EVENT_TYPES].sort()).toEqual([
+      'ext.transient',
       'message.delta',
       'provider.status',
       'shell.session.output',
@@ -56,9 +57,17 @@ describe('事件注册表', () => {
     }
   });
 
-  it('ext.* 不属于核心事件类型', () => {
+  /**
+   * 插件事件是**闭集里的两个成员**，不是一个开放前缀（ADR-0057）。
+   * 这条用例盯的就是这个差别：`ext.foo.bar` 不是合法类型，它跟 `future.event`
+   * 走同一条"未知类型显式失败"的路。
+   */
+  it('插件事件只有两个信封类型，前缀不是通行证', () => {
+    expect(isKnownEventType('ext.persisted')).toBe(true);
+    expect(isKnownEventType('ext.transient')).toBe(true);
     expect(isKnownEventType('ext.foo.bar')).toBe(false);
-    expect(isExtEventType('ext.foo.bar')).toBe(true);
+    expect(isExtEventType('ext.persisted')).toBe(true);
+    expect(isExtEventType('ext.foo.bar')).toBe(false);
     expect(isExtEventType('notice.posted')).toBe(false);
   });
 });

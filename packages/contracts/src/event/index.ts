@@ -2,14 +2,9 @@ import { z } from 'zod';
 import type { EventId, SessionId, TurnId } from '../base/ids.js';
 import { newEventId } from '../base/ids.js';
 import { EventEnvelope } from './envelope.js';
+import { ExtEventPayload } from './ext.js';
 import * as P from './payloads.js';
-import {
-  EVENT_SPECS,
-  EXT_EVENT_PREFIX,
-  isExtEventType,
-  isKnownEventType,
-  isPersistedType,
-} from './registry.js';
+import { EVENT_SPECS, isExtEventType, isKnownEventType, isPersistedType } from './registry.js';
 import type { PersistedEventType, XmEventType } from './registry.js';
 
 /**
@@ -102,6 +97,9 @@ export const XmEvent = z.discriminatedUnion('type', [
   }),
   EventEnvelope.extend({ type: z.literal('notice.posted'), payload: P.NoticePayload }),
   EventEnvelope.extend({ type: z.literal('error.raised'), payload: P.ErrorPayload }),
+
+  EventEnvelope.extend({ type: z.literal('ext.persisted'), payload: ExtEventPayload }),
+  EventEnvelope.extend({ type: z.literal('ext.transient'), payload: ExtEventPayload }),
 ]);
 export type XmEvent = z.infer<typeof XmEvent>;
 
@@ -113,17 +111,19 @@ export type PersistedEvent = Extract<XmEvent, { type: PersistedEventType }>;
 
 export const isPersistedEvent = (e: XmEvent): e is PersistedEvent => isPersistedType(e.type);
 
-/** 插件自定义事件。核心不解释它的 payload。 */
-export const ExtEvent = EventEnvelope.extend({
-  type: z.string().startsWith(EXT_EVENT_PREFIX),
-  payload: z.unknown(),
-});
-export type ExtEvent = z.infer<typeof ExtEvent>;
+/**
+ * 事件总线上流动的一切。
+ *
+ * ADR-0057 之前这里是 `XmEvent | ExtEvent` 两种形状：后者按 `ext.` 前缀放行、payload
+ * 不校验。那条分支从 M0 起零生产者零消费者，而它一旦有了第一个真实写入者，就等于
+ * 给插件开了一条"任意形状直接落库"的路。两个静态信封进闭集之后，它没有存在的理由了。
+ */
+export type AnyEvent = XmEvent;
 
-/** 事件总线上流动的一切 */
-export type AnyEvent = XmEvent | ExtEvent;
+/** 插件自定义事件的两个信封。核心不解释它的 `data`。 */
+export type ExtEvent = Extract<XmEvent, { type: 'ext.persisted' | 'ext.transient' }>;
 
-export const isCoreEvent = (e: AnyEvent): e is XmEvent => isKnownEventType(e.type);
+export const isExtEvent = (e: XmEvent): e is ExtEvent => isExtEventType(e.type);
 
 /**
  * 读取路径：先按存储的 `v` 逐级升到当前版本，再全量校验。
@@ -133,10 +133,6 @@ export const isCoreEvent = (e: AnyEvent): e is XmEvent => isKnownEventType(e.typ
  */
 export function parseStoredEvent(row: unknown): AnyEvent {
   const shell = EventEnvelope.parse(row);
-
-  if (isExtEventType(shell.type)) {
-    return ExtEvent.parse(shell);
-  }
 
   if (!isKnownEventType(shell.type)) {
     throw new Error(
@@ -226,5 +222,6 @@ export function createEvent<T extends XmEventType>(input: {
 }
 
 export * from './envelope.js';
+export * from './ext.js';
 export * from './payloads.js';
 export * from './registry.js';

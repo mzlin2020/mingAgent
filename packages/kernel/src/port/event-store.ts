@@ -1,4 +1,4 @@
-import type { PersistedEvent, SessionId } from '@xm/contracts';
+import type { PersistedEvent, PersistedEventType, SessionId } from '@xm/contracts';
 import { XmEvent, isPersistedEvent, redact } from '@xm/contracts';
 import type { SerializedSessionState } from '../state/snapshot.js';
 
@@ -104,6 +104,15 @@ export interface ReadOptions {
   readonly fromSeq?: number;
   /** 结束 seq，**含**。默认读到末尾 */
   readonly toSeq?: number;
+  /**
+   * 只读这些类型，省略即全部。**顺序与 seq 连续性不因过滤而改变**：过滤掉的事件
+   * 不是"不存在"，只是这次不要——所以实现不得据此重排、去重或补洞。
+   *
+   * 加它是为了"一个几万条事件的会话里有没有插件事件"这类问题（ADR-0057）：
+   * 答案要么来自一次带条件的读，要么来自往 `SessionState` 里塞一个插件专用字段——
+   * 而后者是 ADR-0057 §三 明确不许的。
+   */
+  readonly types?: readonly PersistedEventType[];
 }
 
 /**

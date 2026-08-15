@@ -67,6 +67,19 @@ const baselineRows = (deterministic: boolean): readonly ProfileRow[] => [
 ];
 
 const businessRows = (surface: BuiltinProfileName): readonly ProfileRow[] => [
+  /*
+   * 自省闸门（ADR-0060）。**是业务行不是基线行**，因为它可以被关掉：
+   * 它在写入路径上多一次检查，四个内建 profile 都开着，生产装配可以去掉这一行。
+   *
+   * 去掉之后 `SessionRuntime` 拿不到注册表，那一步整个不存在——所以别的行
+   * **不许把它写进 inject**：写了就等于"关掉自省"变成"应用起不来"。
+   */
+  {
+    id: 'runtime.invariants',
+    plugin: '@xm/runtime#invariants',
+    inject: [],
+    provide: ['invariants'],
+  },
   {
     id: 'runtime.executor',
     plugin: '@xm/tool-runtime#localExecutor',

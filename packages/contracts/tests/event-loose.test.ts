@@ -80,13 +80,30 @@ describe('事件 payload 必须保留未知字段', () => {
     );
   });
 
-  it('ext.* 事件走旁路：核心不校验其 payload，原样保留', () => {
+  /**
+   * ADR-0057 之前这里断言的是"`ext.*` 走旁路，核心不校验其 payload"——
+   * 那条旁路按前缀放行任意 type，等于给插件开了一条绕过 schema 直接落库的路。
+   * 现在插件事件只有两个信封类型，信封本身照常校验，只有 `data` 不解释。
+   */
+  it('插件事件的信封照常校验，只有 data 不解释', () => {
     const parsed = parseStoredEvent({
       ...base,
-      type: 'ext.my-plugin.tick',
-      payload: { whatever: [1, 2, 3] },
+      type: 'ext.persisted',
+      payload: { pluginId: 'my-plugin', name: 'tick', version: 1, data: { whatever: [1, 2, 3] } },
     });
-    expect(parsed.payload).toEqual({ whatever: [1, 2, 3] });
+    expect(parsed.payload).toEqual({
+      pluginId: 'my-plugin',
+      name: 'tick',
+      version: 1,
+      data: { whatever: [1, 2, 3] },
+    });
+
+    // 前缀不再是通行证：没有信封形状的 `ext.*` 与任何别的未知类型同等对待
+    expect(() =>
+      parseStoredEvent({ ...base, type: 'ext.my-plugin.tick', payload: { whatever: 1 } }),
+    ).toThrow(/未知事件类型/);
+    // 信封对了但载荷缺字段，一样过不去
+    expect(() => parseStoredEvent({ ...base, type: 'ext.persisted', payload: {} })).toThrow();
   });
 
   it('信封缺省 v 时补 1', () => {

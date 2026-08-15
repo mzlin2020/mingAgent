@@ -2,7 +2,7 @@ import { localExecutionWorld } from '@xm/tool-runtime';
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ContentBlock, XmEventType } from '@xm/contracts';
-import { isCoreEvent, newSessionId } from '@xm/contracts';
+import { newSessionId } from '@xm/contracts';
 import { MemoryBlobStore, MemoryEventStore, ToolRegistry, builtinLayers } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
 
@@ -31,7 +31,7 @@ async function harness() {
 
   const types: XmEventType[] = [];
   bus.subscribe((e: AnyEvent) => {
-    if (isCoreEvent(e)) types.push(e.type);
+    types.push(e.type);
   }, sessionId);
 
   return { store, sessionId, runtime, tools: new ToolRegistry(), layers: builtinLayers(ENV), types };

@@ -57,3 +57,5 @@ export * from './plugin/manifest.js';
  * 破坏性变更（改事件 payload 语义、删能力词条）走 major，且必须同时提供 upcaster。
  */
 export const CONTRACTS_VERSION = '0.1.0';
+
+export * from './invariant.js';

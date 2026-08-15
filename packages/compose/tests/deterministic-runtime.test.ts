@@ -7,6 +7,7 @@ import type {
   ClockService,
   ContainerPlugin,
   IdService,
+  InvariantRegistry,
   ExecutionWorld,
   RuleLayer,
   SecretStore,
@@ -25,6 +26,7 @@ import {
   ScriptedProvider,
   SessionRuntime,
   TurnExtensionHost,
+  createInvariantRegistry,
   createTurnExtensionHost,
   echoTool,
   installCheckpoint,
@@ -51,6 +53,7 @@ interface Services {
   ids: IdService;
   executor: ExecutionWorld;
   turnExtensions: TurnExtensionHost;
+  invariants: InvariantRegistry;
   policy: readonly RuleLayer[];
   gateway: ToolGateway;
   checkpointer: Checkpointer;
@@ -77,6 +80,12 @@ const catalogFor = (clock: ClockService, ids: IdService): PluginCatalog<Services
   '@xm/kernel#deterministicIds': (row) => plugin(row, (ctx) => ctx.provide('ids', ids)),
   '@xm/tool-runtime#localExecutor': (row) =>
     plugin(row, (ctx) => ctx.provide('executor', localExecutionWorld)),
+  '@xm/runtime#invariants': (row) =>
+    plugin(row, (ctx) => {
+      const { registry, dispose } = createInvariantRegistry();
+      ctx.provide('invariants', registry);
+      return dispose;
+    }),
   '@xm/runtime#turnDriver': (row) =>
     plugin(row, (ctx) => ctx.provide('turnExtensions', createTurnExtensionHost(ctx))),
   '@xm/kernel#policy': (row) => plugin(row, (ctx) => ctx.provide('policy', [])),
@@ -100,7 +109,12 @@ const catalogFor = (clock: ClockService, ids: IdService): PluginCatalog<Services
   '@xm/contracts#redact': (row) => plugin(row, (ctx) => ctx.provide('redact', redact)),
   '@xm/kernel#toolRegistry': (row) => plugin(row, (ctx) => ctx.provide('tools', new ToolRegistry())),
   '@xm/runtime#sessionRuntime': (row) => plugin(row, (ctx) => ctx.provide('runtime', {
-    open: (options) => SessionRuntime.open({ ...options, clock: ctx.clock, ids: ctx.ids }),
+    open: (options) => SessionRuntime.open({
+      ...options,
+      clock: ctx.clock,
+      ids: ctx.ids,
+      ...(ctx.has('invariants') ? { invariants: ctx.invariants } : {}),
+    }),
   })),
   '@xm/runtime#multimodalGuard': (row) =>
     plugin(row, (ctx) => installMultimodalGuard(ctx.turnExtensions)),

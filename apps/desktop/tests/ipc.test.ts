@@ -114,9 +114,13 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
   it('空会话的序列化状态能通过渲染层这一侧的校验', () => {
     const sessionId = newSessionId();
     const serialized = serializeSessionState(emptySessionState(sessionId));
-    expect(ReadSessionResult.safeParse({ ...serialized, cards: [] }).success).toBe(true);
+    expect(
+      ReadSessionResult.safeParse({ ...serialized, cards: [], extRecords: [] }).success,
+    ).toBe(true);
     // 卡片不是可选的：漏送它渲染层会静默退回一行摘要，而那种降级看起来跟"工具没写投影"一模一样
     expect(ReadSessionResult.safeParse(serialized).success).toBe(false);
+    // 插件记录同理：漏送它，未安装扩展留下的记录在界面上就是彻底的沉默（ADR-0057 §三）
+    expect(ReadSessionResult.safeParse({ ...serialized, cards: [] }).success).toBe(false);
   });
 
   it('带着未清空 Map（runningCalls/ptySessions）的状态也能通过——这正是快照要处理的形状', () => {
@@ -133,7 +137,11 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
         [newPtySessionId(), { ptySessionId: newPtySessionId(), cwd: '/w', startedAt: 1 }],
       ]),
     };
-    const result = ReadSessionResult.safeParse({ ...serializeSessionState(state), cards: [] });
+    const result = ReadSessionResult.safeParse({
+      ...serializeSessionState(state),
+      cards: [],
+      extRecords: [],
+    });
     expect(result.success).toBe(true);
   });
 
@@ -142,7 +150,7 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
     const serialized = serializeSessionState(emptySessionState(sessionId));
     // Electron 的 IPC 走结构化克隆，不是 JSON；Node 的 structuredClone 是同一族算法，
     // 用它模拟"数据真的跨了一次进程边界"比只 JSON.stringify/parse 更接近真实路径。
-    const cloned: unknown = structuredClone({ ...serialized, cards: [] });
+    const cloned: unknown = structuredClone({ ...serialized, cards: [], extRecords: [] });
     expect(ReadSessionResult.safeParse(cloned).success).toBe(true);
   });
 });

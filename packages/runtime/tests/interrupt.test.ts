@@ -1,7 +1,7 @@
 import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ModelChunk, ModelRequest, XmEventType } from '@xm/contracts';
-import { isCoreEvent, newCallId, newSessionId } from '@xm/contracts';
+import { newCallId, newSessionId } from '@xm/contracts';
 import type { AbortLike, ModelCapabilities, ModelInfo, ModelProvider } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, builtinLayers, defineTool, emptySessionState, reduce } from '@xm/kernel';
 import { EventBus, ScriptedProvider, SessionRuntime, runTurn, textInput } from '@xm/runtime';
@@ -88,7 +88,6 @@ async function runAndInterrupt(afterMs = 0): Promise<Recorded> {
   const types: XmEventType[] = [];
   const deltas: string[] = [];
   bus.subscribe((e: AnyEvent) => {
-    if (!isCoreEvent(e)) return;
     types.push(e.type);
     if (e.type === 'message.delta') deltas.push(e.payload.text);
   }, sessionId);

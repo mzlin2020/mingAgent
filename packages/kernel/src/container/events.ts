@@ -21,6 +21,8 @@ interface EventScope {
 interface ListenerRecord {
   readonly scopeId: number;
   readonly callback: UnknownListener;
+  /** 注册它的插件行；只用于自省（`mounts()`），不参与派发 */
+  readonly plugin: string | undefined;
 }
 
 const point = <M extends EventMode>(name: string, mode: M): { readonly name: string; readonly mode: M } => {
@@ -92,17 +94,39 @@ export class ContainerEvents {
   readonly #modes = new Map<string, EventMode>();
   readonly #listeners = new Map<string, ListenerRecord[]>();
 
-  register(scope: EventScope, event: AnyEventPoint, listener: UnknownListener): () => void {
+  register(
+    scope: EventScope,
+    event: AnyEventPoint,
+    listener: UnknownListener,
+    plugin?: string,
+  ): () => void {
     this.#assertMode(event);
     const records = this.#listeners.get(event.name) ?? [];
     if (!this.#listeners.has(event.name)) this.#listeners.set(event.name, records);
-    const record = { scopeId: scope.id, callback: listener };
+    const record = { scopeId: scope.id, callback: listener, plugin };
     records.push(record);
     return () => {
       const index = records.indexOf(record);
       if (index < 0) return;
       records.splice(index, 1);
     };
+  }
+
+  /**
+   * 每个扩展点上当前挂着谁，**按派发顺序**。
+   *
+   * 容器化把一部分依赖关系从 import 图挪到了运行时（ADR-0052 记下的真损失），
+   * 而"这次调用经过了什么"是那部分里最要紧的一个问题。它只能从这里回答：
+   * 静态分析看得见 `installXxx(host)` 这行代码，看不见它最终挂在哪个点上、排第几。
+   */
+  mounts(): readonly { readonly event: string; readonly plugin: string; readonly order: number }[] {
+    const rows: { event: string; plugin: string; order: number }[] = [];
+    for (const [event, records] of this.#listeners) {
+      records.forEach((record, index) => {
+        rows.push({ event, plugin: record.plugin ?? '（匿名）', order: index });
+      });
+    }
+    return rows.sort((a, b) => a.event.localeCompare(b.event) || a.order - b.order);
   }
 
   emit(scope: EventScope, event: AnyEventPoint, args: unknown[]): void {

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { AppMenu } from './components/app-menu.js';
 import {
   InterruptedSessionBanner,
+  ExtRecordsBanner,
   NoticeBanner,
   SessionConflictBanner,
   SetupBanner,
@@ -171,6 +172,7 @@ export function App(): ReactNode {
                   <SetupBanner />
                   <SessionConflictBanner />
                   <NoticeBanner />
+                  <ExtRecordsBanner />
                   <UntrustedBanner />
                   <MessageStream messages={session?.messages ?? []} />
                   <LiveMessage />

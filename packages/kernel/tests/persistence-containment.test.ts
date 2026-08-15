@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { XmEvent } from '@xm/contracts';
-import { PERSISTED_EVENT_TYPES, isCoreEvent, parseStoredEvent } from '@xm/contracts';
+import { PERSISTED_EVENT_TYPES, parseStoredEvent } from '@xm/contracts';
 import { emptySessionState, reduce, reduceAll } from '@xm/kernel';
 import { sampleEvents } from './helpers/sample-events.js';
 
@@ -24,7 +24,7 @@ const FIXTURE = fileURLToPath(
 
 function loadFixture(): XmEvent[] {
   const rows = JSON.parse(readFileSync(FIXTURE, 'utf8')) as unknown[];
-  return rows.map((r) => parseStoredEvent(r)).filter(isCoreEvent);
+  return rows.map((r) => parseStoredEvent(r));
 }
 
 const persistedOnly = (events: readonly XmEvent[]): XmEvent[] =>

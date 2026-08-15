@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AnyEvent, SessionId } from '@xm/contracts';
-import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
-import type { LiveBuffer, SessionState } from '@xm/kernel';
+import { parseStoredEvent } from '@xm/contracts';
+import type { ExtRecordSummary, LiveBuffer, SessionState } from '@xm/kernel';
 import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kernel';
 import type {
   ImageAttachment,
@@ -55,6 +55,12 @@ interface UiState extends OrphanedSlice, CardsSlice {
   shellView: ShellView;
   currentId: SessionId | undefined;
   session: SessionState | undefined;
+  /**
+   * 本会话里出现过的插件记录汇总（ADR-0057）。**不是会话状态**——`reduce()` 对插件
+   * 事件恒等，这份东西来自打开会话时一次按类型过滤的读，只用来在界面上说明
+   * "库里有一批记录，写它的插件当前没装着"。切会话即清空，不随事件增量。
+   */
+  extRecords: readonly ExtRecordSummary[];
   /**
    * 在途消息（ADR-0021）。**与 `session` 分开放，是这条设计的全部要点。**
    *
@@ -152,6 +158,7 @@ export const useUi = create<UiState>((set, get) => {
     shellView: 'home',
     currentId: undefined,
     session: undefined,
+    extRecords: [],
     live: EMPTY_LIVE,
     busy: false,
     pendingInputs: [],
@@ -202,18 +209,20 @@ export const useUi = create<UiState>((set, get) => {
         shellView: 'chat',
         session: undefined,
         cards: new Map(),
+        extRecords: [],
         live: EMPTY_LIVE,
         pendingInputs: [],
         error: undefined,
         sessionConflict: undefined,
       });
       try {
-        const { cards, ...serialized } = await api.readSession(id);
+        const { cards, extRecords, ...serialized } = await api.readSession(id);
         // 会话可能在这次 await 期间又被切走——不要用一个旧会话的状态覆盖当前会话
         if (get().currentId === id) {
           set({
             session: deserializeSessionState(serialized),
             cards: new Map(cards),
+            extRecords,
           });
         }
       } catch (e) {
@@ -344,7 +353,7 @@ export const useUi = create<UiState>((set, get) => {
       if (pushed.sessionId !== currentId) return;
 
       const e = toCoreEvent(pushed);
-      if (e === undefined || !isCoreEvent(e)) return;
+      if (e === undefined) return;
       if (e.type === 'turn.start') {
         const claimedText = e.payload.input
           .filter((block): block is Extract<(typeof e.payload.input)[number], { type: 'text' }> =>

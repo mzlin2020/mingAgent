@@ -16,6 +16,7 @@
 | `desktop` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `desktop` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `desktop` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `desktop` | 业务 | `runtime.invariants` | `@xm/runtime#invariants` | — | `invariants` |
 | `desktop` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `desktop` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `desktop` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
@@ -33,6 +34,7 @@
 | `headless` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `headless` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `headless` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `headless` | 业务 | `runtime.invariants` | `@xm/runtime#invariants` | — | `invariants` |
 | `headless` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `headless` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `headless` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
@@ -50,6 +52,7 @@
 | `cli` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `cli` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `cli` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `cli` | 业务 | `runtime.invariants` | `@xm/runtime#invariants` | — | `invariants` |
 | `cli` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `cli` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `cli` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
@@ -67,6 +70,7 @@
 | `test` | 特权基线 | `baseline.redact` | `@xm/contracts#redact` | — | `redact` |
 | `test` | 特权基线 | `baseline.tools` | `@xm/kernel#toolRegistry` | — | `tools` |
 | `test` | 特权基线 | `baseline.runtime` | `@xm/runtime#sessionRuntime` | `clock`<br>`ids`<br>`policy`<br>`gateway`<br>`checkpointer`<br>`secrets`<br>`redact`<br>`tools` | `runtime` |
+| `test` | 业务 | `runtime.invariants` | `@xm/runtime#invariants` | — | `invariants` |
 | `test` | 业务 | `runtime.executor` | `@xm/tool-runtime#localExecutor` | — | `executor` |
 | `test` | 业务 | `runtime.multimodal` | `@xm/runtime#multimodalGuard` | `turnExtensions` | — |
 | `test` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |

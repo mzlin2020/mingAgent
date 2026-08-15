@@ -1,7 +1,7 @@
 import { localExecutionWorld } from '@xm/tool-runtime';
 import { describe, expect, it } from 'vitest';
 import type { AnyEvent, ModelChunk } from '@xm/contracts';
-import { isCoreEvent, newCallId, newSessionId } from '@xm/contracts';
+import { newCallId, newSessionId } from '@xm/contracts';
 import {
   MemoryEventStore,
   ToolRegistry,
@@ -93,7 +93,7 @@ describe('deriveTraces 反映一次真实 runTurn 的执行路径', () => {
     const replayed: AnyEvent[] = [];
     for await (const e of store.read(sessionId)) replayed.push(e);
 
-    const traces = deriveTraces(replayed.filter(isCoreEvent));
+    const traces = deriveTraces(replayed);
     expect(traces).toHaveLength(1);
     const [trace] = traces;
 
@@ -109,7 +109,7 @@ describe('deriveTraces 反映一次真实 runTurn 的执行路径', () => {
     // （不是同一批对象，但内容必须一致——这正是"事件流是唯一真相"这条不变量在
     // trace 这一层的体现：无论你是实时订阅总线看到的，还是几个月后重新读库看到的，
     // 派生出的执行路径不能是两个不同的故事）
-    const fromBus = deriveTraces(seen.filter(isCoreEvent));
+    const fromBus = deriveTraces(seen);
     expect(fromBus).toEqual(traces);
   });
 });

@@ -1,6 +1,7 @@
 import type { ContentBlock, MessageId, XmEvent } from '@xm/contracts';
 import { addUsage, mergeConfig, restrictSessionPatch } from '@xm/contracts';
 import type { SessionState } from './session-state.js';
+import { applyRestorePatch } from './checkpoint-state.js';
 import { compactionOf } from './context-compaction.js';
 import { taintOf } from './taint.js';
 import { appendToolResult } from './tool-result.js';
@@ -29,7 +30,19 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     case 'provider.status':
     case 'tool.progress':
     case 'shell.session.output':
+    case 'ext.transient':
       return state;
+
+    /*
+     * 插件事件：**恒等**（ADR-0057 §三）。核心状态一个字段都不因插件而加，
+     * 否则删掉插件就无法 reduce 历史会话——那是原则二的正面违反。
+     *
+     * `lastSeq` 例外，而且只能是例外：它是 seq 空间的账本，不是"状态"。不推进它，
+     * 下一条事件就会拿到同一个 seq，被存储层的并发写检测器整条打回。
+     * 插件要投影自己的状态，订阅事件流自建投影（炸的是它自己的面板，不是会话）。
+     */
+    case 'ext.persisted':
+      return { ...state, lastSeq: e.seq };
 
     // ── 会话 ────────────────────────────────────────────────
     case 'session.created':
@@ -324,41 +337,23 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       };
 
     case 'checkpoint.restore.started':
-      return {
-        ...state,
-        checkpoints: state.checkpoints.map((c) =>
-          c.checkpointId === e.payload.checkpointId
-            ? { ...c, restoreStartedAt: e.ts, restoreFailure: undefined }
-            : c,
-        ),
-        lastSeq: e.seq,
-      };
+      return applyRestorePatch(state, e.payload.checkpointId, e.seq, {
+        restoreStartedAt: e.ts,
+        restoreFailure: undefined,
+      });
 
     case 'checkpoint.restore.failed':
-      return {
-        ...state,
-        checkpoints: state.checkpoints.map((c) =>
-          c.checkpointId === e.payload.checkpointId
-            ? {
-                ...c,
-                restoreStartedAt: undefined,
-                restoreFailure: { message: e.payload.message, ts: e.ts },
-              }
-            : c,
-        ),
-        lastSeq: e.seq,
-      };
+      return applyRestorePatch(state, e.payload.checkpointId, e.seq, {
+        restoreStartedAt: undefined,
+        restoreFailure: { message: e.payload.message, ts: e.ts },
+      });
 
     case 'checkpoint.restored':
-      return {
-        ...state,
-        checkpoints: state.checkpoints.map((c) =>
-          c.checkpointId === e.payload.checkpointId
-            ? { ...c, restoreStartedAt: undefined, restoreFailure: undefined, restoredAt: e.ts }
-            : c,
-        ),
-        lastSeq: e.seq,
-      };
+      return applyRestorePatch(state, e.payload.checkpointId, e.seq, {
+        restoreStartedAt: undefined,
+        restoreFailure: undefined,
+        restoredAt: e.ts,
+      });
 
     case 'notice.posted':
       return {
