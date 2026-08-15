@@ -14,7 +14,7 @@ import { HomeView } from './components/home-view.js';
 import { LiveMessage } from './components/live-views.js';
 import { MessageStream } from './components/message-stream.js';
 import { SessionTabs } from './components/session-tabs.js';
-import { DiffReviewPanel } from './components/diff-review-panel.js';
+import { installBuiltinRenderers } from './components/cards.js';
 import { SecurityView } from './components/security-view.js';
 import { WorkbenchPanel } from './components/workbench-panel.js';
 import { Button } from './components/ui.js';
@@ -30,6 +30,13 @@ import { useUi } from './store.js';
  *
  * ── 这个文件只做装配（ADR-0032）──
  */
+/*
+ * 四种内建卡片渲染器在模块装载时注册一次（ADR-0058 §五）。
+ * 放在这里而不是某个组件的 effect 里：注册表是进程级的，
+ * 挂载/卸载一个组件不该让别处的卡片突然退化成摘要。
+ */
+installBuiltinRenderers();
+
 export function App(): ReactNode {
   const { currentId, session, busy, error, shellView } = useUi();
   const live = useUi((s) => s.live);
@@ -167,9 +174,6 @@ export function App(): ReactNode {
                   <UntrustedBanner />
                   <MessageStream messages={session?.messages ?? []} />
                   <LiveMessage />
-                  {session !== undefined && (
-                    <DiffReviewPanel sessionId={session.id} proposals={session.editProposals} />
-                  )}
                 </div>
               )}
             </div>

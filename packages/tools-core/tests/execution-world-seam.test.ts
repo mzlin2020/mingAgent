@@ -189,8 +189,10 @@ describe('M3-e ExecutionWorld 接缝', () => {
     let applied = false;
     const access: EditProposalAccess = {
       save: (_sessionId, value) => { proposal = value; return Promise.resolve(); },
-      get: () => Promise.resolve(proposal === undefined ? undefined : { proposal, applied }),
+      get: () =>
+        Promise.resolve(proposal === undefined ? undefined : { proposal, applied, reviewed: false }),
       markApplied: () => { applied = true; return Promise.resolve(); },
+      markReviewed: () => Promise.resolve(),
     };
     await drain(editPreviewTool(access), {
       files: [{

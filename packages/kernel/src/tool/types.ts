@@ -1,11 +1,14 @@
 import type { z } from 'zod';
 import type {
+  CardActionPayload,
+  CardActionPayloadKind,
   Capability,
   CallId,
   ResourceClaim,
   ResultLimits,
   RiskLevel,
   SessionId,
+  ToolCard,
   ToolDescriptor,
   ToolProgress,
 } from '@xm/contracts';
@@ -56,13 +59,71 @@ export interface ToolAvailabilityContext {
 }
 
 /**
+ * 完成态投影拿得到的全部事实（ADR-0058）。
+ *
+ * **三个字段全部来自已落库的 `tool.end`**，因此实时流与三天后的回放喂给
+ * `presentResult` 的是同一份输入——"两条路上都跑、结果必须一致"这条不是靠自觉，
+ * 是靠这个接口里没有任何非持久的东西。
+ */
+export interface ToolResultOutcome<M = unknown> {
+  readonly ok: boolean;
+  /** 工具随结果 yield 出来、已过 `presentationSchema` 校验的最小事实；畸形或缺席即 undefined */
+  readonly presentation?: M;
+  /** 已截断的模型可见文本（`tool.end.forModel` 里的 text 块拼接） */
+  readonly text: string;
+  readonly errorMessage?: string;
+}
+
+/**
+ * 卡片动作能拿到的执行世界（ADR-0065 步骤 ④ 之前的准备阶段）。
+ *
+ * 它**没有** `record()`：动作不能自己往事件流里写东西。需要落事件的（例如
+ * "这个提案被审阅过了"）走工具本来就持有的窄回调，与 ADR-0041 给 todo 工具的
+ * 窄写入口同形同理——给出通用事件入口等于让一次点击能伪造 `tool.end`。
+ */
+export interface ToolActionContext {
+  readonly sessionId: SessionId;
+  readonly cwd: string;
+  readonly executor: ExecutionWorld;
+  readonly signal: AbortLike;
+}
+
+/** 一次动作最终变成的**新工具调用**。它照常进完整十二步链，什么也不继承 */
+export interface ToolActionCall {
+  readonly name: string;
+  readonly args: unknown;
+}
+
+/**
+ * 工具声明的一个具名动作意图。
+ *
+ * ⚠️ **`prepare` 产出的是一次调用请求，不是一次执行。** 它返回的 `{name, args}`
+ * 会当作模型给出的工具调用一样，从头走网关规范化 → 红线判定 → 分层求值。
+ * "用户点的"不构成任何放行理由（ADR-0045 / ADR-0065 §三）。
+ */
+export interface ToolActionSpec<I, M> {
+  /** 给人看的按钮名。**渲染层拿到的只有它和 actionId，没有工具名** */
+  readonly label: string;
+  readonly payload: CardActionPayloadKind;
+  readonly emphasis?: 'primary' | 'secondary';
+  prepare(request: {
+    readonly input: I;
+    readonly presentation: M | undefined;
+    readonly payload: CardActionPayload;
+    readonly ctx: ToolActionContext;
+  }): Promise<ToolActionCall | undefined>;
+}
+
+/**
  * 工具定义。
  *
  * 它含函数，所以**不可序列化、跨不了进程**——因此留在 kernel，而不是 contracts。
  * 跨进程传输的是从它派生出的 `ToolDescriptor`。这条分界让内置工具、插件工具、
  * MCP 工具在注册表里长得完全一样。
+ *
+ * `M` 是这个工具落库的展示事实的类型，由 `presentationSchema` 绑定。
  */
-export interface ToolSpec<I> {
+export interface ToolSpec<I, M = unknown> {
   /** 形如 "fs.read"，必须带分组前缀 */
   readonly name: string;
   readonly group: string;
@@ -147,6 +208,35 @@ export interface ToolSpec<I> {
    * 失败不要 throw——转成 `result` 里的错误内容回灌给模型（见 contracts/base/error.ts）。
    */
   execute(input: I, ctx: ToolContext): AsyncIterable<ToolProgress>;
+
+  /**
+   * 落库的最小事实的形状（ADR-0058）。**不声明它，工具 yield 出来的 `presentation`
+   * 就不会落库**——展示数据同样是不可信输入，没有 schema 就没有校验，
+   * 而一份没校验过的对象将来会原样喂给回放期的投影函数。
+   */
+  readonly presentationSchema?: z.ZodType<M>;
+
+  /**
+   * 挂起卡片：工具刚开始跑时显示什么。**纯函数**——禁 I/O、禁读会话状态、禁时钟随机。
+   *
+   * 它与 `presentResult` 在实时流与日志回放两条路上都要跑。一个会读盘的 `presentCall`
+   * 就是第二份会漂移的状态：实时流里读到 A，三天后的回放里读到 B（ADR-0021 的同一条不变量）。
+   *
+   * 抛异常或产出不合契约的形状**一律降级为通用卡片**，绝不让回放崩掉。
+   */
+  presentCall?(input: NoInfer<I>): ToolCard | undefined;
+
+  /** 完成卡片。同样是纯函数，输入全部来自已落库的事实（见 `ToolResultOutcome`） */
+  presentResult?(input: NoInfer<I>, outcome: ToolResultOutcome<M>): ToolCard | undefined;
+
+  /**
+   * 卡片上可以点的动作（ADR-0065）。键即 `actionId`。
+   *
+   * 它**不进 `ToolDescriptor`**——与 `pathInputs` / `commandInputs` 同理：模型不需要
+   * 知道用户界面上有什么按钮，而描述符的每个字段都要进提示词、占 token。
+   * 渲染层拿到的是卡片里的 `actions`（只有 id、名字与载荷种类），不是这份声明。
+   */
+  readonly actions?: Readonly<Record<string, ToolActionSpec<NoInfer<I>, NoInfer<M>>>>;
 }
 
 /**
@@ -181,4 +271,13 @@ export interface RegisteredTool {
   resources(rawInput: unknown): readonly ResourceClaim[];
   /** 未声明 `available()` 的工具恒为可用 */
   available(ctx: ToolAvailabilityContext): boolean;
+  /**
+   * 卡片投影，**已经软化过**：入参不合 schema、投影抛异常、产出形状不合契约，
+   * 三种情况一律返回 `undefined`，由 `projectCallCard` / `projectResultCard` 降级成通用卡片。
+   */
+  presentCall(rawInput: unknown): ToolCard | undefined;
+  presentResult(rawInput: unknown, outcome: ToolResultOutcome): ToolCard | undefined;
+  /** 校验工具 yield 出来的展示事实。没声明 schema、或校验不过，一律 `undefined`（不落库） */
+  parsePresentation(value: unknown): unknown;
+  readonly actions: Readonly<Record<string, ToolActionSpec<unknown, unknown>>>;
 }

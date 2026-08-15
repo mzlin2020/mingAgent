@@ -272,6 +272,8 @@ async function executeCall(
     return;
   }
   const durationMs = deps.runtime.clock.now() - startedAt;
+  // 展示事实过工具自己的 schema 再落库；没声明 schema 或校验不过就不落（ADR-0058）
+  const presentation = prepared.tool.parsePresentation(result.presentation);
   await deps.runtime.record({
     type: 'tool.end',
     turnId,
@@ -281,6 +283,7 @@ async function executeCall(
       durationMs,
       forModel: [...result.forModel],
       ...(result.fullRef === undefined ? {} : { fullRef: result.fullRef }),
+      ...(presentation === undefined ? {} : { presentation }),
       ...(result.error === undefined ? {} : { error: result.error }),
     },
   });
@@ -301,6 +304,7 @@ async function executeToolBody(
    * 换掉它等于重开判定与执行之间的 TOCTOU 窗口（ADR-0018）。
    */
   const ctx = signal === prepared.ctx.signal ? prepared.ctx : Object.freeze({ ...prepared.ctx, signal });
+  const origin = deps.callOrigins?.get(call.callId);
   await deps.runtime.record({
     type: 'tool.start',
     turnId,
@@ -311,6 +315,7 @@ async function executeToolBody(
       input: prepared.input,
       risk: prepared.tool.descriptor.risk,
       capabilities: [...new Set(prepared.claims.map((claim) => claim.capability))],
+      ...(origin === undefined ? {} : { origin }), // 谁发起的这次调用，缺席即模型（ADR-0065 §四）
     },
   });
   const receipt = issueExecutionReceipt(
@@ -319,6 +324,7 @@ async function executeToolBody(
     prepared.tool.descriptor.name,
   );
   let forModel: ResultBlock[] = [];
+  let presentation: unknown;
   let error: ReturnType<typeof xmError> | undefined;
   try {
     for await (const progress of prepared.tool.execute(prepared.input, ctx)) {
@@ -334,6 +340,7 @@ async function executeToolBody(
         });
       } else {
         forModel = [...progress.forModel];
+        presentation = progress.presentation;
       }
     }
   } catch (caught) {
@@ -343,7 +350,12 @@ async function executeToolBody(
         : xmError('internal', caught instanceof Error ? caught.message : String(caught));
     forModel = [{ type: 'text', text: error.message }];
   }
-  return { forModel, receipt, ...(error === undefined ? {} : { error }) };
+  return {
+    forModel,
+    receipt,
+    ...(presentation === undefined ? {} : { presentation }),
+    ...(error === undefined ? {} : { error }),
+  };
 }
 
 export async function failCall(

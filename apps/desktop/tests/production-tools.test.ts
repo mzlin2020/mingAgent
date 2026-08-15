@@ -36,6 +36,7 @@ describe('desktop production tool assembly', () => {
         save: () => Promise.resolve(),
         get: () => Promise.resolve(undefined),
         markApplied: () => Promise.resolve(),
+        markReviewed: () => Promise.resolve(),
       },
       explore: () => Promise.reject(new Error('not used')),
     });

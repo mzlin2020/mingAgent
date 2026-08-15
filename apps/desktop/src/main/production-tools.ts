@@ -13,8 +13,17 @@ interface EditProposalAccess {
   get(
     sessionId: SessionId,
     proposalId: EditProposalId,
-  ): Promise<{ readonly proposal: EditProposal; readonly applied: boolean } | undefined>;
+  ): Promise<
+    | { readonly proposal: EditProposal; readonly applied: boolean; readonly reviewed: boolean }
+    | undefined
+  >;
   markApplied(sessionId: SessionId, proposalId: EditProposalId): Promise<void>;
+  /** 卡片动作认领一次审阅时落 `edit.reviewed`。窄写入口，不是通用 `record()` */
+  markReviewed(
+    sessionId: SessionId,
+    proposalId: EditProposalId,
+    selectedHunkIds: readonly string[],
+  ): Promise<void>;
 }
 
 interface PtyManager {

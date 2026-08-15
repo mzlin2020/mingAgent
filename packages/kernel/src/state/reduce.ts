@@ -142,9 +142,13 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         content: e.payload.forModel,
         isError: !e.payload.ok,
       };
+      const presentation = e.payload.presentation; // 展示事实按 callId 收进索引（ADR-0058）
       return {
         ...state,
         runningCalls: running,
+        ...(presentation === undefined
+          ? {}
+          : { presentations: new Map(state.presentations).set(e.payload.callId, presentation) }),
         messages: appendToolResult(state.messages, block, e.id as unknown as MessageId, e.ts),
         lastSeq: e.seq,
       };
@@ -238,8 +242,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       };
 
     case 'context.compacted':
-      // 只记录标记。摘要在 blob 里，reduce 读不到 I/O——
-      // 真正把旧消息换成摘要是 ContextBuilder 在装配时做的事。
+      // 只记录标记。摘要在 blob 里，reduce 读不到 I/O——真正把旧消息换成摘要是 ContextBuilder 的事。
       return {
         ...state,
         compactions: [

@@ -14,13 +14,15 @@ TypeScript 单语言 monorepo（pnpm workspace）+ Electron 外壳 + React 渲�
 `docs/experience/m2/收官记录.md`）。**下一阶段是 M3「微内核化重构」**——2026-08-14 新增的里程碑，
 原 M3–M6 顺延为 M4–M7；规划见 `docs/11-微内核与插件容器.md` 与 `docs/M3-阶段划分.md`，
 决策见 ADR-0052 ~ 0068（其中 0062–0066 是 2026-08-14 规划复审的产物，
-复审结论见 `docs/11 §10`）。**M3-a～M3-e 已完成并通过全量门禁**：
+复审结论见 `docs/11 §10`）。**M3-a～M3-f 已完成并通过全量门禁**：
 `@xm/kernel/src/container/`、确定性 `clock` / `ids`、`@xm/compose` profile 装配和
 `@xm/tool-runtime` 已存在，desktop/headless 共用装配器；Turn 命名扩展点、工具十二步链、
 执行收据、Agent 句柄、持久注入与 `ctx.executor` local 执行世界已落地；业务工具整包零
-`node:*`，物理删除 `tools-core` 后仍能通过 typecheck 与空工具 headless 冒烟。渲染器注册表仍不存在。
+`node:*`，物理删除 `tools-core` 后仍能通过 typecheck 与空工具 headless 冒烟。
+M3-f 已落地四种卡片的纯函数投影、渲染器注册表与 `ui.cardAction` 动作通道，
+`main/edit-review.ts` 与渲染层的 diff 专用组件已物理删除。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
-M3-a～M3-e 证据见 `docs/experience/m3/`；下一段是 M3-f 渲染意图与卡片动作。
+M3-a～M3-f 证据见 `docs/experience/m3/`；下一段是 M3-g 扩展事件通道与自省闸门。
 
 **ADR-0061（Code Mode）是 🟡 Proposed，不是 Accepted**——它承诺的隔离属性普通 Node worker
 给不了，机制待 `docs/09` 的 H2 定案。别照着它开工。
@@ -102,7 +104,8 @@ platform · storage · providers · tool-runtime · tools-core
 **M3-a/M3-b 已在这张图上加两层、改两处**（见 `docs/04 §1.1`）：
 容器进入 `kernel/src/container/`；`@xm/compose` 负责 profile 与装配；`@xm/tool-runtime`
 承接路径网关、checkpoint 和 local 执行世界。M3-c 已把 `turn.ts` 收敛为驱动器 + 命名扩展点，
-M3-d 已接入 Agent Inbox，M3-e 已让所有 fs/process/pty 工具只经 `ctx.executor` 执行。
+M3-d 已接入 Agent Inbox，M3-e 已让所有 fs/process/pty 工具只经 `ctx.executor` 执行，
+M3-f 让渲染层只认识四种卡片种类、不再认识任何工具。
 **依赖方向的硬约束一字不改**，
 且**不为插件新建细粒度包**——容器化会让一部分依赖关系从 import 图挪到运行时，
 保住包边界规则是这个真损失的首要对策。

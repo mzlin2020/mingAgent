@@ -23,7 +23,11 @@ export const CH = {
   readSession: 'xm:read-session',
   inspectCheckpoint: 'xm:inspect-checkpoint',
   restoreCheckpoint: 'xm:restore-checkpoint',
-  reviewEditProposal: 'xm:review-edit-proposal',
+  /**
+   * 卡片动作（ADR-0065）。取代了 M2-e 的 `xm:review-edit-proposal`——
+   * 那条通道要求渲染层认识 `edit` 这个工具，而这条只认识"卡片上有个动作 id"。
+   */
+  cardAction: 'xm:card-action',
   /**
    * 按 `BlobRef` 反查一张图片的字节，编成 data URL 供 `<img src>` 直接用。
    * 渲染层此前从未反查过 blob 内容，这是第一条——见 `services.readBlob` 的注释。

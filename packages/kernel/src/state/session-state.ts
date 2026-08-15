@@ -54,6 +54,17 @@ export interface SessionState {
 
   readonly todos: readonly Todo[];
   readonly editProposals: readonly EditProposalState[];
+  /**
+   * 每次工具调用落库的**展示事实**（ADR-0058），键是 `callId`。
+   *
+   * 卡片本身不在这里，也不在任何地方持久化——它是 `(入参, 这份事实)` 的纯函数投影，
+   * 实时流与回放各投影一次，结果必须逐字节一致。落库的只有投影函数算不出来、
+   * 又只有结果时刻才知道的那一点点事实（`edit.preview` 的 hunk 补丁是唯一的真实用例）。
+   *
+   * 只有声明了 `presentationSchema` 且真的 yield 了 `presentation` 的工具才在这里有条目，
+   * 所以它的规模跟"有富展示的调用次数"走，不跟总调用次数走。
+   */
+  readonly presentations: ReadonlyMap<CallId, unknown>;
   readonly runningCalls: ReadonlyMap<CallId, RunningCall>;
   /** turn.end 时仍在 runningCalls 里的调用 —— 崩溃恢复时它们要被标记为中断 */
   readonly interruptedCalls: readonly RunningCall[];
@@ -213,6 +224,7 @@ export const emptySessionState = (id: SessionId): SessionState => ({
   untrustedContext: undefined,
   todos: [],
   editProposals: [],
+  presentations: new Map(),
   runningCalls: new Map(),
   interruptedCalls: [],
   runningSubagents: new Map(),

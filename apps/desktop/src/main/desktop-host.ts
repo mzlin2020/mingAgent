@@ -3,15 +3,17 @@ import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Profile } from '@xm/compose';
 import type {
+  AnyEvent,
   BlobRef,
+  CallId,
   CheckpointId,
   CheckpointManifestV2,
   Config,
   ContentBlock,
-  EditProposalId,
   SessionId,
+  ToolCardPair,
 } from '@xm/contracts';
-import { Config as ConfigSchema } from '@xm/contracts';
+import { Config as ConfigSchema, isCoreEvent } from '@xm/contracts';
 import type {
   OrphanedTurn,
   ExecutionWorld,
@@ -26,6 +28,7 @@ import {
   composeRules,
   detectOrphanedTurn,
   policyEnvFromPaths,
+  projectSessionCards,
   readBlob as readBlobBytes,
   serializeSessionState,
 } from '@xm/kernel';
@@ -43,11 +46,15 @@ import {
 import type { OpenedStores } from '@xm/storage';
 import { openStores } from '@xm/storage';
 import type { ProviderStreamStatus } from '@xm/providers';
-import type { TurnDeps } from '@xm/runtime';
-import { Agent, recoverInterruptedSubagents, runSubagentExploration } from '@xm/runtime';
+import type { CardActionRequest, CardActionResult, TurnDeps } from '@xm/runtime';
+import {
+  Agent,
+  recoverInterruptedSubagents,
+  runCardAction,
+  runSubagentExploration,
+} from '@xm/runtime';
 import {
   EventBus,
-  ScriptedProvider,
   SessionRuntime,
   abandonOrphanedTurn,
   autoTitleSession,
@@ -66,7 +73,6 @@ import {
 import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { assembleDesktopProfile } from './desktop-profile.js';
-import { prepareReviewedProposal } from './edit-review.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
 import { openProductionTools, type PtySessionEvent } from './production-tools.js';
@@ -180,13 +186,22 @@ export interface Services {
    * 拿现成的，比让它自己重放一遍全部历史（旧行为）省掉一整趟 IPC 全量物化。
    */
   getSessionState(sessionId: SessionId): Promise<SerializedSessionState>;
+  /** `getSessionState` + 全量卡片。渲染层打开会话走这条 */
+  readSession(sessionId: SessionId): Promise<ReadSessionPayload>;
+  /**
+   * 一条工具事件对应的那半张卡片，随事件推给渲染层（ADR-0058）。
+   *
+   * 同步、只读、不打开会话——事件是从已打开的会话里发出来的，
+   * 这里查不到就说明它不是工具事件，返回 `undefined` 即可。
+   */
+  cardForEvent(event: AnyEvent): ToolCardPair | undefined;
   inspectCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<CheckpointManifestV2>;
   restoreCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<boolean>;
-  reviewEditProposal(
-    sessionId: SessionId,
-    proposalId: EditProposalId,
-    selectedHunkIds: readonly string[],
-  ): Promise<{ readonly applied: boolean; readonly derivedProposalId?: EditProposalId }>;
+  /**
+   * 卡片动作（ADR-0065）。渲染层送上来的只有"哪次调用、哪个动作、一份闭集内的载荷"，
+   * 反查工具、校验载荷、转成一次新的工具调用全在这条路上，且那次调用照常走完整十二步链。
+   */
+  cardAction(sessionId: SessionId, request: CardActionRequest): Promise<CardActionResult>;
   /** 解除本会话的不可信标记。返回是否真的解除了（没有标记时为 false） */
   clearUntrusted(sessionId: SessionId, reason?: string): Promise<boolean>;
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
@@ -208,6 +223,11 @@ export interface Services {
   abandonOrphanedSession(sessionId: SessionId): Promise<boolean>;
   close(): Promise<void>;
 }
+
+/** `readSession` 的返回形状：序列化状态 + 按 `callId` 索引的全量卡片 */
+export type ReadSessionPayload = SerializedSessionState & {
+  readonly cards: readonly (readonly [CallId, ToolCardPair])[];
+};
 
 export async function startServices(): Promise<Services> {
   /*
@@ -409,7 +429,21 @@ export async function startServices(): Promise<Services> {
       get: async (sessionId, proposalId) => {
         const runtime = await runtimeFor(sessionId);
         const item = runtime.state.editProposals.find((candidate) => candidate.proposal.proposalId === proposalId);
-        return item === undefined ? undefined : { proposal: item.proposal, applied: item.appliedAt !== undefined };
+        return item === undefined
+          ? undefined
+          : {
+              proposal: item.proposal,
+              applied: item.appliedAt !== undefined,
+              reviewed: item.reviewedAt !== undefined,
+            };
+      },
+      markReviewed: async (sessionId, proposalId, selectedHunkIds) => {
+        const runtime = await runtimeFor(sessionId);
+        const turnId = runtime.state.activeTurn?.turnId;
+        await runtime.record({
+          type: 'edit.reviewed', payload: { proposalId, selectedHunkIds: [...selectedHunkIds] },
+          ...(turnId === undefined ? {} : { turnId }),
+        });
       },
       markApplied: async (sessionId, proposalId) => {
         const runtime = await runtimeFor(sessionId);
@@ -755,6 +789,21 @@ export async function startServices(): Promise<Services> {
       return serializeSessionState(runtime.state);
     },
 
+    /**
+     * 打开会话：状态 + 全量卡片。
+     *
+     * 卡片在这里算而不是让渲染层自己算，是因为投影函数含在工具定义里、跨不了进程
+     * （`kernel/tool/present.ts`）。它是一次 O(工具调用数) 的纯函数遍历，
+     * **不重放事件流**——`runtime.state` 本来就已经 reduce 好了。
+     */
+    async readSession(sessionId: SessionId): Promise<ReadSessionPayload> {
+      const runtime = await runtimeFor(sessionId);
+      return {
+        ...serializeSessionState(runtime.state),
+        cards: [...projectSessionCards(runtime.state, tools).entries()],
+      };
+    },
+
     async inspectCheckpoint(
       sessionId: SessionId,
       checkpointId: CheckpointId,
@@ -802,60 +851,27 @@ export async function startServices(): Promise<Services> {
       );
     },
 
-    async reviewEditProposal(sessionId, proposalId, selectedHunkIds) {
+    cardForEvent(event) {
+      if (!isCoreEvent(event)) return undefined;
+      if (event.type !== 'tool.start' && event.type !== 'tool.end') return undefined;
+      const state = runtimes.get(event.sessionId)?.state;
+      if (state === undefined) return undefined;
+      const card = projectSessionCards(state, tools).get(event.payload.callId);
+      if (card === undefined) return undefined;
+      // 只送这条事件对应的那一半：挂起卡片在 tool.start，完成卡片在 tool.end
+      return event.type === 'tool.start'
+        ? { ...(card.call === undefined ? {} : { call: card.call }) }
+        : { ...(card.result === undefined ? {} : { result: card.result }) };
+    },
+
+    async cardAction(sessionId, request) {
       return withExclusiveSessionOperation(
         sessionId,
-        '会话仍在运行，不能同时应用 diff 审阅结果。',
+        '会话仍在运行，不能同时执行卡片动作。',
         async (controller) => {
           const runtime = await runtimeFor(sessionId);
-          const item = runtime.state.editProposals.find(
-            (candidate) => candidate.proposal.proposalId === proposalId,
-          );
-          if (item === undefined || item.appliedAt !== undefined || item.reviewedAt !== undefined) {
-            throw new Error('该编辑提案已处理或不存在。');
-          }
-          const derived = await prepareReviewedProposal(item, selectedHunkIds, executor.fs);
-
-          await runtime.record({
-            type: 'edit.reviewed',
-            payload: { proposalId, selectedHunkIds: [...selectedHunkIds] },
-          });
-          if (derived === undefined) return { applied: false };
-          await runtime.record({ type: 'edit.proposed', payload: { proposal: derived } });
-
-          const callId = ids.call();
           const deps = await buildTurnDeps(sessionId, runtime, controller.signal);
-          const provider = new ScriptedProvider({
-            turns: [
-              {
-                chunks: [
-                  { kind: 'tool_call_start', id: callId, name: 'edit.apply' },
-                  {
-                    kind: 'tool_call_delta',
-                    id: callId,
-                    argsJson: JSON.stringify({
-                      proposalId: derived.proposalId,
-                      files: derived.files.map((file) => ({
-                        path: file.path,
-                        beforeHash: file.beforeHash,
-                      })),
-                    }),
-                  },
-                  { kind: 'tool_call_end', id: callId },
-                  { kind: 'stop', reason: 'tool_use' },
-                ],
-              },
-              { chunks: [{ kind: 'stop', reason: 'end_turn' }] },
-            ],
-          });
-          await runTurn(
-            { ...deps, provider, model: 'scripted-1' },
-            [{ type: 'text', text: `用户从 diff 面板应用提案 ${proposalId} 的选中块。` }],
-          );
-          const applied = runtime.state.editProposals.find(
-            (candidate) => candidate.proposal.proposalId === derived.proposalId,
-          )?.appliedAt !== undefined;
-          return { applied, derivedProposalId: derived.proposalId };
+          return runCardAction(deps, request);
         },
       );
     },

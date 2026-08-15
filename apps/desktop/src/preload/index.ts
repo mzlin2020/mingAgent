@@ -26,7 +26,7 @@ contextBridge.exposeInMainWorld('xm', {
   readSession: (req: unknown) => ipcRenderer.invoke(CH.readSession, req),
   inspectCheckpoint: (req: unknown) => ipcRenderer.invoke(CH.inspectCheckpoint, req),
   restoreCheckpoint: (req: unknown) => ipcRenderer.invoke(CH.restoreCheckpoint, req),
-  reviewEditProposal: (req: unknown) => ipcRenderer.invoke(CH.reviewEditProposal, req),
+  cardAction: (req: unknown) => ipcRenderer.invoke(CH.cardAction, req),
   readBlob: (req: unknown) => ipcRenderer.invoke(CH.readBlob, req),
   clearUntrusted: (req: unknown) => ipcRenderer.invoke(CH.clearUntrusted, req),
   interrupt: (req: unknown) => ipcRenderer.invoke(CH.interrupt, req),

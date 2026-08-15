@@ -46,6 +46,7 @@ export * from './port/blob-store-contract.js';
 export * from './tool/types.js';
 export * from './tool/registry.js';
 export * from './tool/truncate.js';
+export * from './tool/present.js';
 
 export * from './trace/derive-trace.js';
 

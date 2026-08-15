@@ -16,7 +16,7 @@ import {
   ReadSessionResult,
   ResumeOrphanedSessionResult,
   RestoreCheckpointResult,
-  ReviewEditProposalResult,
+  CardActionResult,
   SendUserMessageResult,
   SteerUserMessageResult,
   SetApiKeyResult,
@@ -45,7 +45,7 @@ interface XmBridge {
   readBlob(req: unknown): Promise<unknown>;
   inspectCheckpoint(req: unknown): Promise<unknown>;
   restoreCheckpoint(req: unknown): Promise<unknown>;
-  reviewEditProposal(req: unknown): Promise<unknown>;
+  cardAction(req: unknown): Promise<unknown>;
   clearUntrusted(req: unknown): Promise<unknown>;
   interrupt(req: unknown): Promise<unknown>;
   chooseWorkspace(): Promise<unknown>;
@@ -115,11 +115,13 @@ export const api = {
   restoreCheckpoint: (sessionId: string, checkpointId: string) =>
     call(bridge().restoreCheckpoint({ sessionId, checkpointId }), RestoreCheckpointResult),
 
-  reviewEditProposal: (sessionId: string, proposalId: string, selectedHunkIds: readonly string[]) =>
-    call(
-      bridge().reviewEditProposal({ sessionId, proposalId, selectedHunkIds }),
-      ReviewEditProposalResult,
-    ),
+  /** 卡片动作（ADR-0065）。**只有 callId + actionId + 闭集载荷**，没有工具名 */
+  cardAction: (
+    sessionId: string,
+    callId: string,
+    actionId: string,
+    payload: Record<string, unknown>,
+  ) => call(bridge().cardAction({ sessionId, callId, actionId, payload }), CardActionResult),
 
   clearUntrusted: (sessionId: string, reason?: string) =>
     call(

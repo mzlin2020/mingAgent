@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { BlobRef, ContentBlock, Message } from '@xm/contracts';
+import type { BlobRef, CallId, ContentBlock, Message, ToolCard as Card } from '@xm/contracts';
 import { api } from '../bridge.js';
 import { Disclosure } from './disclosure.js';
 import { MarkdownText } from './markdown.js';
 import { cn } from '../lib/cn.js';
+import { cardTone } from './cards.js';
+import { rendererFor } from '../lib/card-registry.js';
+import { useUi } from '../store.js';
 
 /**
  * 消息流。工具结果先索引一遍，再交给每条消息——`tool_use` 与 `tool_result`
@@ -113,7 +116,14 @@ function BlockView({
       );
 
     case 'tool_use':
-      return <ToolCard name={block.name} input={block.input} result={results.get(block.id)} />;
+      return (
+        <ToolCard
+          callId={block.id}
+          name={block.name}
+          input={block.input}
+          result={results.get(block.id)}
+        />
+      );
 
     case 'image':
       return <ImageBlockView source={block.source} />;
@@ -182,52 +192,70 @@ function ImageBlockView({ source }: { readonly source: BlobRef }): ReactNode {
 /**
  * 工具调用卡片：请求与结果合成一张。
  *
- * 结果默认折叠。理由不是省地方，是**结果是给模型看的**——它经常是几百行文件内容，
- * 铺开来会把对话本身淹掉。用户想看的时候点开，而"它到底做了什么"（工具名 + 入参）
- * 始终可见。
+ * ── 这里已经不认识任何工具了（ADR-0058）──
+ *
+ * 卡片由主进程按工具自己的投影函数算好送来（`kernel/tool/present.ts`），这一层做三件事：
+ * 挑一张（跑着的时候用挂起卡片，完成后用完成卡片）、按 `card.kind` 找渲染器、
+ * 把动作原样回送。**找不到渲染器就退回一行摘要**——三方插件贡献的卡片种类
+ * 在我们这里没有渲染器，是发布前测不到的组合，白屏比朴素难看得多。
+ *
+ * 结果默认折叠这条老规矩落在各个渲染器里：结果是给模型看的，经常几百行，
+ * 铺开会把对话本身淹掉；而"它到底做了什么"（那行摘要）始终可见。
  */
 function ToolCard({
+  callId,
   name,
   input,
   result,
 }: {
+  readonly callId: CallId;
   readonly name: string;
   readonly input: unknown;
   readonly result: Extract<ContentBlock, { type: 'tool_result' }> | undefined;
 }): ReactNode {
+  const pair = useUi((s) => s.cards.get(callId));
+  const invoke = useUi((s) => s.cardAction);
+  const busy = useUi((s) => s.busy);
   const failed = result?.isError === true;
-  const text = (result?.content ?? [])
-    .map((c) => (c.type === 'text' ? c.text : `[${c.type}]`))
-    .join('\n');
+  const pending = result === undefined;
+  const card = (pending ? pair?.call : pair?.result ?? pair?.call) ?? fallbackCard(name, input);
+  const Renderer = rendererFor(card.kind);
 
   return (
-    <div
-      className={cn(
-        'overflow-hidden rounded-control border text-meta',
-        failed ? 'border-danger-border' : 'border-border',
-      )}
-    >
+    <div className={cardTone(failed)}>
       <div className={cn('flex items-baseline gap-2.5 px-3 py-1.5', failed && 'bg-danger-bg')}>
-        <span className="font-mono font-medium">{name}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-muted">{summarize(input)}</span>
+        <span className="min-w-0 flex-1 truncate font-mono">{card.summary}</span>
         <span className={cn('shrink-0', failed ? 'text-danger' : 'text-faint')}>
-          {result === undefined ? '进行中' : failed ? '失败' : '完成'}
+          {pending ? '进行中' : failed ? '失败' : '完成'}
         </span>
       </div>
-      {text !== '' && (
-        <Disclosure
-          className="border-t border-border"
-          summaryClassName="px-3 py-1.5"
-          label={failed ? '查看错误' : `查看结果（${String(text.split('\n').length)} 行）`}
-        >
-          <pre className="max-h-96 overflow-auto whitespace-pre-wrap px-3 pb-2.5 font-mono text-muted">
-            {text}
-          </pre>
-        </Disclosure>
+      {Renderer !== undefined && (
+        <Renderer
+          card={card}
+          pending={pending}
+          failed={failed}
+          busy={busy}
+          onAction={(actionId, payload) => {
+            void invoke(callId, actionId, payload);
+          }}
+        />
       )}
     </div>
   );
 }
+
+/**
+ * 主进程还没送来卡片时的占位（切会话的竞态、或一条来自更高版本的事件）。
+ *
+ * 它与 `kernel` 里那张通用兜底卡片长得一样但**不是同一份代码**：那一份是
+ * "工具没写投影"的降级，这一份是"卡片还没到"的占位。两者恰好都退化成
+ * 工具名 + 入参一行摘要，因为那本来就是不知道更多时唯一诚实的显示。
+ */
+const fallbackCard = (name: string, input: unknown): Card => ({
+  kind: 'generic',
+  title: name,
+  summary: `${name} ${summarize(input)}`.trim().slice(0, 400),
+});
 
 /** 工具入参的一行摘要。路径类的最有用，其余退回紧凑 JSON */
 function summarize(input: unknown): string {
@@ -235,5 +263,10 @@ function summarize(input: unknown): string {
   const record = input as Record<string, unknown>;
   const path = record.path;
   if (typeof path === 'string') return path;
-  return JSON.stringify(input);
+  try {
+    return JSON.stringify(input);
+  } catch {
+    // 循环引用与 BigInt 都会让它抛。历史事件里的入参什么形状都有可能
+    return '';
+  }
 }

@@ -21,7 +21,7 @@ import { TrustLevel } from '../permission/request.js';
 import { Todo } from '../session/todo.js';
 import { EditProposal } from '../session/edit.js';
 import { RiskLevel } from '../tool/descriptor.js';
-import { DisplayHint } from '../tool/display.js';
+import { ToolCallOrigin } from '../tool/origin.js';
 export { ContextInjectedPayload, ContextInjectionSource } from './context-injected.js';
 
 /**
@@ -116,6 +116,8 @@ export const ToolStartPayload = z.looseObject({
   input: z.unknown(),
   risk: RiskLevel,
   capabilities: z.array(Capability),
+  /** 缺席按 `{ kind: 'model' }` 读——M3-f 之前的历史事件全都没有这个字段 */
+  origin: ToolCallOrigin.optional(),
 });
 
 /** [T] 瞬态 */
@@ -138,7 +140,11 @@ export const ToolEndPayload = z.looseObject({
   forModel: z.array(ResultBlock),
   /** 未截断全文（仅当发生截断时存在） */
   fullRef: BlobRef.optional(),
-  display: DisplayHint.optional(),
+  /**
+   * 回放需要的最小事实（ADR-0058）。**卡片本身不落库**——它是这份事实与调用入参的
+   * 纯函数投影，实时流与回放各投影一次，结果必须一致。
+   */
+  presentation: z.unknown().optional(),
   error: XmError.optional(),
 });
 
@@ -206,7 +212,6 @@ export const PermissionRequestPayload = z.looseObject({
   risk: RiskLevel,
   reason: z.string(),
   trustLevel: TrustLevel,
-  preview: DisplayHint.optional(),
 });
 
 export const PermissionDecisionPayload = z.looseObject({

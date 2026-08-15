@@ -50,6 +50,7 @@ export interface SerializedSessionState {
   readonly untrustedContext: UntrustedContext | undefined;
   readonly todos: readonly Todo[];
   readonly editProposals: readonly EditProposalState[];
+  readonly presentations: readonly (readonly [CallId, unknown])[];
   readonly runningCalls: readonly (readonly [CallId, RunningCall])[];
   readonly interruptedCalls: readonly RunningCall[];
   readonly runningSubagents: readonly (readonly [AgentId, RunningSubagent])[];
@@ -77,6 +78,7 @@ export function serializeSessionState(state: SessionState): SerializedSessionSta
     untrustedContext: state.untrustedContext,
     todos: state.todos,
     editProposals: state.editProposals,
+    presentations: [...state.presentations.entries()],
     runningCalls: [...state.runningCalls.entries()],
     interruptedCalls: state.interruptedCalls,
     runningSubagents: [...state.runningSubagents.entries()],
@@ -105,6 +107,7 @@ export function deserializeSessionState(s: SerializedSessionState): SessionState
     untrustedContext: s.untrustedContext,
     todos: s.todos,
     editProposals: s.editProposals,
+    presentations: new Map(s.presentations),
     runningCalls: new Map(s.runningCalls),
     interruptedCalls: s.interruptedCalls,
     runningSubagents: new Map(s.runningSubagents),

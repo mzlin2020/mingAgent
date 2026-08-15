@@ -92,6 +92,12 @@ export interface ToolExecutionResult {
   readonly error?: XmError;
   readonly receipt?: ExecutionReceipt;
   readonly fullRef?: BlobRef;
+  /**
+   * 工具随结果 yield 出来的展示事实（ADR-0058）。**尚未校验**——
+   * 落库前由 `RegisteredTool.parsePresentation` 过一遍工具自己的 schema，
+   * 没声明 schema 或校验不过就不落。
+   */
+  readonly presentation?: unknown;
 }
 
 export interface ToolPostExecuteInput extends ToolExecuteInput {

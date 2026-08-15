@@ -21,7 +21,7 @@ import {
   ReadSessionRequest,
   ReadSessionResult,
   RestoreCheckpointRequest,
-  ReviewEditProposalRequest,
+  CardActionRequest,
   SendUserMessageRequest,
   SessionListStatus,
 } from '../src/shared/ipc.js';
@@ -92,17 +92,21 @@ describe('checkpoint v2 IPC', () => {
   });
 });
 
-describe('diff review IPC', () => {
-  it('只接受品牌化提案 ID 与有界 hunk ID 数组', async () => {
-    const { newEditProposalId } = await import('@xm/contracts');
+describe('卡片动作 IPC 契约（ADR-0065）', () => {
+  it('只接受 callId + actionId + 闭集内的载荷', () => {
     const valid = {
       sessionId: newSessionId(),
-      proposalId: newEditProposalId(),
-      selectedHunkIds: ['0:0'],
+      callId: newCallId(),
+      actionId: 'accept',
+      payload: { selected: ['0:0'] },
     };
-    expect(ReviewEditProposalRequest.safeParse(valid).success).toBe(true);
-    expect(ReviewEditProposalRequest.safeParse({ ...valid, proposalId: 'bad' }).success).toBe(false);
-    expect(ReviewEditProposalRequest.safeParse({ ...valid, selectedHunkIds: Array(1001).fill('x') }).success).toBe(false);
+    expect(CardActionRequest.safeParse(valid).success).toBe(true);
+    // 渲染层不能借动作载荷夹带别的东西：闭集里只有 {} 与 { selected }
+    expect(CardActionRequest.safeParse({ ...valid, payload: { path: '/etc/passwd' } }).success).toBe(false);
+    expect(CardActionRequest.safeParse({ ...valid, callId: 'bad' }).success).toBe(false);
+    expect(
+      CardActionRequest.safeParse({ ...valid, payload: { selected: Array(2001).fill('x') } }).success,
+    ).toBe(false);
   });
 });
 
@@ -110,7 +114,9 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
   it('空会话的序列化状态能通过渲染层这一侧的校验', () => {
     const sessionId = newSessionId();
     const serialized = serializeSessionState(emptySessionState(sessionId));
-    expect(ReadSessionResult.safeParse(serialized).success).toBe(true);
+    expect(ReadSessionResult.safeParse({ ...serialized, cards: [] }).success).toBe(true);
+    // 卡片不是可选的：漏送它渲染层会静默退回一行摘要，而那种降级看起来跟"工具没写投影"一模一样
+    expect(ReadSessionResult.safeParse(serialized).success).toBe(false);
   });
 
   it('带着未清空 Map（runningCalls/ptySessions）的状态也能通过——这正是快照要处理的形状', () => {
@@ -127,7 +133,7 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
         [newPtySessionId(), { ptySessionId: newPtySessionId(), cwd: '/w', startedAt: 1 }],
       ]),
     };
-    const result = ReadSessionResult.safeParse(serializeSessionState(state));
+    const result = ReadSessionResult.safeParse({ ...serializeSessionState(state), cards: [] });
     expect(result.success).toBe(true);
   });
 
@@ -136,7 +142,7 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
     const serialized = serializeSessionState(emptySessionState(sessionId));
     // Electron 的 IPC 走结构化克隆，不是 JSON；Node 的 structuredClone 是同一族算法，
     // 用它模拟"数据真的跨了一次进程边界"比只 JSON.stringify/parse 更接近真实路径。
-    const cloned: unknown = structuredClone(serialized);
+    const cloned: unknown = structuredClone({ ...serialized, cards: [] });
     expect(ReadSessionResult.safeParse(cloned).success).toBe(true);
   });
 });

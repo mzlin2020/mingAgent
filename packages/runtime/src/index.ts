@@ -22,6 +22,7 @@ export * from './turn-request.js';
 export * from './context-builder.js';
 export * from './subagent.js';
 export * from './crash-recovery.js';
+export * from './card-action.js';
 export * from './provider/scripted.js';
 export * from './tools/demo.js';
 export * from './tools/todo.js';

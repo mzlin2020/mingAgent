@@ -1,9 +1,16 @@
-import type { ResourceClaim, ToolDescriptor, ToolProgress, XmError } from '@xm/contracts';
+import type {
+  ResourceClaim,
+  ToolCard,
+  ToolDescriptor,
+  ToolProgress,
+  XmError,
+} from '@xm/contracts';
 import { DEFAULT_RESULT_LIMITS, assertToolSchema, toModelSchema, xmError } from '@xm/contracts';
 import type {
   RegisteredTool,
   ToolAvailabilityContext,
   ToolContext,
+  ToolResultOutcome,
   ToolSpec,
 } from './types.js';
 
@@ -127,7 +134,7 @@ export class ToolInputError extends Error {
  * 泛型 `I` 的作用是把 `inputSchema: ZodType<I>` 与 `execute(input: I)` 绑在一起——
  * 写错了（schema 说是 string、execute 当 number 用）在定义处就编译失败。
  */
-export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
+export function defineTool<I, M = unknown>(spec: ToolSpec<I, M>): RegisteredTool {
   // 注册时就炸，而不是等模型在生产里填出一个诡异参数（ADR-0009）
   assertToolSchema(spec.inputSchema);
 
@@ -147,6 +154,17 @@ export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
     concurrency: spec.concurrency ?? (spec.resources === undefined ? 'exclusive' : 'parallel'),
     resultLimits: { ...DEFAULT_RESULT_LIMITS, ...spec.resultLimits },
     source: spec.source ?? { kind: 'builtin' },
+  };
+
+  /*
+   * 展示事实同样是不可信输入：没声明 schema 就等于没校验过，而这个值将来会被原样
+   * 喂给回放期的投影函数。没声明即不落库——失败关闭，与"未声明 pathInputs 就拒绝执行"
+   * 同一个形状。
+   */
+  const parsePresentation = (value: unknown): M | undefined => {
+    if (spec.presentationSchema === undefined || value === undefined) return undefined;
+    const parsed = spec.presentationSchema.safeParse(value);
+    return parsed.success ? parsed.data : undefined;
   };
 
   const parse = (raw: unknown): I => {
@@ -179,6 +197,42 @@ export function defineTool<I>(spec: ToolSpec<I>): RegisteredTool {
       if (ctx.disabledTools.includes(spec.name)) return false;
       return spec.available?.(ctx) ?? true;
     },
+    /*
+     * ── 投影路径是软校验的（ADR-0058 §三）──
+     *
+     * 这里**故意**不用上面那个会抛的 `parse`：历史事件里躺着旧版本参数和被截断的
+     * 畸形参数，而展示路径崩掉等于会话打不开。所以入参解析、投影调用、产出校验
+     * 三步全部失败即降级，最终落到通用卡片上——UI 变朴素，不变白屏。
+     */
+    presentCall(rawInput: unknown): ToolCard | undefined {
+      if (spec.presentCall === undefined) return undefined;
+      const parsed = spec.inputSchema.safeParse(rawInput);
+      if (!parsed.success) return undefined;
+      try {
+        return spec.presentCall(parsed.data);
+      } catch {
+        return undefined;
+      }
+    },
+    presentResult(rawInput: unknown, outcome: ToolResultOutcome): ToolCard | undefined {
+      if (spec.presentResult === undefined) return undefined;
+      const parsed = spec.inputSchema.safeParse(rawInput);
+      if (!parsed.success) return undefined;
+      const presentation = parsePresentation(outcome.presentation);
+      const typed: ToolResultOutcome<M> = {
+        ok: outcome.ok,
+        text: outcome.text,
+        ...(outcome.errorMessage === undefined ? {} : { errorMessage: outcome.errorMessage }),
+        ...(presentation === undefined ? {} : { presentation }),
+      };
+      try {
+        return spec.presentResult(parsed.data, typed);
+      } catch {
+        return undefined;
+      }
+    },
+    parsePresentation,
+    actions: (spec.actions ?? {}),
   };
 }
 

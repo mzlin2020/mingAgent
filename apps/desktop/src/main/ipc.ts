@@ -12,7 +12,7 @@ import {
   ReadSessionRequest,
   ResumeOrphanedSessionRequest,
   RestoreCheckpointRequest,
-  ReviewEditProposalRequest,
+  CardActionRequest,
   SendUserMessageRequest,
   SteerUserMessageRequest,
   SetApiKeyRequest,
@@ -52,9 +52,7 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
     dataUrl: await services.readBlob(req.ref),
   }));
 
-  handle(CH.readSession, ReadSessionRequest, async (req) => {
-    return services.getSessionState(req.sessionId);
-  });
+  handle(CH.readSession, ReadSessionRequest, async (req) => services.readSession(req.sessionId));
 
   handle(CH.inspectCheckpoint, InspectCheckpointRequest, async (req) =>
     services.inspectCheckpoint(req.sessionId, req.checkpointId),
@@ -68,8 +66,21 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
     reason: await services.steerUserMessage(req.sessionId, req.text),
   }));
 
-  handle(CH.reviewEditProposal, ReviewEditProposalRequest, async (req) =>
-    services.reviewEditProposal(req.sessionId, req.proposalId, req.selectedHunkIds),
+  /*
+   * 卡片动作（ADR-0065）。**这是渲染层唯一一条"让主进程干活"的富交互回程**，
+   * 且是具名的——不是 `invoke(channel, args)` 那种通用入口，
+   * depcruise 的 `preload-必须保持薄` 规则的实质没破。
+   *
+   * 四步的顺序不可换，前两步在这里：① 信封 Zod 校验（`handle` 统一做的），
+   * ② 由 `callId` 从**已落库的事件流**反查工具——不信渲染层传来的任何字段。
+   * 后两步在 `@xm/runtime` 的 `runCardAction` 里。
+   */
+  handle(CH.cardAction, CardActionRequest, async (req) =>
+    services.cardAction(req.sessionId, {
+      callId: req.callId,
+      actionId: req.actionId,
+      payload: req.payload,
+    }),
   );
 
   handle(CH.clearUntrusted, ClearUntrustedRequest, async (req) => ({
@@ -148,8 +159,11 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
    * "窗口关闭"是常态而不是异常。
    */
   services.bus.subscribe((event) => {
+    // 卡片是随事件同行的纯函数投影，不是事件的一部分——它不落库、不参与 reduce()
+    const card = services.cardForEvent(event);
+    const payload = card === undefined ? event : { ...event, card };
     for (const win of windows()) {
-      if (!win.isDestroyed()) win.webContents.send(CH.event, event);
+      if (!win.isDestroyed()) win.webContents.send(CH.event, payload);
     }
   });
 }

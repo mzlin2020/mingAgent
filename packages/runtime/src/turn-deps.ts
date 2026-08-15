@@ -1,4 +1,4 @@
-import type { CallId, PriceTable } from '@xm/contracts';
+import type { CallId, PriceTable, ToolCallOrigin } from '@xm/contracts';
 import type {
   AbortLike,
   BlobStore,
@@ -29,6 +29,14 @@ export interface TurnCoreDeps {
   readonly blobs?: BlobStore;
   readonly prices?: PriceTable;
   readonly maxIterations?: number;
+  /**
+   * 这一轮里某几次调用不是模型发起的（ADR-0065 §四）。键是 `callId`，缺席即
+   * `{ kind: 'model' }`。
+   *
+   * 目前唯一的生产者是卡片动作：它把用户的一次点击变成一次**新的**工具调用，
+   * 那次调用照常走完整十二步链，只是事件流里记得住"这是人点出来的"。
+   */
+  readonly callOrigins?: ReadonlyMap<CallId, ToolCallOrigin>;
 }
 
 export interface PendingCall {

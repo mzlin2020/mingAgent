@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import {
   BlobRef,
+  CallId,
+  CARD_ACTION_PAYLOAD,
   CheckpointId,
   CheckpointManifestV2,
-  EditProposalId,
   EventEnvelope,
   SessionId,
+  ToolCardPair,
 } from '@xm/contracts';
 
 /**
@@ -124,15 +126,21 @@ export const RestoreCheckpointRequest = z.strictObject({
 });
 export const RestoreCheckpointResult = z.object({ restored: z.boolean() });
 
-export const ReviewEditProposalRequest = z.strictObject({
+/**
+ * 卡片动作（ADR-0065）。**渲染层能说的只有这三样**：哪一次调用、哪个动作 id、
+ * 一份闭集内的载荷。没有工具名、没有路径、没有"要执行什么"。
+ *
+ * 它取代了 M2-e 的 `reviewEditProposal` 专用通道——那条通道里渲染层知道
+ * "有一个叫 edit 的东西"和"提案 id 长什么样"，而这正是 `docs/05`
+ * "新增工具不需要改 UI 代码"兑现不了的原因。
+ */
+export const CardActionRequest = z.strictObject({
   sessionId: SessionId,
-  proposalId: EditProposalId,
-  selectedHunkIds: z.array(z.string().min(1)).max(1000),
+  callId: CallId,
+  actionId: z.string().min(1).max(64),
+  payload: z.union([CARD_ACTION_PAYLOAD.none, CARD_ACTION_PAYLOAD.selection]),
 });
-export const ReviewEditProposalResult = z.object({
-  applied: z.boolean(),
-  derivedProposalId: EditProposalId.optional(),
-});
+export const CardActionResult = z.object({ dispatched: z.boolean() });
 
 /**
  * 会话状态的可过 IPC 镜像——拆到独立文件 `ipc-session-state.ts`（规模纪律，
@@ -284,8 +292,14 @@ export const SetApiKeyRequest = z.strictObject({
 });
 export const SetApiKeyResult = z.object({ ok: z.literal(true) });
 
-/** 主进程 → 渲染层的事件推送 */
-export const PushedEvent = EventEnvelope;
+/**
+ * 主进程 → 渲染层的事件推送。
+ *
+ * `card` 是**随事件同行的纯函数投影**，不是事件的一部分：它不落库、不参与
+ * `reduce()`、不进模型请求。投影跑在主进程是因为投影函数含在工具定义里、跨不了进程
+ * （见 `kernel/tool/present.ts` 的说明）。
+ */
+export const PushedEvent = EventEnvelope.extend({ card: ToolCardPair.optional() });
 export type PushedEvent = z.infer<typeof PushedEvent>;
 
 /**

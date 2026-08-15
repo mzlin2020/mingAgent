@@ -257,10 +257,25 @@ const context = (): ToolContext => ({
 });
 
 class MemoryAccess implements EditProposalAccess {
-  readonly #items = new Map<EditProposalId, { proposal: EditProposal; applied: boolean }>();
+  readonly #items = new Map<
+    EditProposalId,
+    { proposal: EditProposal; applied: boolean; reviewed: boolean; selected?: readonly string[] }
+  >();
   get size(): number { return this.#items.size; }
   save(_sessionId: SessionId, proposal: EditProposal): Promise<void> {
-    this.#items.set(proposal.proposalId, { proposal, applied: false });
+    this.#items.set(proposal.proposalId, { proposal, applied: false, reviewed: false });
+    return Promise.resolve();
+  }
+  markReviewed(
+    _sessionId: SessionId,
+    proposalId: EditProposalId,
+    selectedHunkIds: readonly string[],
+  ): Promise<void> {
+    const item = this.#items.get(proposalId);
+    if (item !== undefined) {
+      item.reviewed = true;
+      item.selected = selectedHunkIds;
+    }
     return Promise.resolve();
   }
   get(_sessionId: SessionId, proposalId: EditProposalId) {
@@ -271,7 +286,7 @@ class MemoryAccess implements EditProposalAccess {
     if (item !== undefined) item.applied = true;
     return Promise.resolve();
   }
-  only(): { proposal: EditProposal; applied: boolean } {
+  only(): { proposal: EditProposal; applied: boolean; reviewed: boolean; selected?: readonly string[] } {
     const item = [...this.#items.values()][0];
     if (item === undefined) throw new Error('没有提案');
     return item;

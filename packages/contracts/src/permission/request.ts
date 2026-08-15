@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { CallId, RequestId, SessionId } from '../base/ids.js';
-import { DisplayHint } from '../tool/display.js';
 import { RiskLevel } from '../tool/descriptor.js';
 import { Capability } from './capability.js';
 
@@ -25,8 +24,6 @@ export const PermissionRequest = z.object({
   risk: RiskLevel,
   /** 给用户看：为什么要这个权限。空字符串不可接受 */
   reason: z.string().min(1),
-  /** 高风险操作的预览，比如将要执行的 diff */
-  preview: DisplayHint.optional(),
   trustLevel: TrustLevel,
 });
 export type PermissionRequest = z.infer<typeof PermissionRequest>;

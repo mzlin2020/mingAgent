@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { newEditProposalId, newSessionId } from '@xm/contracts';
+import { newCallId, newSessionId } from '@xm/contracts';
 import { IpcEnvelope, SettingsResult, StatusResult } from '../src/shared/ipc.js';
 import { CH } from '../src/shared/channels.js';
 import type { RuntimeStatus, Services } from '../src/main/desktop-host.js';
@@ -91,26 +91,43 @@ describe('settings IPC', () => {
   });
 });
 
-describe('diff review IPC handler', () => {
-  it('校验窄入参并把选择原样交给 services', async () => {
-    const reviewEditProposal = vi.fn(() => Promise.resolve({ applied: true }));
+describe('卡片动作 IPC handler（ADR-0065）', () => {
+  it('校验窄入参并把 callId/actionId/载荷原样交给 services', async () => {
+    const cardAction = vi.fn(() => Promise.resolve({ dispatched: true }));
     const services = {
-      reviewEditProposal,
+      cardAction,
       bus: { subscribe: vi.fn() },
     } as unknown as Services;
     registerIpc(services, () => []);
-    const handler = mockedElectron.handlers.get(CH.reviewEditProposal);
+    const handler = mockedElectron.handlers.get(CH.cardAction);
     const request = {
       sessionId: newSessionId(),
-      proposalId: newEditProposalId(),
-      selectedHunkIds: ['0:0'],
+      callId: newCallId(),
+      actionId: 'accept',
+      payload: { selected: ['0:0'] },
     };
     const envelope = IpcEnvelope.parse(await handler?.({}, request));
-    expect(envelope).toMatchObject({ ok: true, data: { applied: true } });
-    expect(reviewEditProposal).toHaveBeenCalledWith(
-      request.sessionId,
-      request.proposalId,
-      request.selectedHunkIds,
+    expect(envelope).toMatchObject({ ok: true, data: { dispatched: true } });
+    expect(cardAction).toHaveBeenCalledWith(request.sessionId, {
+      callId: request.callId,
+      actionId: request.actionId,
+      payload: request.payload,
+    });
+  });
+
+  it('🔴 载荷里夹带工具名 / 路径一律拒绝——渲染层说不了"要执行什么"', async () => {
+    const cardAction = vi.fn(() => Promise.resolve({ dispatched: true }));
+    registerIpc({ cardAction, bus: { subscribe: vi.fn() } } as unknown as Services, () => []);
+    const handler = mockedElectron.handlers.get(CH.cardAction);
+    const envelope = IpcEnvelope.parse(
+      await handler?.({}, {
+        sessionId: newSessionId(),
+        callId: newCallId(),
+        actionId: 'accept',
+        payload: { selected: ['0:0'], tool: 'shell.exec' },
+      }),
     );
+    expect(envelope).toMatchObject({ ok: false });
+    expect(cardAction).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AnyEvent, SessionId } from '@xm/contracts';
 import { isCoreEvent, parseStoredEvent } from '@xm/contracts';
-import type { LiveBuffer, SerializedSessionState, SessionState } from '@xm/kernel';
+import type { LiveBuffer, SessionState } from '@xm/kernel';
 import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kernel';
 import type {
   ImageAttachment,
@@ -14,6 +14,8 @@ import { api } from './bridge.js';
 import { IpcError, classifyIpcError } from './ipc-error.js';
 import type { OrphanedSlice } from './orphaned-sessions.js';
 import { createOrphanedSlice } from './orphaned-sessions.js';
+import type { CardsSlice } from './cards-slice.js';
+import { createCardsSlice, mergeCard } from './cards-slice.js';
 
 type Status = z.infer<typeof StatusResult>;
 
@@ -42,7 +44,7 @@ type Status = z.infer<typeof StatusResult>;
 /** 壳层主区：Home 最近会话 vs 当前焦点会话（ADR-0037） */
 export type ShellView = 'home' | 'chat' | 'security';
 
-interface UiState extends OrphanedSlice {
+interface UiState extends OrphanedSlice, CardsSlice {
   sessions: ListSessionsResult;
   /**
    * 顶栏 tabs 的打开集合（ADR-0037）。纯 UI 态，不持久化、不进事件流。
@@ -142,6 +144,8 @@ export const useUi = create<UiState>((set, get) => {
   return {
     // 崩溃恢复那一组（`orphanedSessions` 与三个动作）见 `orphaned-sessions.ts`
     ...createOrphanedSlice(set, get, applyIpcError),
+    // 工具卡片那一组见 `cards-slice.ts`——它是投影，不是会话状态
+    ...createCardsSlice(set, get, applyIpcError),
 
     sessions: [],
     openIds: [],
@@ -197,15 +201,21 @@ export const useUi = create<UiState>((set, get) => {
         openIds: withOpenId(get().openIds, id),
         shellView: 'chat',
         session: undefined,
+        cards: new Map(),
         live: EMPTY_LIVE,
         pendingInputs: [],
         error: undefined,
         sessionConflict: undefined,
       });
       try {
-        const serialized: SerializedSessionState = await api.readSession(id);
+        const { cards, ...serialized } = await api.readSession(id);
         // 会话可能在这次 await 期间又被切走——不要用一个旧会话的状态覆盖当前会话
-        if (get().currentId === id) set({ session: deserializeSessionState(serialized) });
+        if (get().currentId === id) {
+          set({
+            session: deserializeSessionState(serialized),
+            cards: new Map(cards),
+          });
+        }
       } catch (e) {
         applyIpcError(e, id);
       }
@@ -355,7 +365,11 @@ export const useUi = create<UiState>((set, get) => {
        * 顺序无关紧要（两者互不读对方），但**必须都调**——只调 reduce 就是 G6 那个洞，
        * 只调 applyLive 就成了真正的第二份状态。
        */
-      set({ session: reduce(session, e), live: applyLive(get().live, e) });
+      set({
+        session: reduce(session, e),
+        live: applyLive(get().live, e),
+        cards: mergeCard(get().cards, e, pushed.card),
+      });
     },
   };
 });

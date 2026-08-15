@@ -12,6 +12,7 @@ import {
   PtySessionId,
   SessionId,
   Todo,
+  ToolCardPair,
   TurnId,
   Usage,
   XmError,
@@ -147,6 +148,13 @@ export const SerializedSessionStateResult = z.object({
   untrustedContext: UntrustedContextSchema.or(z.undefined()),
   todos: z.array(Todo),
   editProposals: z.array(EditProposalStateSchema),
+  /**
+   * 每次调用落库的展示事实（ADR-0058）。**卡片不在这里**——卡片是它与调用入参的
+   * 纯函数投影，由主进程算好随 `cards` 一起送来（投影函数跨不了进程，见
+   * `kernel/tool/present.ts`）。这一份仍然要过来，是因为渲染层用 `reduce()` 增量吃
+   * 后续事件，它的本地状态必须与主进程那一份形状完全一致。
+   */
+  presentations: z.array(z.tuple([CallId, z.unknown()])),
   runningCalls: z.array(z.tuple([CallId, RunningCallSchema])),
   interruptedCalls: z.array(RunningCallSchema),
   runningSubagents: z.array(z.tuple([AgentId, RunningSubagentSchema])),
@@ -159,4 +167,12 @@ export const SerializedSessionStateResult = z.object({
   lastError: XmError.or(z.undefined()),
   lastSeq: z.number().int().nonnegative(),
 });
-export const ReadSessionResult = SerializedSessionStateResult;
+/**
+ * 打开会话时连同状态一起送来的全量卡片，按 `callId` 索引。
+ *
+ * 之后的增量由事件推送上的 `card` 字段补（见 `PushedEvent`）——两条路投影出来的
+ * 是同一个纯函数的结果，不存在"实时看到的卡片"与"重开会话看到的卡片"不一致的可能。
+ */
+export const ReadSessionResult = SerializedSessionStateResult.extend({
+  cards: z.array(z.tuple([CallId, ToolCardPair])),
+});

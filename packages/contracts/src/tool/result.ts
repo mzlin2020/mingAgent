@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { ResultBlock } from '../content/block.js';
-import { DisplayHint } from './display.js';
 
 /**
  * 结果截断上限。**由运行时统一执行，不由工具自觉。**
@@ -46,7 +45,19 @@ export const ToolProgress = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('result'),
     forModel: z.array(ResultBlock),
-    display: DisplayHint.optional(),
+    /**
+     * 回放需要的**最小事实**，随 `tool.end` 落库（ADR-0058 的 `presentationMeta`）。
+     *
+     * 为什么是工具 yield 出来的一个字段，而不是描述符上的第三个投影函数：
+     * 它**不需要是纯函数**——只在结果时刻求值一次、输出落库、回放时从库里读回来。
+     * 做成 `presentationMeta(args, value)` 反而要求先发明 `docs/10 §9.5.4` 的规范输出值
+     * 把执行期事实喂给它，而那是 M3-h 的范围。见 ADR-0058 的 2026-08-15 定案。
+     *
+     * 形状由工具自己的 Zod schema（`ToolSpec.presentationSchema`）校验；
+     * 它是**回放期投影函数唯一的输入来源之一**，所以宁可小、宁可自足，
+     * 不要把渲染顺手用得上的东西全塞进来——那正是 `DisplayHint.data` 全量落库的老毛病。
+     */
+    presentation: z.unknown().optional(),
   }),
 ]);
 export type ToolProgress = z.infer<typeof ToolProgress>;

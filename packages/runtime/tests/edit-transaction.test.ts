@@ -130,10 +130,20 @@ function runtimeAccess(runtime: SessionRuntime): EditProposalAccess {
       );
       return Promise.resolve(item === undefined
         ? undefined
-        : { proposal: item.proposal, applied: item.appliedAt !== undefined });
+        : {
+            proposal: item.proposal,
+            applied: item.appliedAt !== undefined,
+            reviewed: item.reviewedAt !== undefined,
+          });
     },
     markApplied: async (_sessionId, proposalId) => {
       await runtime.record({ type: 'edit.applied', payload: { proposalId } });
+    },
+    markReviewed: async (_sessionId, proposalId, selectedHunkIds) => {
+      await runtime.record({
+        type: 'edit.reviewed',
+        payload: { proposalId, selectedHunkIds: [...selectedHunkIds] },
+      });
     },
   };
 }
