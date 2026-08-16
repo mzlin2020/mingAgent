@@ -14,8 +14,51 @@ import type {
 } from '@xm/contracts';
 import type { PlatformCapabilities } from '../port/platform.js';
 import type { ExecutionWorld } from '../port/execution-world.js';
+import type { CodeBindingCall, CodeBindingResult, CodeRuntime } from '../port/code-runtime.js';
 import type { AbortLike } from '../port/abort.js';
 export type { AbortLike } from '../port/abort.js';
+
+/**
+ * Code Mode 的两半：跑程序的地方，和程序调工具时回来的那个门。
+ *
+ * 两半必须一起给：只给 `runtime` 的话程序跑得起来但什么也做不了；只给 `dispatch`
+ * 的话没有地方跑程序。装配层要么两个都装，要么整个字段缺席。
+ */
+export interface CodeModeSeam {
+  /** 隔离运行时。一次 `run_code` 用一个新的客体域（ADR-0069 §三.4） */
+  readonly runtime: CodeRuntime;
+  /**
+   * 把程序发起的一次调用送回**完整十二步链**（ADR-0055）。
+   *
+   * 它自己给这次调用编号、分配 `callId`、落一条 `tool.code.dispatch`。
+   * 被拒绝时返回 `{ ok: false, message }` 而不是抛——那个 message 会成为客体域里的
+   * 异常消息，与直接调用时模型看到的拒绝理由一字不差。
+   */
+  dispatch(call: CodeBindingCall): Promise<CodeBindingResult>;
+  /** 这次能装进客体域的绑定名（可用工具减去 `run_code` 自己，不做嵌套） */
+  bindings(): readonly string[];
+  /**
+   * 已经派发过的子调用，**顺序即发生顺序**。
+   *
+   * `run_code` 的卡片靠它显示"第几步调了什么"。刻意由接缝持有而不是让工具自己数：
+   * 事件里的 `index` 与卡片上的序号必须是同一个计数器，两个各数各的迟早会错开一位，
+   * 而那种错位在界面上看不出来——你只会以为审计记的是另一次调用。
+   */
+  dispatched(): readonly CodeDispatchRecord[];
+  /** 客体域里 `Date.now()` 的取值。来自 `ctx.clock`，整段程序内是常量 */
+  now(): number;
+  /** 客体域里 `Math.random()` 的种子。来自本次调用的 `callId` */
+  randomSeed(): string;
+}
+
+/** 一次子调用在卡片与审计里的公共事实 */
+export interface CodeDispatchRecord {
+  readonly index: number;
+  readonly name: string;
+  readonly ok: boolean;
+  /** 失败时的原因，与程序里 catch 到的那句一字不差 */
+  readonly message?: string;
+}
 
 export interface ToolContext {
   /** 归属会话。工具产出的事件、审计记录、子 Agent 派生都要挂在它上面 */
@@ -27,6 +70,18 @@ export interface ToolContext {
   readonly cwd: string;
   /** 当前执行世界。工具不得绕过它直接访问 Node I/O（ADR-0054）。 */
   readonly executor: ExecutionWorld;
+  /**
+   * Code Mode 接缝（ADR-0061 §三 / ADR-0072）。**缺席即没装配**，Code Mode 是 opt-in。
+   *
+   * ⚠️ 它出现在**每个**工具的上下文里，而不只是 `run_code` 的。这看着像是多给了权限，
+   * 其实一点也没多：`dispatch()` 送出去的每一次调用都从头走完整十二步链——网关规范化、
+   * 主张完备性、红线判定一步不少，且**不复用**发起方那一次的判定结果。一个工具能通过
+   * 它做到的事，它自己声明能力去做也一样做得到，区别只是审计里多一条
+   * `tool.code.dispatch` 说清了是谁发起的。
+   *
+   * 换句话说：这里给出的是**再入口**，不是权限。真正的权限仍然只从 `evaluate()` 来。
+   */
+  readonly codeMode?: CodeModeSeam;
   /**
    * 网关在判权阶段解析出、且已经通过策略判定的主机地址（M1-d，web.fetch 的
    * IP 级 SSRF 判定）。键是 `hostInputs` 字段里那个 URL 归一后的裸主机名

@@ -49,6 +49,12 @@ export const EVENT_SPECS = {
   'tool.start': { schema: P.ToolStartPayload, durability: 'persisted', version: 1 },
   'tool.progress': { schema: P.ToolProgressPayload, durability: 'transient', version: 1 },
   'tool.end': { schema: P.ToolEndPayload, durability: 'persisted', version: 1 },
+  /** Code Mode 的子调用（ADR-0072）。**persisted**：程序 catch 掉了，审计也得留着 */
+  'tool.code.dispatch': {
+    schema: P.ToolCodeDispatchPayload,
+    durability: 'persisted',
+    version: 1,
+  },
 
   // ── PTY 会话（ADR-0031）── 键是 ptySessionId，跨越单次调用生命周期，见 payloads.ts
   'shell.session.opened': {

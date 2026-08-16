@@ -41,6 +41,14 @@ export interface TraceStep {
   readonly input: unknown;
   readonly ok: boolean;
   readonly ms: number;
+  /**
+   * 这一步是 Code Mode 里程序发起的子调用（ADR-0072），`parentCallId` 指回那次 `run_code`。
+   *
+   * 缺席即模型直接发起。分开标是必要的：评测要能回答"这次任务用了几次模型往返"，
+   * 而程序里的十次调用只花了一次往返——把它们与模型自己发的调用混成一样，
+   * 那个数字就再也读不出来了。
+   */
+  readonly viaCode?: CallId;
 }
 
 export interface TraceModel {
@@ -190,6 +198,22 @@ export function deriveTraces(events: readonly XmEvent[]): readonly Trace[] {
         }
         break;
       }
+
+      /*
+       * Code Mode 的子调用。它没有 tool.start/tool.end（那是刻意的，见 ADR-0072 §一），
+       * 所以这里直接从这一条事件产出一步——不接 `runningToolNames` 那套配对逻辑。
+       */
+      case 'tool.code.dispatch':
+        current?.steps.push({
+          kind: 'tool',
+          callId: e.payload.callId,
+          name: e.payload.name,
+          input: e.payload.input,
+          ok: e.payload.ok,
+          ms: e.payload.durationMs,
+          viaCode: e.payload.parentCallId,
+        });
+        break;
 
       case 'message.interrupted':
         if (current !== undefined) current.interrupted = true;

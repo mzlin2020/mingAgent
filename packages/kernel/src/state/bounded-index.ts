@@ -77,3 +77,19 @@ export function appendEditProposal(
   }
   return kept.filter((_item, index) => !evicted.has(index));
 }
+
+/**
+ * 一份提案被审阅 / 被应用时的字段更新。
+ *
+ * 与 `applyRestorePatch` 同一个理由：两条事件改的是同一张表里的同一条记录，
+ * 分散在 `reduce` 的两个 case 里写时，"要不要顺手动另一个字段"每次都得重新判断。
+ * 放在这张表自己的模块里，它们并排可读。
+ */
+export const patchEditProposal = (
+  proposals: readonly EditProposalState[],
+  proposalId: string,
+  patch: Partial<EditProposalState>,
+): readonly EditProposalState[] =>
+  proposals.map((item) =>
+    item.proposal.proposalId === proposalId ? { ...item, ...patch } : item,
+  );

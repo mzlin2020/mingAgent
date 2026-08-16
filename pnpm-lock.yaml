@@ -56,6 +56,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@xm/code-runtime':
+        specifier: workspace:*
+        version: link:../../packages/code-runtime
       '@xm/compose':
         specifier: workspace:*
         version: link:../../packages/compose
@@ -139,6 +142,21 @@ importers:
       '@xm/tools-core':
         specifier: workspace:*
         version: link:../../packages/tools-core
+
+  packages/code-runtime:
+    dependencies:
+      '@jitl/quickjs-wasmfile-release-asyncify':
+        specifier: 0.32.0
+        version: 0.32.0
+      '@xm/kernel':
+        specifier: workspace:*
+        version: link:../kernel
+      quickjs-emscripten-core:
+        specifier: 0.32.0
+        version: 0.32.0
+      typescript:
+        specifier: npm:@typescript/typescript6@^6.0.2
+        version: '@typescript/typescript6@6.0.2'
 
   packages/compose:
     dependencies:

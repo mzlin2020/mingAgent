@@ -1,5 +1,29 @@
 import type { OsFamily, ToolAvailabilityContext, ToolRegistry } from '@xm/kernel';
+import { RUN_CODE } from './code-sdk.js';
 import type { SessionRuntime } from './session-runtime.js';
+
+export type ToolPresentation = 'native' | 'code' | 'both';
+
+/** 缺席即 `native`。Code Mode 是 opt-in（ADR-0061 §二） */
+export const presentationOf = (input: {
+  readonly toolPresentation?: ToolPresentation;
+}): ToolPresentation => input.toolPresentation ?? 'native';
+
+/**
+ * 这个工具进不进**模型视野**（ADR-0061 §二）。
+ *
+ * ⚠️ 它管的只是模型那一侧。程序发起的子调用不经过这里——`code` 模式下要是也拦，
+ * Code Mode 自己就没工具可调了。
+ *
+ * `code` 模式下模型点名别的工具会得到"没有这个工具"，而且是**在判定之前**：
+ * 那不是一次被拒绝的调用，是一次不存在的调用。两者在事件流里长得不一样，
+ * 而这正是我们要的——被拒绝意味着"你想做的事不被允许"，
+ * 不存在意味着"你记错了自己有什么"。
+ */
+export const isModelVisible = (presentation: ToolPresentation, name: string): boolean => {
+  if (presentation === 'both') return true;
+  return presentation === 'code' ? name === RUN_CODE : name !== RUN_CODE;
+};
 
 export interface TurnRequestInput {
   readonly runtime: SessionRuntime;

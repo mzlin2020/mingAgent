@@ -33,6 +33,10 @@ export const XmEvent = z.discriminatedUnion('type', [
   EventEnvelope.extend({ type: z.literal('tool.start'), payload: P.ToolStartPayload }),
   EventEnvelope.extend({ type: z.literal('tool.progress'), payload: P.ToolProgressPayload }),
   EventEnvelope.extend({ type: z.literal('tool.end'), payload: P.ToolEndPayload }),
+  EventEnvelope.extend({
+    type: z.literal('tool.code.dispatch'),
+    payload: P.ToolCodeDispatchPayload,
+  }),
 
   EventEnvelope.extend({
     type: z.literal('shell.session.opened'),

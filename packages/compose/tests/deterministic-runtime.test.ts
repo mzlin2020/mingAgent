@@ -40,6 +40,7 @@ import {
 import {
   assembleProfile,
   builtinProfile,
+  withoutCodeRuntime,
   type PluginCatalog,
   type ProfileRow,
 } from '@xm/compose';
@@ -143,7 +144,12 @@ const runScenario = async (composed: boolean): Promise<string> => {
 
   if (composed) {
     const assembled = await assembleProfile({
-      profile: builtinProfile('test'),
+      /*
+       * 刻意去掉 Code Mode 那一行：它要拉一个 WASM 依赖，而这个用例验的是
+       * "装配起来的事件流与手工拼的逐字节一致"。顺带这也是 `withoutCodeRuntime`
+       * 的第一个消费者——不装它，其余一切照常（ADR-0072）。
+       */
+      profile: withoutCodeRuntime(builtinProfile('test')),
       catalog: catalogFor(clock, ids),
     });
     tools = assembled.container.context.tools;

@@ -31,6 +31,7 @@ import {
 } from '../packages/kernel/dist/index.js';
 import { createLocalClock, createLocalIds, nodePlatform } from '../packages/platform/dist/index.js';
 import { openStores } from '../packages/storage/dist/index.js';
+import { createQuickJsCodeRuntime } from '../packages/code-runtime/dist/index.js';
 import {
   createLocalExecutionWorld,
   nodeCheckpointer,
@@ -61,6 +62,7 @@ import {
   installResultTruncation,
   installStoppingGuard,
   resultExpandTool,
+  runCodeTool,
   runSubagentExploration,
   runTurn,
   subagentExploreTool,
@@ -154,6 +156,17 @@ try {
         profilePlugin(row, (ctx) => installResultTruncation(ctx.turnExtensions)),
       '@xm/runtime#stoppingGuard': (row) =>
         profilePlugin(row, (ctx) => installStoppingGuard(ctx.turnExtensions)),
+      /*
+       * Code Mode 的隔离运行时。冒烟用**真的**——这也是整个仓库唯一一处跑到
+       * `dist/code-worker.js` 的地方：vitest 里加载的是 `src/code-worker.ts`
+       * （靠 Node 的类型剥离），而生产里加载的是编译产物，那是两个不同的文件。
+       */
+      '@xm/code-runtime#quickjsRuntime': (row) =>
+        profilePlugin(row, (ctx) => {
+          const codeRuntime = createQuickJsCodeRuntime();
+          ctx.provide('codeRuntime', codeRuntime);
+          return () => codeRuntime.dispose();
+        }),
       '@xm/tools-core#builtinTools': (row) => profilePlugin(row, () => undefined),
       '@xm/compose#headlessSurface': (row) =>
         profilePlugin(row, (ctx) => ctx.provide('surface', { kind: 'headless' })),
@@ -242,6 +255,7 @@ try {
       });
     },
   };
+  tools.register(runCodeTool());
   tools.register(editPreviewTool(editAccess));
   tools.register(editApplyTool(editAccess));
   for (const t of coreTools({ os: platform.os, index: stores.index, tempDir: join(dataDir, 'tools-tmp') })) tools.register(t);
@@ -874,6 +888,62 @@ try {
 
   // 落盘之后、关库之前查一次——`stores.close()` 之后 `stores.blobs` 就不能再用了
   const imageStat = await stores.blobs.stat(imageRef);
+
+  // ── M3-h：Code Mode 跑在真实客体域里（ADR-0069 / ADR-0072）──
+  //
+  // 一段程序连调两个工具，一次模型往返。这里同时验三件事，前两件在别处验不到：
+  //   · `dist/code-worker.js` 真的能被 worker 加载起来（测试跑的是 src 那份）
+  //   · 子调用落 `tool.code.dispatch`，**不落** tool.start/tool.end
+  //   · 程序读到的文件正文没有进事件流——中间值不跨越模型可见边界
+  const codeMark = '只在 README 正文里出现的哨兵-9d4e';
+  writeFileSync(join(workspace, 'CODE-MODE.md'), `# ${codeMark}\n第二行\n`, 'utf8');
+  const beforeCode = seen.length;
+  await runTurn(
+    {
+      runtime,
+      executor,
+      provider: new ScriptedProvider({
+        turns: [
+          {
+            chunks: [
+              ...toolCall(newCallId(), 'run_code', {
+                source:
+                  "const doc = xm.fs.read({ path: 'CODE-MODE.md' });\n" +
+                  "const listed = xm.fs.list({ path: '.' });\n" +
+                  "return { lines: doc.lineCount, entries: listed.entries.length };",
+              }),
+              { kind: 'stop', reason: 'tool_use' },
+            ],
+          },
+          { chunks: [{ kind: 'text_delta', text: '看完了。' }, { kind: 'stop', reason: 'end_turn' }] },
+        ],
+      }),
+      tools,
+      layers,
+      model: 'scripted-1',
+      gateway: nodeToolGateway({ home: paths.home }),
+      pathCaseInsensitive: platform.os === 'windows',
+      codeRuntime: composition.container.context.codeRuntime,
+      toolPresentation: 'both',
+    },
+    textInput('用一段程序看看'),
+  );
+  const codeSlice = seen.slice(beforeCode);
+  const dispatched = codeSlice.filter((e) => e.type === 'tool.code.dispatch');
+  const codeEnds = codeSlice.filter((e) => e.type === 'tool.end');
+  if (dispatched.length !== 2) {
+    fail(`Code Mode 的子调用应当落 2 条 tool.code.dispatch，实际 ${String(dispatched.length)} 条`);
+  }
+  if (codeEnds.length !== 1 || !codeEnds[0].payload.ok) {
+    fail('run_code 本身应当只落一条成功的 tool.end');
+  }
+  const codeText = codeEnds[0].payload.forModel.map((b) => (b.type === 'text' ? b.text : '')).join('');
+  if (!codeText.includes('"lines":2') || !codeText.includes('共 2 次工具调用')) {
+    fail(`run_code 没有把程序的返回值交回模型：${codeText}`);
+  }
+  if (JSON.stringify(codeSlice).includes(codeMark)) {
+    fail('程序读到的文件正文进了事件流 —— 中间值不该跨越模型可见边界');
+  }
 
   // ── M3-d：真实 Agent 句柄入口（inject 不唤醒，followup 显式唤醒）──
   const agentProvider = new ScriptedProvider({

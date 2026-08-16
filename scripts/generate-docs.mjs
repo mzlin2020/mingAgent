@@ -39,6 +39,7 @@ import {
   installResultTruncation,
   installStoppingGuard,
   resultExpandTool,
+  runCodeTool,
   subagentExploreTool,
   todoUpdateTool,
 } from '../packages/runtime/dist/index.js';
@@ -184,6 +185,20 @@ const stubCatalog = () => {
       plugin(row, (ctx) => installResultTruncation(ctx.turnExtensions)),
     '@xm/runtime#stoppingGuard': (row) =>
       plugin(row, (ctx) => installStoppingGuard(ctx.turnExtensions)),
+    /*
+     * Code Mode 的运行时用桩：这张表要的是"谁挂在哪个扩展点上"，
+     * 而它一个监听器也不挂。真起一个 QuickJS 客体域只会让生成文档多一个 WASM 依赖。
+     */
+    '@xm/code-runtime#quickjsRuntime': (row) =>
+      plugin(row, (ctx) =>
+        ctx.provide('codeRuntime', {
+          kind: 'stub',
+          budget: {
+            wallClockMs: 0, cpuMs: 0, memoryBytes: 0, maxLogs: 0, maxLogChars: 0, maxValueChars: 0,
+          },
+          run: () => Promise.resolve({ ok: false, logs: [], clipped: false }),
+        }),
+      ),
     '@xm/tools-core#builtinTools': (row) => plugin(row, noop),
     '@xm/compose#testSurface': (row) => plugin(row, (ctx) => ctx.provide('surface', 'test')),
   };
@@ -263,6 +278,7 @@ const allTools = () => {
     editPreviewTool(editAccess),
     editApplyTool(editAccess),
     subagentExploreTool(noop),
+    runCodeTool(),
   ];
 };
 

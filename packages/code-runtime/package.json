@@ -1,0 +1,23 @@
+{
+  "name": "@xm/code-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Code Mode 的隔离提供者：QuickJS-WASM 客体域 + worker 线程（ADR-0069）。可整包移除",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "sideEffects": false,
+  "dependencies": {
+    "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
+    "@xm/kernel": "workspace:*",
+    "quickjs-emscripten-core": "0.32.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
+  }
+}

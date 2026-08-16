@@ -34,6 +34,7 @@ export * from './model/cost.js';
 
 export * from './port/event-store.js';
 export * from './port/execution-world.js';
+export * from './port/code-runtime.js';
 export * from './port/summary-projection.js';
 export * from './port/memory-event-store.js';
 export * from './port/event-store-contract.js';

@@ -80,7 +80,8 @@ export const DEFAULT_CONFIG: ConfigPatch = {
   providers: {},
   prices: {},
   permission: { rules: [] },
-  tools: { disabled: [] },
+  // presentation 写出来而不是靠 schema 的 default：Code Mode 开没开是要能一眼看见的事
+  tools: { disabled: [], presentation: 'native' },
   workspace: { mode: 'choose' },
   logging: { level: 'info', redact: true },
 };

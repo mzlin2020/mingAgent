@@ -21,8 +21,13 @@ import { TrustLevel } from '../permission/request.js';
 import { Todo } from '../session/todo.js';
 import { EditProposal } from '../session/edit.js';
 import { RiskLevel } from '../tool/descriptor.js';
-import { ToolCallOrigin } from '../tool/origin.js';
 export { ContextInjectedPayload, ContextInjectionSource } from './context-injected.js';
+export {
+  ToolCodeDispatchPayload,
+  ToolEndPayload,
+  ToolProgressPayload,
+  ToolStartPayload,
+} from './tool-payloads.js';
 
 /**
  * 全部事件的 payload schema。
@@ -31,8 +36,9 @@ export { ContextInjectedPayload, ContextInjectionSource } from './context-inject
  * 不会有任何报错，但会在版本漂移时静默销毁数据——包内 README 与
  * `tests/event-loose.test.ts` 一起守着这条。
  *
- * 本文件会长到 400 行左右。docs/01 原则七的 400 行规则在这里是**合理例外**：
- * 它是同质列表，可读性不随长度劣化，拆开反而要在多个文件间跳。
+ * 本文件是一张同质列表，可读性不随长度劣化。但它仍然守 400 行——越线时按**主题**
+ * 拆出去再原样 re-export（`tool-payloads.ts` 是第一次这么做），而不是去 ALLOWLIST 里
+ * 讨一个豁免：豁免一旦拿到就不会再有人来收回。
  */
 
 // ── 会话 ──────────────────────────────────────────────────────────
@@ -104,48 +110,6 @@ export const ProviderStatusPayload = z.looseObject({
   maxAttempts: z.number().int().positive().optional(),
   delayMs: z.number().int().nonnegative().optional(),
   reason: z.string().optional(),
-});
-
-// ── 工具 ──────────────────────────────────────────────────────────
-
-export const ToolStartPayload = z.looseObject({
-  callId: CallId,
-  messageId: MessageId,
-  name: z.string(),
-  /** 已过启发式脱敏（shell 命令行可能含密钥）。尽力而为，不是保证 */
-  input: z.unknown(),
-  risk: RiskLevel,
-  capabilities: z.array(Capability),
-  /** 缺席按 `{ kind: 'model' }` 读——M3-f 之前的历史事件全都没有这个字段 */
-  origin: ToolCallOrigin.optional(),
-});
-
-/** [T] 瞬态 */
-export const ToolProgressPayload = z.looseObject({
-  callId: CallId,
-  message: z.string().optional(),
-  data: z.unknown().optional(),
-});
-
-export const ToolEndPayload = z.looseObject({
-  callId: CallId,
-  ok: z.boolean(),
-  durationMs: z.number().int().nonnegative(),
-  /**
-   * **已截断的原文，不是引用。**
-   *
-   * 回放上下文时必须逐字节还原当时喂给模型的内容——存引用会让"当时模型看到了什么"
-   * 依赖 blob 表的存活状态。看起来冗余，但这是"可回放"这条原则能否成立的分水岭。
-   */
-  forModel: z.array(ResultBlock),
-  /** 未截断全文（仅当发生截断时存在） */
-  fullRef: BlobRef.optional(),
-  /**
-   * 回放需要的最小事实（ADR-0058）。**卡片本身不落库**——它是这份事实与调用入参的
-   * 纯函数投影，实时流与回放各投影一次，结果必须一致。
-   */
-  presentation: z.unknown().optional(),
-  error: XmError.optional(),
 });
 
 // ── PTY 会话（ADR-0031）───────────────────────────────────────────

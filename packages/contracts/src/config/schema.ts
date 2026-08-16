@@ -51,6 +51,20 @@ export const Config = z.object({
   }),
   tools: z.object({
     disabled: z.array(z.string()).default([]),
+    /**
+     * 工具在提示词里怎么呈现（ADR-0061 §二）。
+     *
+     * · `native` —— 今天的形态：每个工具一条函数声明，模型逐次调用。
+     * · `code`   —— 只暴露 `run_code` 与生成的 SDK 段；模型直接点名别的工具时，
+     *               在判定之前就解析为"未知工具"。
+     * · `both`   —— 两种都给。同一个能力有两条路径，但**判定只有一份**：
+     *               子调用重入的是同一条十二步链，不存在快路径。
+     *
+     * **默认 `native`，Code Mode 是 opt-in。** 理由与 ADR-0038 那句
+     * "`summarize` 没配就回落 `main`"同源：不给一部分人静默变好、另一部分人静默变坏
+     * 的默认值。呈现模式换了，模型的行为面貌整个换掉，这不该在升级时悄悄发生。
+     */
+    presentation: z.enum(['native', 'code', 'both']).default('native'),
   }),
   /** 新任务未显式传入 cwd 时的工作区选择策略。 */
   workspace: z

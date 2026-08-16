@@ -2,6 +2,7 @@ import type { ContentBlock, StopReason, TurnId } from '@xm/contracts';
 import type { TurnExtensionHost } from './turn-extension-host.js';
 import { createDefaultTurnExtensions } from './turn-plugins.js';
 import { streamOnce } from './turn-stream.js';
+import { createCodeModeSeam } from './turn-code.js';
 import { dispatchCall } from './turn-tools.js';
 import type { TurnDeps } from './turn-types.js';
 
@@ -79,7 +80,11 @@ async function driveTurnLoop(
         break;
       }
       if (afterStream.action === 'continue') continue;
-      for (const call of streamed.calls) await dispatchCall(deps, extensions, turnId, call);
+      for (const call of streamed.calls) {
+        // Code Mode 接缝按**每次调用**新建：它捕获父 callId，而那正是子调用挂靠的锚点
+        const codeMode = createCodeModeSeam({ deps, extensions, turnId, parentCall: call });
+        await dispatchCall(deps, extensions, turnId, call, codeMode);
+      }
 
       /*
        * 取消要在派发扩展点**之前**兑现成 'aborted'。

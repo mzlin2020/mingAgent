@@ -142,6 +142,26 @@ module.exports = {
       to: { path: '^packages/tools-core/src' },
     },
     {
+      name: '内核与运行时不得依赖-code-runtime',
+      comment:
+        'Code Mode 是 opt-in（ADR-0061 §二），它的隔离提供者必须与 tools-core 一样可整包移除：' +
+        '不装 @xm/code-runtime，ctx.codeMode 缺席、run_code 不注册，其余一切照常。' +
+        'runtime 只认识 @xm/kernel 的 CodeRuntime 端口——它一旦反过来认识具体提供者，' +
+        '"没装 QuickJS 也能起来"就直接是假的，而且会连带把一个 WASM 依赖拖进内核层。',
+      severity: 'error',
+      from: { path: '^packages/(kernel|runtime|storage|platform|tools-core)/src' },
+      to: { path: '^packages/code-runtime/src' },
+    },
+    {
+      name: 'code-runtime-不得依赖-electron',
+      comment:
+        '与其它适配器同理（ADR-0007 / docs/09 A2）：CLI 与 headless 用的是同一个客体域，' +
+        '泄漏 electron 依赖就只剩桌面能跑。',
+      severity: 'error',
+      from: { path: '^packages/code-runtime/src' },
+      to: { path: 'node_modules/electron' },
+    },
+    {
       name: 'runtime-不得依赖-electron',
       comment:
         'CLI 形态延后到 M3，但架构约束从 M0 起生效（ADR-0007 / docs/09 A2）。runtime 泄漏 electron 依赖，CLI 就永远起不来。',
@@ -206,11 +226,21 @@ module.exports = {
     },
     {
       name: '禁止孤儿模块',
-      comment: '没人引用的文件多半是重构残留。测试文件与包入口天然无人引用，排除。',
+      comment:
+        '没人引用的文件多半是重构残留。测试文件与包入口天然无人引用，排除。' +
+        'code-worker.ts 也排除：它是 worker 的入口，宿主按 URL 派生它而不是 import 它，' +
+        '图上因此没有那条边（它自己也不许有包内的运行期 import，见该文件顶部）。',
       severity: 'warn',
       from: {
         orphan: true,
-        pathNot: ['\\.d\\.ts$', '(^|/)index\\.ts$', '(^|/)tests?/', '\\.test\\.ts$', '\\.config\\.ts$'],
+        pathNot: [
+          '\\.d\\.ts$',
+          '(^|/)index\\.ts$',
+          '(^|/)tests?/',
+          '\\.test\\.ts$',
+          '\\.config\\.ts$',
+          '^packages/code-runtime/src/code-worker\\.ts$',
+        ],
       },
       to: {},
     },

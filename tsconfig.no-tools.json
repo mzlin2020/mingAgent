@@ -4,6 +4,7 @@
     { "path": "./packages/contracts" },
     { "path": "./packages/compose" },
     { "path": "./packages/kernel" },
+    { "path": "./packages/code-runtime" },
     { "path": "./packages/platform" },
     { "path": "./packages/providers" },
     { "path": "./packages/storage" },

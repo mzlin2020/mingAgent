@@ -1,8 +1,8 @@
 import type { ContentBlock, MessageId, XmEvent } from '@xm/contracts';
 import { addUsage, mergeConfig, restrictSessionPatch } from '@xm/contracts';
 import type { SessionState } from './session-state.js';
-import { appendEditProposal, recordPresentation } from './bounded-index.js';
-import { applyRestorePatch } from './checkpoint-state.js';
+import { appendEditProposal, patchEditProposal, recordPresentation } from './bounded-index.js';
+import { appendCheckpoint, applyRestorePatch } from './checkpoint-state.js';
 import { compactionOf } from './context-compaction.js';
 import { taintOf } from './taint.js';
 import { appendToolResult } from './tool-result.js';
@@ -174,6 +174,19 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
       };
     }
 
+    /*
+     * Code Mode 的子调用（ADR-0072）：**只推进 lastSeq，不动别的**。
+     *
+     * 它落库是为了审计，不是为了让模型看见。往 `messages` 里追一条 tool_result 就等于
+     * 把程序的中间值送进下一次模型请求，而"中间值不进提示词"正是 Code Mode 省往返的
+     * 前提（ADR-0061 §四）——读十个文件只回传一句摘要，靠的就是那十份正文没进过请求。
+     *
+     * 顺带：这也是 payload 里根本没有 `forModel` 字段的原因。这里就算想追加，也没有
+     * 可追加的内容——与 `output` 不进 `tool.end` 是同一个手法（ADR-0071）。
+     */
+    case 'tool.code.dispatch':
+      return { ...state, lastSeq: e.seq };
+
     // ── PTY 会话（ADR-0031）─────────────────────────────────
     case 'shell.session.opened': {
       const sessions = new Map(state.ptySessions);
@@ -289,20 +302,7 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     case 'checkpoint.created':
       return {
         ...state,
-        checkpoints: [
-          ...state.checkpoints,
-          {
-            checkpointId: e.payload.checkpointId,
-            kind: e.payload.kind,
-            ref: e.payload.ref,
-            label: e.payload.label,
-            manifestRef: e.payload.manifestRef,
-            callId: e.payload.callId,
-            restoreStartedAt: undefined,
-            restoreFailure: undefined,
-            restoredAt: undefined,
-          },
-        ],
+        checkpoints: appendCheckpoint(state.checkpoints, e.payload),
         lastSeq: e.seq,
       };
 
@@ -321,20 +321,19 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     case 'edit.reviewed':
       return {
         ...state,
-        editProposals: state.editProposals.map((item) =>
-          item.proposal.proposalId === e.payload.proposalId
-            ? { ...item, reviewedAt: e.ts, selectedHunkIds: e.payload.selectedHunkIds }
-            : item,
-        ),
+        editProposals: patchEditProposal(state.editProposals, e.payload.proposalId, {
+          reviewedAt: e.ts,
+          selectedHunkIds: e.payload.selectedHunkIds,
+        }),
         lastSeq: e.seq,
       };
 
     case 'edit.applied':
       return {
         ...state,
-        editProposals: state.editProposals.map((item) =>
-          item.proposal.proposalId === e.payload.proposalId ? { ...item, appliedAt: e.ts } : item,
-        ),
+        editProposals: patchEditProposal(state.editProposals, e.payload.proposalId, {
+          appliedAt: e.ts,
+        }),
         lastSeq: e.seq,
       };
 

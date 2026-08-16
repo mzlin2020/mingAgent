@@ -2,6 +2,7 @@ import type { PolicyVerdict, ResultBlock, TurnId } from '@xm/contracts';
 import { xmError } from '@xm/contracts';
 import type {
   AbortLike,
+  CodeModeSeam,
   PermissionClaim,
   RegisteredTool,
   ToolContext,
@@ -9,19 +10,41 @@ import type {
 import { GatewayError, ToolInputError, claimsOfCapabilities } from '@xm/kernel';
 import type { TurnExtensionHost } from './turn-extension-host.js';
 import { evaluateClaims, recordDenial } from './turn-guard.js';
-import type { ToolExecutionResult, ToolGuardResult } from './turn-events.js';
+import type { PreparedCall, ToolExecutionResult, ToolGuardResult } from './turn-events.js';
 import { NEVER_TURN_ABORTS } from './turn-events.js';
 import { isExecutionReceipt, issueExecutionReceipt } from './turn-receipt.js';
-import { turnAvailabilityContext } from './turn-request.js';
+import { isModelVisible, presentationOf, turnAvailabilityContext } from './turn-request.js';
+import type { CallSink } from './turn-sink.js';
+import { modelCallSink } from './turn-sink.js';
 import type { PendingCall, TurnDeps } from './turn-types.js';
 
+/** 模型发起的一次调用。记录面是 `tool.start` / `tool.end` */
 export async function dispatchCall(
   deps: TurnDeps,
   extensions: TurnExtensionHost,
   turnId: TurnId,
   call: PendingCall,
+  codeMode?: CodeModeSeam,
 ): Promise<void> {
-  const prepared = await prepareCall(deps, turnId, call);
+  await dispatchCallWith(deps, extensions, turnId, call, modelCallSink(deps, turnId, call), codeMode);
+}
+
+/**
+ * 十二步链本体（ADR-0055）。**判定与执行在这里，记录在 `sink` 里。**
+ *
+ * `codeMode` 只对模型发起的调用给（`run_code` 靠它跑程序）；子调用一律不给——
+ * 那是"不做嵌套 `run_code`"（ADR-0061 §六）在结构上的落点，而不是一句约定。
+ */
+export async function dispatchCallWith(
+  deps: TurnDeps,
+  extensions: TurnExtensionHost,
+  turnId: TurnId,
+  call: PendingCall,
+  sink: CallSink,
+  codeMode?: CodeModeSeam,
+  caller: 'model' | 'program' = 'model',
+): Promise<void> {
+  const prepared = await prepareCall(deps, call, sink, codeMode, caller);
   if (prepared === undefined) return;
   const guardInput = { deps, turnId, call, ...prepared };
   const guardState: { reached: boolean; base?: ToolGuardResult } = { reached: false };
@@ -33,7 +56,7 @@ export async function dispatchCall(
       return Promise.resolve(guardState.base);
     });
   } catch (error) {
-    await failCall(deps, turnId, call, asInternal(error));
+    await sink.fail(asInternal(error), prepared);
     return;
   }
 
@@ -45,45 +68,42 @@ export async function dispatchCall(
     guarded.verdict.effect === 'allow' &&
     (!guardState.reached || guardState.base?.verdict.effect !== 'allow')
   ) {
-    await failCall(
-      deps,
-      turnId,
-      call,
+    await sink.fail(
       xmError('policy_denied', 'tool/pre-execute 试图绕过或翻案终局权限判定。'),
+      prepared,
     );
     return;
   }
   if (guarded.verdict.effect === 'deny') {
     await recordDenial(deps, turnId, call, prepared.tool, guarded);
-    await failCall(deps, turnId, call, xmError('policy_denied', guarded.verdict.reason));
+    await sink.fail(xmError('policy_denied', guarded.verdict.reason), prepared);
     return;
   }
-  await executeCall(deps, extensions, turnId, call, prepared);
-}
-
-interface PreparedCall {
-  readonly tool: RegisteredTool;
-  readonly input: unknown;
-  readonly ctx: ToolContext;
-  readonly claims: readonly PermissionClaim[];
+  await executeCall(deps, extensions, turnId, call, prepared, sink);
 }
 
 async function prepareCall(
   deps: TurnDeps,
-  turnId: TurnId,
   call: PendingCall,
+  sink: CallSink,
+  codeMode: CodeModeSeam | undefined,
+  caller: 'model' | 'program',
 ): Promise<PreparedCall | undefined> {
   const availability = turnAvailabilityContext(deps);
+  /*
+   * ① 工具查找。呈现模式只对模型生效（ADR-0061 §二）：`code` 模式下模型点名
+   * 别的工具，在这里就解析成"没有这个工具"——**判定之前**，不产生一条被拒绝的调用。
+   * 程序发起的子调用走 `caller: 'program'`，不受它约束。
+   */
+  const hidden = caller === 'model' && !isModelVisible(presentationOf(deps), call.name);
   const tool =
-    availability === undefined
+    hidden ? undefined
+    : availability === undefined
       ? deps.tools.get(call.name)
       : deps.tools.getAvailable(call.name, availability);
   if (tool === undefined) {
-    await failCall(
-      deps,
-      turnId,
-      call,
-      deps.tools.has(call.name)
+    await sink.fail(
+      !hidden && deps.tools.has(call.name)
         ? xmError('unsupported', `工具 "${call.name}" 已被配置禁用或当前平台不可用。`)
         : xmError('tool_not_found', `没有名为 "${call.name}" 的工具。`),
     );
@@ -94,10 +114,7 @@ async function prepareCall(
   try {
     input = tool.parseInput(parseArgs(call.argsJson));
   } catch (error) {
-    await failCall(
-      deps,
-      turnId,
-      call,
+    await sink.fail(
       error instanceof ToolInputError
         ? error.asXmError
         : xmError('invalid_input', error instanceof Error ? error.message : String(error)),
@@ -111,6 +128,7 @@ async function prepareCall(
     signal: deps.signal ?? NEVER_TURN_ABORTS,
     cwd: deps.runtime.state.cwd,
     executor: deps.executor,
+    ...(codeMode === undefined ? {} : { codeMode }),
   };
   let claims = claimsOfCapabilities(tool.descriptor.capabilities, '');
   if (deps.gateway !== undefined) {
@@ -120,10 +138,7 @@ async function prepareCall(
       claims = resolved.claims;
       if (resolved.pinnedHosts !== undefined) ctx = { ...ctx, pinnedHosts: resolved.pinnedHosts };
     } catch (error) {
-      await failCall(
-        deps,
-        turnId,
-        call,
+      await sink.fail(
         error instanceof GatewayError
           ? error.asXmError
           : xmError('invalid_input', error instanceof Error ? error.message : String(error)),
@@ -136,10 +151,7 @@ async function prepareCall(
     (capability) => !claims.some((claim) => claim.capability === capability),
   );
   if (missing.length > 0) {
-    await failCall(
-      deps,
-      turnId,
-      call,
+    await sink.fail(
       xmError(
         'invalid_input',
         `工具 ${call.name} 声明了能力「${missing.join('、')}」，` +
@@ -157,64 +169,47 @@ async function executeCall(
   turnId: TurnId,
   call: PendingCall,
   prepared: PreparedCall,
+  sink: CallSink,
 ): Promise<void> {
   const startedAt = deps.runtime.clock.now();
   const input = { deps, turnId, call, ...prepared };
   let result: ToolExecutionResult;
   try {
     result = await extensions.execute(input, (signal) =>
-      executeToolBody(deps, turnId, call, prepared, startedAt, signal),
+      executeToolBody(deps, call, prepared, startedAt, signal, sink),
     );
     result = await extensions.postExecute({ ...input, result });
   } catch (error) {
-    await failCall(
-      deps,
-      turnId,
-      call,
+    await sink.fail(
       xmError(
         'executor_failed',
         `无法安全执行 ${prepared.tool.descriptor.name}：${error instanceof Error ? error.message : String(error)}`,
         { retryable: true },
       ),
+      prepared,
     );
     return;
   }
 
   if (!isExecutionReceipt(result.receipt, call.callId, prepared.tool.descriptor.name)) {
-    await failCall(
-      deps,
-      turnId,
-      call,
+    await sink.fail(
       xmError('executor_failed', 'tool/execute 返回了没有真实执行收据的结果，已按未执行处理。'),
+      prepared,
     );
     return;
   }
   const durationMs = deps.runtime.clock.now() - startedAt;
-  // 展示事实过工具自己的 schema 再落库；没声明 schema 或校验不过就不落（ADR-0058）
-  const presentation = prepared.tool.parsePresentation(result.presentation);
-  await deps.runtime.record({
-    type: 'tool.end',
-    turnId,
-    payload: {
-      callId: call.callId,
-      ok: result.error === undefined,
-      durationMs,
-      forModel: [...result.forModel],
-      ...(result.fullRef === undefined ? {} : { fullRef: result.fullRef }),
-      ...(presentation === undefined ? {} : { presentation }),
-      ...(result.error === undefined ? {} : { error: result.error }),
-    },
-  });
+  await sink.end(prepared, result, durationMs);
   await extensions.result({ ...input, result, durationMs });
 }
 
 async function executeToolBody(
   deps: TurnDeps,
-  turnId: TurnId,
   call: PendingCall,
   prepared: PreparedCall,
   startedAt: number,
   signal: AbortLike,
+  sink: CallSink,
 ): Promise<ToolExecutionResult> {
   /*
    * ⑧ 唯一被允许改的东西在这里落地：环绕插件收紧过的 signal 换进 ToolContext。
@@ -222,20 +217,7 @@ async function executeToolBody(
    * 换掉它等于重开判定与执行之间的 TOCTOU 窗口（ADR-0018）。
    */
   const ctx = signal === prepared.ctx.signal ? prepared.ctx : Object.freeze({ ...prepared.ctx, signal });
-  const origin = deps.callOrigins?.get(call.callId);
-  await deps.runtime.record({
-    type: 'tool.start',
-    turnId,
-    payload: {
-      callId: call.callId,
-      messageId: deps.runtime.ids.message(),
-      name: call.name,
-      input: prepared.input,
-      risk: prepared.tool.descriptor.risk,
-      capabilities: [...new Set(prepared.claims.map((claim) => claim.capability))],
-      ...(origin === undefined ? {} : { origin }), // 谁发起的这次调用，缺席即模型（ADR-0065 §四）
-    },
-  });
+  await sink.start(prepared);
   const receipt = issueExecutionReceipt(
     call.callId,
     startedAt,
@@ -248,15 +230,7 @@ async function executeToolBody(
   try {
     for await (const progress of prepared.tool.execute(prepared.input, ctx)) {
       if (progress.kind === 'progress') {
-        await deps.runtime.record({
-          type: 'tool.progress',
-          turnId,
-          payload: {
-            callId: call.callId,
-            ...(progress.message === undefined ? {} : { message: progress.message }),
-            ...(progress.data === undefined ? {} : { data: progress.data }),
-          },
-        });
+        await sink.progress(progress);
       } else {
         forModel = [...progress.forModel];
         presentation = progress.presentation;
@@ -286,17 +260,7 @@ export async function failCall(
   call: PendingCall,
   error: ReturnType<typeof xmError>,
 ): Promise<void> {
-  await deps.runtime.record({
-    type: 'tool.end',
-    turnId,
-    payload: {
-      callId: call.callId,
-      ok: false,
-      durationMs: 0,
-      forModel: [{ type: 'text', text: error.message }],
-      error,
-    },
-  });
+  await modelCallSink(deps, turnId, call).fail(error);
 }
 
 const parseArgs = (argsJson: string): unknown => {
@@ -318,4 +282,4 @@ function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-export type { AbortLike, PolicyVerdict };
+export type { AbortLike, PermissionClaim, PolicyVerdict, RegisteredTool };

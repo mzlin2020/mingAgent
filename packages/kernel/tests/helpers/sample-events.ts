@@ -84,6 +84,21 @@ export function sampleEvents(): XmEvent[] {
       },
     },
     {
+      // Code Mode 的子调用（ADR-0072）。**没有 forModel 字段**——程序的中间值不进模型请求
+      type: 'tool.code.dispatch',
+      payload: {
+        callId: newCallId(),
+        parentCallId: callId,
+        index: 0,
+        name: 'fs.read',
+        input: { path: 'b' },
+        risk: 'safe',
+        capabilities: ['fs.read'],
+        ok: true,
+        durationMs: 3,
+      },
+    },
+    {
       type: 'shell.session.opened',
       payload: { ptySessionId, cwd: '/w', cols: 80, rows: 24 },
     },

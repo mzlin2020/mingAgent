@@ -6,7 +6,7 @@ import type {
 } from '@xm/kernel';
 import type { EditProposal, EditProposalId, EventOf, SessionId } from '@xm/contracts';
 import type { ResultExpandOptions, SubagentExplorer, TodoUpdater } from '@xm/runtime';
-import { resultExpandTool, subagentExploreTool, todoUpdateTool } from '@xm/runtime';
+import { resultExpandTool, runCodeTool, subagentExploreTool, todoUpdateTool } from '@xm/runtime';
 
 interface EditProposalAccess {
   save(sessionId: SessionId, proposal: EditProposal): Promise<void>;
@@ -114,6 +114,12 @@ export async function openProductionTools(
     module.editPreviewTool(options.editProposals),
     module.editApplyTool(options.editProposals),
     subagentExploreTool(options.explore),
+    /*
+     * Code Mode 的入口。装不装运行时由 profile 的 `runtime.code` 那一行决定；
+     * 这里只管注册工具——没装运行时的话 `ctx.codeMode` 缺席，它会老实说自己不可用。
+     * 呈现模式默认 native，模型压根看不见它（ADR-0061 §二）。
+     */
+    runCodeTool(),
   ];
   return {
     available: true,

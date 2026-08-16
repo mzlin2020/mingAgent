@@ -606,6 +606,11 @@ export async function startServices(): Promise<Services> {
       pathCaseInsensitive: platform.os === 'windows',
       signal,
       extensions: composition.container.context.turnExtensions,
+      // Code Mode：没装那一行就整个缺席，run_code 拿不到跑程序的地方（ADR-0072）
+      ...(composition.container.context.has('codeRuntime')
+        ? { codeRuntime: composition.container.context.codeRuntime }
+        : {}),
+      toolPresentation: config.tools.presentation,
     };
   };
 

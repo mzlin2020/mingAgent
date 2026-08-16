@@ -4,6 +4,11 @@
  *
  * M3-b 已把 runtime 与 kernel 的时间/ID 输入迁到 ctx.clock / ctx.ids。这里持续扫描两层，
  * 任何新的环境直调都直接失败；过渡清单已经归零。
+ *
+ * **先去注释再扫**（M3-h 补）。不去的话，一句"客体域里 `Date.now()` 的取值来自 ctx.clock"
+ * 这样的说明文字会被算成一次直调——而这条闸门要拦的恰恰是代码。让人为了过闸门
+ * 去改注释措辞，最后一定会有人反过来把闸门放宽，那才是真正的损失。
+ * 与 `check-invariants.mjs` 用的是同一招，理由也一样。
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { extname, join, relative } from 'node:path';
@@ -15,6 +20,10 @@ const ID_PATTERN = /\bnew(?:Session|Event|Turn|Message|Call|Request|Agent|Checkp
 const DATE_PATTERN = /\bDate\.now\(/g;
 
 const ALLOWLIST = new Map();
+
+/** 粗暴但够用的去注释：判据只看代码 */
+const stripComments = (source) =>
+  source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
 
 function walk(dir) {
   const out = [];
@@ -30,7 +39,7 @@ const actual = new Map();
 for (const dir of SCAN_DIRS) {
   for (const path of walk(join(ROOT, dir))) {
     const rel = relative(ROOT, path).split('\\').join('/');
-    const text = readFileSync(path, 'utf8');
+    const text = stripComments(readFileSync(path, 'utf8'));
     const dates = [...text.matchAll(DATE_PATTERN)].length;
     const ids = [...text.matchAll(ID_PATTERN)].length;
     if (dates > 0) actual.set(`${rel}|Date.now`, dates);

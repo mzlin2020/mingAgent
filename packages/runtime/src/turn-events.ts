@@ -74,6 +74,20 @@ export interface ToolPreExecuteInput {
   readonly claims: readonly PermissionClaim[];
 }
 
+/**
+ * 十二步链前五步（特权链段）的产物：工具找到了、入参定形了、网关规范化并回写了、
+ * 主张完备。**判定还没做**——它是第 ⑥⑦ 步的输入。
+ *
+ * 拿出来单独命名，是因为 M3-h 之后它有两个消费者：模型发起的调用，和 Code Mode 里
+ * 程序发起的子调用。两条路共用同一份准备与判定，**只有记录方式不同**（见 `CallSink`）。
+ */
+export interface PreparedCall {
+  readonly tool: RegisteredTool;
+  readonly input: unknown;
+  readonly ctx: ToolContext;
+  readonly claims: readonly PermissionClaim[];
+}
+
 export interface ToolGuardResult {
   readonly verdict: PolicyVerdict;
   readonly deniedClaim?: PermissionClaim;

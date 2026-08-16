@@ -23,6 +23,9 @@
     "paths": {
       "@xm/contracts": ["./packages/contracts/src/index.ts"],
       "@xm/kernel": ["./packages/kernel/src/index.ts"],
+      "@xm/code-runtime": ["./packages/code-runtime/src/index.ts"],
+      "@xm/compose": ["./packages/compose/src/index.ts"],
+      "@xm/tool-runtime": ["./packages/tool-runtime/src/index.ts"],
       "@xm/platform": ["./packages/platform/src/index.ts"],
       "@xm/providers": ["./packages/providers/src/index.ts"],
       "@xm/storage": ["./packages/storage/src/index.ts"],

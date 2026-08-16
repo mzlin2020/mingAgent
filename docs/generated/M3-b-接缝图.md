@@ -22,6 +22,7 @@
 | `desktop` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `desktop` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `desktop` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
+| `desktop` | 业务 | `runtime.code` | `@xm/code-runtime#quickjsRuntime` | — | `codeRuntime` |
 | `desktop` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `desktop` | 业务 | `surface.desktop` | `@xm/desktop#desktopSurface` | `runtime`<br>`tools` | `surface` |
 | `headless` | 特权基线 | `baseline.clock` | `@xm/platform#localClock` | — | `clock` |
@@ -40,6 +41,7 @@
 | `headless` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `headless` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `headless` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
+| `headless` | 业务 | `runtime.code` | `@xm/code-runtime#quickjsRuntime` | — | `codeRuntime` |
 | `headless` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `headless` | 业务 | `surface.headless` | `@xm/compose#headlessSurface` | `runtime`<br>`tools` | `surface` |
 | `cli` | 特权基线 | `baseline.clock` | `@xm/platform#localClock` | — | `clock` |
@@ -58,6 +60,7 @@
 | `cli` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `cli` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `cli` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
+| `cli` | 业务 | `runtime.code` | `@xm/code-runtime#quickjsRuntime` | — | `codeRuntime` |
 | `cli` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `cli` | 业务 | `surface.cli` | `@xm/compose#cliSurface` | `runtime`<br>`tools` | `surface` |
 | `test` | 特权基线 | `baseline.clock` | `@xm/kernel#deterministicClock` | — | `clock` |
@@ -76,6 +79,7 @@
 | `test` | 业务 | `runtime.context` | `@xm/runtime#contextBuilder` | `turnExtensions` | — |
 | `test` | 业务 | `runtime.result-truncation` | `@xm/runtime#resultTruncation` | `turnExtensions` | — |
 | `test` | 业务 | `runtime.stopping` | `@xm/runtime#stoppingGuard` | `turnExtensions` | — |
+| `test` | 业务 | `runtime.code` | `@xm/code-runtime#quickjsRuntime` | — | `codeRuntime` |
 | `test` | 业务 | `tools.builtin` | `@xm/tools-core#builtinTools` | `runtime`<br>`tools`<br>`gateway`<br>`checkpointer`<br>`executor` | — |
 | `test` | 业务 | `surface.test` | `@xm/compose#testSurface` | `runtime`<br>`tools` | `surface` |
 

@@ -44,6 +44,16 @@ import type {
  */
 export const EMPTY_CAPABILITIES_ALLOWLIST: Readonly<Record<string, string>> = {
   'agent.explore': 'ADR-0049（元工具只编排隔离子会话；实际只读访问仍由子工具逐次判权）',
+  /*
+   * `run_code` 与 `agent.explore` 是同一类：**元工具**。它这一次调用自己什么也不碰——
+   * 不开文件、不起进程、不发网络；真正动东西的是程序里的每一次子调用，
+   * 而那些各自带着自己的能力，各自从头走完整十二步链（ADR-0072）。
+   *
+   * 反过来说才是危险的：给 `run_code` 挂一堆能力，红线就会在**父调用**这一层生效，
+   * 于是"这段程序被允许了"变成"它里面的每一步都被允许了"。ADR-0017 的教训正是这个
+   * 形状的镜像——红线要按目标写，不按调用方自称在做什么写。
+   */
+  run_code: 'ADR-0072（元工具只跑程序；程序里每次工具调用都重入完整十二步链，各自判权）',
   'result.expand': 'ADR-0042（只展开当前会话 tool.end.fullRef 已授权可达的工具结果）',
   'todo.update': 'ADR-0041（只更新当前会话内的可见任务清单，没有会话外副作用）',
   'shell.session.status': 'ADR-0040（只读查询当前会话所属终端的有界状态）',

@@ -25,3 +25,33 @@ export const applyRestorePatch = (
   ),
   lastSeq: seq,
 });
+
+/**
+ * 新建一个还原点。三个还原过程字段一律显式写 `undefined`——
+ * 让"这条记录有哪些字段"在建的那一刻就是完整的，读的人不用去别处确认。
+ */
+export const appendCheckpoint = (
+  checkpoints: readonly Checkpoint[],
+  created: {
+    readonly checkpointId: Checkpoint['checkpointId'];
+    readonly kind: Checkpoint['kind'];
+    readonly ref: string;
+    readonly label: string;
+    /** 事件 payload 里这两个是 optional，状态里是"必有、可为 undefined"，所以逐字段抄 */
+    readonly manifestRef?: Checkpoint['manifestRef'];
+    readonly callId?: Checkpoint['callId'];
+  },
+): readonly Checkpoint[] => [
+  ...checkpoints,
+  {
+    checkpointId: created.checkpointId,
+    kind: created.kind,
+    ref: created.ref,
+    label: created.label,
+    manifestRef: created.manifestRef,
+    callId: created.callId,
+    restoreStartedAt: undefined,
+    restoreFailure: undefined,
+    restoredAt: undefined,
+  },
+];

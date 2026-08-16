@@ -1,10 +1,14 @@
 import type { Message, ModelRequest, TurnId } from '@xm/contracts';
 import type { Compaction, ModelProvider, SessionState } from '@xm/kernel';
 import { costOf, emptySessionState, lookupPrice, readBlob, reduce } from '@xm/kernel';
+import { codeModeGuidance, generateToolSdk } from './code-sdk.js';
 import type { SessionRuntime } from './session-runtime.js';
+import { codeBindingNames } from './turn-code.js';
 import {
   STABLE_SYSTEM_PROMPT,
+  isModelVisible,
   mainMaxOutputTokens,
+  presentationOf,
   turnAvailabilityContext,
 } from './turn-request.js';
 import type { TurnDeps } from './turn-types.js';
@@ -190,7 +194,16 @@ function assembleRequest(
   projection: ContextProjection,
   maxOutputTokens: number,
 ): ModelRequest {
-  const tools = deps.tools.descriptors(turnAvailabilityContext(deps));
+  /*
+   * 呈现模式（ADR-0061 §二）。`code` 模式下模型只看得见 `run_code`——那一堆工具 schema
+   * 折成一段 SDK 声明，稳定前缀更短也更稳（ADR-0006 关心的 prompt cache）。
+   * 判定不受影响：程序里的每次子调用都重走同一条十二步链，没有第二份判定代码。
+   */
+  const presentation = presentationOf(deps);
+  const tools = deps.tools
+    .descriptors(turnAvailabilityContext(deps))
+    .filter((tool) => isModelVisible(presentation, tool.name));
+  const sdk = presentation === 'native' ? undefined : toolSdkSegment(deps);
   const todoGuidance = tools.some((tool) => tool.name === 'todo.update')
     ? '\n预计需要至少三个实质步骤时，用 todo.update 维护简短清单并随进展更新；简单任务不要创建清单。'
     : '';
@@ -211,6 +224,7 @@ function assembleRequest(
           `不要重复探测这些信息。${todoGuidance}`,
         cacheable: false,
       },
+      ...(sdk === undefined ? [] : [{ text: sdk, cacheable: true }]),
       ...(summaryText === ''
         ? []
         : [{ text: `以下是已持久化的中期历史摘要：\n${summaryText}`, cacheable: false }]),
@@ -219,6 +233,19 @@ function assembleRequest(
     tools,
     maxOutputTokens,
   };
+}
+
+/**
+ * SDK 段：把注册表里**程序能调的那些**工具生成成同步签名的声明。
+ *
+ * 取的是 `RegisteredTool` 而不是描述符——返回类型来自 `outputSchema`，
+ * 而规范值刻意不进描述符（ADR-0071）。
+ */
+function toolSdkSegment(deps: TurnDeps): string {
+  const tools = codeBindingNames(deps)
+    .map((name) => deps.tools.get(name))
+    .filter((tool): tool is NonNullable<typeof tool> => tool !== undefined);
+  return codeModeGuidance(generateToolSdk(tools));
 }
 
 async function buildProjection(

@@ -110,6 +110,20 @@ const businessRows = (surface: BuiltinProfileName): readonly ProfileRow[] => [
     inject: ['turnExtensions'],
     provide: [],
   },
+  /*
+   * Code Mode 的隔离运行时（ADR-0069）。**是业务行不是基线行**：不装它，
+   * `ctx.codeMode` 缺席、`run_code` 拿不到跑程序的地方，其余一切照常——
+   * Code Mode 本来就是 opt-in（ADR-0061 §二），呈现模式默认还是 `native`。
+   *
+   * 与 `runtime.invariants` 同理，别的行**不许把它写进 inject**：写了就等于
+   * "不装 Code Mode"变成"应用起不来"。
+   */
+  {
+    id: 'runtime.code',
+    plugin: '@xm/code-runtime#quickjsRuntime',
+    inject: [],
+    provide: ['codeRuntime'],
+  },
   {
     id: 'tools.builtin',
     plugin: '@xm/tools-core#builtinTools',
@@ -149,6 +163,17 @@ export const baselineOnlyProfile = (name: BuiltinProfileName): Profile => ({
 export const withoutBuiltinTools = (profile: Profile): Profile => ({
   name: profile.name,
   rows: cloneRows(profile.rows.filter((row) => row.id !== 'tools.builtin')),
+});
+
+/**
+ * 去掉 Code Mode 那一行。裁剪发行版、或跑一个不带 WASM 依赖的装配时用。
+ *
+ * 与 `withoutBuiltinTools` 是同一个形状，但两者的分量不同：删业务工具是原则二的
+ * 可检验约束，删 Code Mode 只是关掉一个 opt-in 特性。
+ */
+export const withoutCodeRuntime = (profile: Profile): Profile => ({
+  name: profile.name,
+  rows: cloneRows(profile.rows.filter((row) => row.id !== 'runtime.code')),
 });
 
 export const isBuiltinProfileName = (name: string): name is BuiltinProfileName =>

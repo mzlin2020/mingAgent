@@ -4,11 +4,14 @@ import {
   assembleProfile,
   loadPatchedProfile,
   withoutBuiltinTools,
+  withoutCodeRuntime,
   type AssembledProfile,
   type PluginCatalog,
 } from '@xm/compose';
+import { createQuickJsCodeRuntime } from '@xm/code-runtime';
 import type {
   Checkpointer,
+  CodeRuntime,
   InvariantRegistry,
   CheckpointRestorer,
   ClockService,
@@ -52,6 +55,7 @@ export interface DesktopProfileServices {
   readonly secrets: SecretStore;
   readonly redact: typeof redact;
   readonly tools: ToolRegistry;
+  readonly codeRuntime: CodeRuntime;
   readonly runtime: SessionRuntimeFactory;
   readonly surface: { readonly kind: 'desktop' };
 }
@@ -69,6 +73,8 @@ export interface DesktopProfileOptions {
   readonly tools: ToolRegistry;
   readonly createTools: () => readonly RegisteredTool[];
   readonly builtinToolsAvailable?: boolean;
+  /** 显式关掉 Code Mode 那一行。缺席即装配它——但呈现模式默认仍是 native */
+  readonly codeModeEnabled?: boolean;
 }
 
 const plugin = (
@@ -85,9 +91,10 @@ export const assembleDesktopProfile = async (
   options: DesktopProfileOptions,
 ): Promise<AssembledProfile<DesktopProfileServices>> => {
   const patched = await loadPatchedProfile({ name: 'desktop', configDir: options.configDir });
-  const profile = options.builtinToolsAvailable === false
+  const withTools = options.builtinToolsAvailable === false
     ? withoutBuiltinTools(patched)
     : patched;
+  const profile = options.codeModeEnabled === false ? withoutCodeRuntime(withTools) : withTools;
   const catalog: PluginCatalog<DesktopProfileServices> = {
     '@xm/platform#localClock': (row) => plugin(row, (ctx) => ctx.provide('clock', options.clock)),
     '@xm/platform#localIds': (row) => plugin(row, (ctx) => ctx.provide('ids', options.ids)),
@@ -135,6 +142,13 @@ export const assembleDesktopProfile = async (
       plugin(row, (ctx) => installResultTruncation(ctx.turnExtensions)),
     '@xm/runtime#stoppingGuard': (row) =>
       plugin(row, (ctx) => installStoppingGuard(ctx.turnExtensions)),
+    '@xm/code-runtime#quickjsRuntime': (row) =>
+      plugin(row, (ctx) => {
+        const runtime = createQuickJsCodeRuntime();
+        ctx.provide('codeRuntime', runtime);
+        // 卸载时把长驻 worker 收掉，否则进程退不出去
+        return () => void runtime.dispose();
+      }),
     '@xm/tools-core#builtinTools': (row) =>
       plugin(row, (ctx) => {
         const names: string[] = [];

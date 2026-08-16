@@ -10,38 +10,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 TypeScript 单语言 monorepo（pnpm workspace）+ Electron 外壳 + React 渲染层。
 非目标：多租户 SaaS、无代码编排画布、自研模型。
 
-当前阶段：**M2 已完成**（含 M2-e 桌面人工验收与总验收 §5.2 的真实功能开发，留痕见
-`docs/experience/m2/收官记录.md`）。**下一阶段是 M3「微内核化重构」**——2026-08-14 新增的里程碑，
-原 M3–M6 顺延为 M4–M7；规划见 `docs/11-微内核与插件容器.md` 与 `docs/M3-阶段划分.md`，
-决策见 ADR-0052 ~ 0071（其中 0062–0066 是 2026-08-14 规划复审的产物，
-复审结论见 `docs/11 §10`）。**M3-a～M3-g 已完成并通过全量门禁**：
+当前阶段：**M2 与 M3 均已完成**。M2 的留痕见 `docs/experience/m2/收官记录.md`；
+M3「微内核化重构」是 2026-08-14 新增的里程碑，原 M3–M6 顺延为 M4–M7；规划见 `docs/11-微内核与插件容器.md` 与 `docs/M3-阶段划分.md`，
+决策见 ADR-0052 ~ 0072（其中 0062–0066 是 2026-08-14 规划复审的产物，
+复审结论见 `docs/11 §10`）。**M3-a～M3-h 已全部完成并通过全量门禁，M3 收官**：
 `@xm/kernel/src/container/`、确定性 `clock` / `ids`、`@xm/compose` profile 装配和
 `@xm/tool-runtime` 已存在，desktop/headless 共用装配器；Turn 命名扩展点、工具十二步链、
 执行收据、Agent 句柄、持久注入与 `ctx.executor` local 执行世界已落地；业务工具整包零
 `node:*`，物理删除 `tools-core` 后仍能通过 typecheck 与空工具 headless 冒烟。
-M3-f 已落地四种卡片的纯函数投影、渲染器注册表与 `ui.cardAction` 动作通道，
-`main/edit-review.ts` 与渲染层的 diff 专用组件已物理删除。
-M3-g 已落地 `ext.persisted` / `ext.transient` 两个信封（未声明即拒绝、`reduce()` 恒等）、
-运行时不变量注册表（各包 `src/invariant.ts` 伴生模块 + `check:invariants`）与
-四张生成表进 `pnpm verify`。
+渲染层只认识四种卡片种类（M3-f）；`ext.persisted` / `ext.transient` 两个信封、
+运行时不变量注册表与四张生成表进 `pnpm verify`（M3-g）。
+证据逐段见 `docs/experience/m3/`。**下一阶段是 M4「能扩展」**：三方插件隔离（`docs/09` H1）、
+MCP 与污点传播（G2）、Skill、多 Provider 角色路由、`xm` CLI 产品化。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
-M3-a～M3-g 证据见 `docs/experience/m3/`；下一段是 M3-h（Code Mode）本体。
 
-**H2（Code Mode 的隔离机制）已于 2026-08-15 定案 → ADR-0069：QuickJS-WASM 客体域 + worker。**
-`docs/09` 里写的旧倾向（独立子进程 + Node permission model）**被实测否掉**——
-`node --permission` 挡得住 `fs` 与 `child_process`，却让 `fetch` 拿到 HTTP 200：
-Node 的权限模型没有网络这一档。别照那条倾向补代码。ADR-0061 随之恢复 🟢 Accepted，
-但它有三处被实测修正（SDK 生成**同步签名**、必须另设宿主侧墙钟、客体域自带
-`Date`/`Math.random` 要显式覆盖），实施以 ADR-0069 §三 为准。
-机制侧的断言在 `evals/spikes/h2-code-runtime-isolation.test.ts`，证据见
-`docs/experience/m3/H2-隔离机制验证记录.md`。
-**M3-h 的前置二已于 2026-08-16 满足 → ADR-0071**：22 个内建工具全部声明 `outputSchema`
-并在结果里 yield `output`。规范值与 `forModel`（模型看的散文）、`presentation`（回放期
-卡片投影）三分，**不落库**——它与另两者大量重复且体积不受控，而"模型可见 ⟺ 已落库"
-约束的是进入模型请求的东西。闸门在 `pnpm generate:docs --check`：内建工具缺一个就红。
-写新工具时**必须**给它 `outputSchema`；在任何"包一层别的工具"的地方（M3-h 的子调用尤其）
-**必须显式翻译内层的规范值**——形状不符会被静默丢掉，程序拿到 `undefined` 且日志无痕。
-**M3-h 的两个前置至此全部解除**，剩下的是它本体。
+**Code Mode 已落地（M3-h）**，三份 ADR 各管一段，改它之前三份都要读：
+
+- **跑在哪**：QuickJS-WASM 客体域 + worker（ADR-0069）。`docs/09` 里那条旧倾向
+  （独立子进程 + Node permission model）**被实测否掉**——`node --permission` 挡得住 `fs`
+  与 `child_process`，却让 `fetch` 拿到 HTTP 200：Node 的权限模型没有网络这一档。
+  别照那条倾向补代码。客体域自带 `Date` / `Math.random`，宿主**必须**覆盖它们；
+  interrupt handler 是 CPU 预算，**另外必须有宿主侧墙钟**（去掉它，一次永不返回的绑定
+  调用就能永远挂住）。断言在 `packages/code-runtime/tests/`。
+- **拿到什么形状**：各工具的 `outputSchema`（ADR-0071，**不进描述符**）。写新工具时必须给它；
+  在任何"包一层别的工具"的地方**必须显式翻译内层的规范值**——形状不符会被静默丢掉，
+  程序拿到 `undefined` 且日志无痕。闸门在 `pnpm generate:docs --check`。
+- **子调用怎么记**：**只落一条 `tool.code.dispatch`，不落 `tool.start` / `tool.end`**
+  （ADR-0072）。那条 payload 里**没有 `forModel` 字段**，程序的中间值因此结构性地进不了
+  模型请求——而"中间值不进提示词"是 Code Mode 省往返的前提，不是优化项。
+  想给它加一个 `forModel`"让审计更完整"之前，先读 ADR-0072 §一：审计一条没少，
+  少的只有"模型看到了什么"，而那本来就没发生过。
+  判定两条路共用同一份 `dispatchCallWith()`，记录面参数化在 `CallSink` 上；
+  `ctx.codeMode` 是**再入口不是权限**（每次子调用从头判）。
+  呈现模式默认 `native`——**Code Mode 是 opt-in**，由 `tools.presentation` 切换。
 
 ## 常用命令
 
@@ -101,7 +102,7 @@ Runtime  @xm/runtime      装配层：事件总线 · 唯一 seq 分配点 · Tu
    ↓ Ports（纯接口，全部定义在 kernel/src/port/）
 Kernel   @xm/kernel       纯逻辑 · 零 I/O · 零 node:* · 能在浏览器里跑（含插件容器 container/）
    ↑ Adapters 实现 Ports
-platform · storage · providers · tool-runtime · tools-core
+platform · storage · providers · tool-runtime · tools-core · code-runtime
 ```
 
 **内核不知道任何适配器的存在。** 这条由 `.dependency-cruiser.cjs` 的 20 条规则强制，
@@ -116,6 +117,7 @@ platform · storage · providers · tool-runtime · tools-core
 | `providers` | ModelProvider 各家实现，只用 Web 平台 API（fetch/AbortController/TextDecoder） | `node:*`、electron、DOM、localStorage |
 | `tool-runtime` | 路径/命令/主机网关 · 写前 checkpoint 与恢复 | electron |
 | `tools-core` | fs 读写列举 · shell.exec · PTY · web.fetch 等业务工具 | electron、`@xm/runtime`、`@xm/tool-runtime` |
+| `code-runtime` | Code Mode 的隔离提供者：QuickJS 客体域 + worker · TS 剥类型 · 预算 | electron；**kernel/runtime/storage/platform 反过来也不许认识它** |
 | `runtime` | 把上面这些拼成可运行的 headless 引擎 | electron、`tools-core` |
 | `compose` | 内建 profile · 用户 patch · 基线断言 · 容器装配 | electron；除 apps 外不得依赖它 |
 | `apps/desktop` | Electron main/preload/renderer —— **整个应用唯一同时认识 Electron 与业务的地方** | — |
@@ -126,7 +128,8 @@ platform · storage · providers · tool-runtime · tools-core
 容器进入 `kernel/src/container/`；`@xm/compose` 负责 profile 与装配；`@xm/tool-runtime`
 承接路径网关、checkpoint 和 local 执行世界。M3-c 已把 `turn.ts` 收敛为驱动器 + 命名扩展点，
 M3-d 已接入 Agent Inbox，M3-e 已让所有 fs/process/pty 工具只经 `ctx.executor` 执行，
-M3-f 让渲染层只认识四种卡片种类、不再认识任何工具。
+M3-f 让渲染层只认识四种卡片种类、不再认识任何工具，
+M3-h 新增 `@xm/code-runtime`（Code Mode 的隔离提供者，与 `tools-core` 一样装配层可以不装）。
 **依赖方向的硬约束一字不改**，
 且**不为插件新建细粒度包**——容器化会让一部分依赖关系从 import 图挪到运行时，
 保住包边界规则是这个真损失的首要对策。
@@ -240,3 +243,4 @@ git pre-commit 钩子只做一件事：`scripts/check-secrets.mjs` 拦密钥（�
 | 体验验收与复盘 | `docs/experience/` |
 | **参考 deepseek-harness 补代码前** | 本机源码路径是 `C:\Users\EDY\Desktop\code_mine\deepseek-harness`；先读 `docs/11-微内核与插件容器.md` §4「不拿什么，以及为什么」——那个仓库有 `ask`、有「没有特权内核」、有 51 个包，这三条小明都刻意不要 |
 | 做 M3 任一段之前 | `docs/M3-阶段划分.md`（八段的边界、验收与反向演练清单） |
+| 改 Code Mode 之前 | ADR-0061（做什么）+ ADR-0069（跑在哪）+ ADR-0072（子调用怎么记），外加 `docs/10 §9.5.6` |
