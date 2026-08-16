@@ -58,6 +58,27 @@ export const ToolProgress = z.discriminatedUnion('kind', [
      * 不要把渲染顺手用得上的东西全塞进来——那正是 `DisplayHint.data` 全量落库的老毛病。
      */
     presentation: z.unknown().optional(),
+    /**
+     * **规范输出值**（`docs/10 §9.5.4`，ADR-0071）：这次调用产生的、程序可用的结构化事实。
+     *
+     * 与同一个分支上另外两个字段的分工是刻意的三分：
+     *
+     * | 字段 | 给谁看 | 落不落库 |
+     * |---|---|---|
+     * | `forModel` | 模型（散文，会被截断） | 落 |
+     * | `presentation` | 回放期的卡片投影 | 落 |
+     * | `output` | **程序**（Code Mode 的子调用返回值） | **不落** |
+     *
+     * 不落库不是省事，是因为它与前两者**大量重复且体积不受控**：`fs.read` 的规范值里
+     * 带着文件正文，`shell.exec` 带着完整 stdout。把它写进事件流等于把同一份内容存两遍，
+     * 而这正是 ADR-0050 / ADR-0070 已经修过两次的那个形状。**它也不需要落库**——
+     * "模型可见 ⟺ 已落库"约束的是进入模型请求的东西，而规范值按定义不进模型请求
+     * （ADR-0061 §四：程序中间值不落库、不进提示词、不受结果截断管辖）。
+     *
+     * 形状由工具自己的 `ToolSpec.outputSchema` 校验，**没声明就不产出**（失败关闭），
+     * 与 `presentation` 同一个形状同一个理由。
+     */
+    output: z.unknown().optional(),
   }),
 ]);
 export type ToolProgress = z.infer<typeof ToolProgress>;

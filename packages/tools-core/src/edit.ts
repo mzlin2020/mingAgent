@@ -42,6 +42,39 @@ const ApplyInput = z.strictObject({
   files: z.array(ApplyFileInput).min(1).max(100),
 });
 
+/**
+ * `edit.preview` 的规范输出值（ADR-0071）：**恰好是 `edit.apply` 需要的那些字段**。
+ *
+ * 这是整批迁移里最能说明问题的一个——`previewEnvelope()` 那段注释解释了为什么
+ * `proposalId` + 每个文件的 `path`/`beforeHash` 必须逐行自足地排在散文最前面：
+ * 因为下一步要靠模型从散文里把它们**认出来再抄一遍**。程序不需要认，也不会抄错。
+ *
+ * `diff` 不在这里：它是给人看的，程序要 diff 应当去读 `presentation`（已落库）
+ * 或直接读文件。规范值只装"接着往下做需要什么"。
+ */
+const PreviewOutput = z.strictObject({
+  proposalId: z.string(),
+  files: z.array(
+    z.strictObject({
+      path: z.string(),
+      beforeHash: z.string(),
+      afterHash: z.string(),
+      replacements: z.number().int(),
+      hunks: z.number().int(),
+      /** 替换算下来内容没变——此时 diff 是空的 */
+      unchanged: z.boolean(),
+    }),
+  ),
+});
+
+/** `edit.apply` 的规范输出值。三种 `kind` 都表示"盘上已是提案后的样子" */
+const ApplyOutput = z.strictObject({
+  proposalId: z.string(),
+  kind: z.enum(['applied', 'already_applied', 'already_on_disk']),
+  /** 本次真正写盘的文件；后两种 `kind` 是空数组 */
+  written: z.array(z.string()),
+});
+
 export const editPreviewTool = (access: EditProposalAccess): RegisteredTool =>
   defineTool({
     name: EDIT_PREVIEW,
@@ -55,6 +88,7 @@ export const editPreviewTool = (access: EditProposalAccess): RegisteredTool =>
     pathInputs: ['files[].path'],
     resources: (input) => input.files.map((file) => ({ kind: 'path', mode: 'read', glob: file.path })),
     presentationSchema: EditPresentation,
+    outputSchema: PreviewOutput,
     presentCall: presentPreviewCall,
     presentResult: presentPreviewResult,
     actions: previewActions(access),
@@ -65,6 +99,17 @@ export const editPreviewTool = (access: EditProposalAccess): RegisteredTool =>
         kind: 'result',
         forModel: [{ type: 'text', text: previewEnvelope(proposal) }],
         presentation: editPresentationOf(proposal),
+        output: {
+          proposalId: proposal.proposalId,
+          files: proposal.files.map((file) => ({
+            path: file.path,
+            beforeHash: file.beforeHash,
+            afterHash: file.afterHash,
+            replacements: file.replacements.length,
+            hunks: file.hunks?.length ?? 1,
+            unchanged: file.diff === '',
+          })),
+        },
       };
     },
   });
@@ -115,18 +160,27 @@ export const editApplyTool = (
     concurrency: 'exclusive',
     pathInputs: ['files[].path'],
     resources: (input) => input.files.map((file) => ({ kind: 'path', mode: 'write', glob: file.path })),
+    outputSchema: ApplyOutput,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const state = await access.get(ctx.sessionId, input.proposalId);
       if (state === undefined) throw new Error('找不到当前会话中的编辑提案。');
       if (state.applied) {
-        yield result(`编辑提案 ${input.proposalId} 已应用，无需重复执行。`);
+        yield result(`编辑提案 ${input.proposalId} 已应用，无需重复执行。`, {
+          proposalId: input.proposalId,
+          kind: 'already_applied',
+          written: [],
+        });
         return;
       }
       assertApplyInput(state.proposal, input.files);
       const prepared = await prepareApply(state.proposal, ctx.executor.fs);
       if (prepared === 'already-applied') {
         await access.markApplied(ctx.sessionId, input.proposalId);
-        yield result(`编辑提案 ${input.proposalId} 已在磁盘生效，已补记完成事件。`);
+        yield result(`编辑提案 ${input.proposalId} 已在磁盘生效，已补记完成事件。`, {
+          proposalId: input.proposalId,
+          kind: 'already_on_disk',
+          written: [],
+        });
         return;
       }
 
@@ -135,7 +189,11 @@ export const editApplyTool = (
         await (writeFile ?? ctx.executor.fs.writeTextAtomic)(file.path, file.content);
       }
       await access.markApplied(ctx.sessionId, input.proposalId);
-      yield result(`已应用编辑提案 ${input.proposalId}：${String(prepared.length)} 个文件。`);
+      yield result(`已应用编辑提案 ${input.proposalId}：${String(prepared.length)} 个文件。`, {
+        proposalId: input.proposalId,
+        kind: 'applied',
+        written: prepared.map((file) => file.path),
+      });
     },
   });
 
@@ -177,7 +235,8 @@ function assertApplyInput(
   }
 }
 
-const result = (text: string): ToolProgress => ({
+const result = (text: string, output: z.infer<typeof ApplyOutput>): ToolProgress => ({
   kind: 'result',
   forModel: [{ type: 'text', text }],
+  output,
 });

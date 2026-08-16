@@ -85,6 +85,7 @@
 | [0068](./0068-插件服务声明与装配收敛.md) | 插件新增显式 `provide` 声明；容器以它构造装配图、校验真实注册，并在收敛时区分缺少提供者、等待链、依赖环与同层冲突 | 🟢 Accepted | 2026-08-14 |
 | [0069](./0069-CodeMode的隔离机制.md) | Code Mode 的隔离定为 **QuickJS-WASM 客体域 + worker 线程**（H2 定案）。否掉原倾向的理由是实测：`node --permission` 挡得住 fs/child_process，**却让 `fetch` 拿到 HTTP 200**——Node 的权限模型没有网络这一档。客体域是 deny-by-default 的结构性隔离，全局面逐名钉死；隔离**仍不是**安全边界 | 🟢 Accepted | 2026-08-15 |
 | [0070](./0070-会话状态副表的有界化.md) | `presentations` / `editProposals` 从只增不删改为有界：前者留最近 256 条并走 ADR-0058 既有的通用卡片降级，后者留 64 条且优先淘汰终态、被淘汰后复用 `edit.apply` 已有的"找不到提案"分支。事件流仍是唯一真相，丢的只是投影里的驻留副本 | 🟢 Accepted | 2026-08-15 |
+| [0071](./0071-工具的规范JSON输出值.md) | 每个内建工具定义并返回一份**规范 JSON 输出值**（M3-h 前置二）：`ToolProgress.result.output` + `ToolSpec.outputSchema`，与入参共用可序列化子集、顶层必须 `strictObject`、没声明就不产出。**不落库**——它与 `forModel`/`presentation` 大量重复且体积不受控，而“模型可见 ⇔ 已落库”不约束不进模型请求的东西。闸门在 `generate-docs`，缺一个就红 | 🟢 Accepted | 2026-08-16 |
 
 ## 什么时候要写 ADR
 

@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { OsFamily, RegisteredTool, ToolContext } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
+import { parseCommitArgv, sameArgv, validBranchArgv, validDiffArgv } from './git-argv.js';
+import { GitOutput } from './git-output.js';
 import { runCommand, shellEnvironment, type RunOutcome } from './shell-exec.js';
 
 export const GIT_STATUS = 'git.status';
@@ -49,6 +51,7 @@ export const gitStatusTool = (options: GitToolsOptions): RegisteredTool =>
     concurrency: 'exclusive',
     commandInputs: { argv: 'argv', cwd: 'cwd' },
     resources: () => gitResource,
+    outputSchema: GitOutput,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       if (!sameArgv(input.argv, STATUS_ARGV)) {
         yield jsonResult(failure('command_failed', input, ctx, 'git.status 只接受固定的只读 argv。'));
@@ -85,6 +88,7 @@ export const gitDiffTool = (options: GitToolsOptions): RegisteredTool =>
     concurrency: 'exclusive',
     commandInputs: { argv: 'argv', cwd: 'cwd' },
     resources: () => gitResource,
+    outputSchema: GitOutput,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       if (!validDiffArgv(input.argv)) {
         yield jsonResult(failure('command_failed', input, ctx, 'git.diff 的 argv 含未允许的参数。'));
@@ -116,6 +120,7 @@ export const gitBranchTool = (options: GitToolsOptions): RegisteredTool =>
     concurrency: 'exclusive',
     commandInputs: { argv: 'argv', cwd: 'cwd' },
     resources: () => gitResource,
+    outputSchema: GitOutput,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       if (!validBranchArgv(input.argv)) {
         yield jsonResult(failure('command_failed', input, ctx, 'git.branch 的 argv 不是受支持的 switch 形状。'));
@@ -158,6 +163,7 @@ export const gitCommitTool = (options: GitToolsOptions): RegisteredTool =>
     concurrency: 'exclusive',
     commandInputs: { argv: 'argv', cwd: 'cwd' },
     resources: () => gitResource,
+    outputSchema: GitOutput,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const parsed = parseCommitArgv(input.argv);
       if (parsed === undefined) {
@@ -173,7 +179,7 @@ async function commit(
   paths: readonly string[],
   options: GitToolsOptions,
   ctx: ToolContext,
-): Promise<Readonly<Record<string, unknown>>> {
+): Promise<GitOutput> {
   const cwd = input.cwd ?? ctx.cwd;
   const status = await statusOf(cwd, options, ctx);
   const common = commonFailure(status.run, STATUS_ARGV, cwd);
@@ -259,39 +265,6 @@ async function commit(
 
 const gitResource = [{ kind: 'global' as const, name: 'git-worktree' }];
 
-function validDiffArgv(argv: readonly string[]): boolean {
-  if (argv[0] !== 'git' || argv[1] !== 'diff') return false;
-  const divider = argv.indexOf('--');
-  const flags = argv.slice(2, divider === -1 ? undefined : divider);
-  const allowed = new Set([
-    '--no-ext-diff',
-    '--no-textconv',
-    '--no-color',
-    '--cached',
-    '--stat',
-    '--name-status',
-  ]);
-  const required = ['--no-ext-diff', '--no-textconv', '--no-color'];
-  return required.every((flag) => flags.includes(flag)) &&
-    flags.every((flag) => allowed.has(flag)) &&
-    (divider === -1 || argv.slice(divider + 1).every((path) => path !== '' && !path.startsWith('-')));
-}
-
-function validBranchArgv(argv: readonly string[]): boolean {
-  const branch = argv.at(-1) ?? '';
-  return argv[0] === 'git' && argv[1] === 'switch' &&
-    (argv.length === 3 || (argv.length === 4 && argv[2] === '-c')) &&
-    branch !== '' && !branch.startsWith('-');
-}
-
-function parseCommitArgv(argv: readonly string[]): { paths: readonly string[] } | undefined {
-  if (argv.length < 7 || argv[0] !== 'git' || argv[1] !== 'commit' || argv[2] !== '--only' ||
-      argv[3] !== '-m' || argv[4] === '') return undefined;
-  const divider = argv.indexOf('--', 5);
-  const paths = divider === 5 ? argv.slice(6) : [];
-  return paths.length > 0 && paths.every((path) => path !== '' && !path.startsWith('-')) ? { paths } : undefined;
-}
-
 async function statusOf(cwd: string, options: GitToolsOptions, ctx: ToolContext): Promise<{ run: RunOutcome; conflicted: boolean }> {
   const run = await runGit(STATUS_ARGV, cwd, options, ctx);
   const conflicted = run.stdout.split(/\r?\n/u).slice(1).some((line) => {
@@ -337,7 +310,7 @@ async function runGit(
   });
 }
 
-function commonFailure(run: RunOutcome, argv: readonly string[], cwd: string): Readonly<Record<string, unknown>> | undefined {
+function commonFailure(run: RunOutcome, argv: readonly string[], cwd: string): GitOutput | undefined {
   if (run.interrupted) return envelope(false, 'interrupted', argv, cwd, run);
   const output = `${run.stdout}\n${run.stderr}`;
   if (output.includes('not a git repository')) return envelope(false, 'not_repository', argv, cwd, run);
@@ -345,19 +318,19 @@ function commonFailure(run: RunOutcome, argv: readonly string[], cwd: string): R
   return undefined;
 }
 
-const envelope = (ok: boolean, kind: string, argv: readonly string[], cwd: string, run: RunOutcome): Readonly<Record<string, unknown>> => ({
-  ok, kind, argv, cwd, stdout: run.stdout, stderr: run.stderr,
+const envelope = (ok: boolean, kind: GitOutput['kind'], argv: readonly string[], cwd: string, run: RunOutcome): GitOutput => ({
+  ok, kind, argv: [...argv], cwd, stdout: run.stdout, stderr: run.stderr,
   exitCode: run.code, signal: run.signal, timedOut: run.timedOut,
   ...(run.spawnError === undefined ? {} : { spawnError: run.spawnError }),
 });
 
 const failure = (
-  kind: string,
+  kind: GitOutput['kind'],
   input: { argv: readonly string[]; cwd?: string | undefined },
   ctx: ToolContext,
   message: string,
-): Readonly<Record<string, unknown>> => ({
-  ok: false, kind, argv: input.argv, cwd: input.cwd ?? ctx.cwd, message, stdout: '', stderr: '',
+): GitOutput => ({
+  ok: false, kind, argv: [...input.argv], cwd: input.cwd ?? ctx.cwd, message, stdout: '', stderr: '',
 });
 
 async function failedHook(ctx: ToolContext, path: string): Promise<string | undefined> {
@@ -379,11 +352,16 @@ async function failedHook(ctx: ToolContext, path: string): Promise<string | unde
   return undefined;
 }
 
-const sameArgv = (left: readonly string[], right: readonly string[]): boolean =>
-  left.length === right.length && left.every((value, index) => value === right[index]);
-
 const interruptedOutcome = (): RunOutcome => ({
   stdout: '', stderr: '', code: undefined, signal: undefined, timedOut: false,
   interrupted: true, clipped: false, stoppedByConsumer: false,
 });
-const jsonResult = (value: unknown): ToolProgress => ({ kind: 'result', forModel: [{ type: 'text', text: JSON.stringify(value) }] });
+/**
+ * git 的模型可见内容一直就是这个对象的 JSON——**规范值与它同源，不是第二份事实**。
+ * 所以这次迁移在 git 上是零行为变化：`forModel` 一个字节没动。
+ */
+const jsonResult = (value: GitOutput): ToolProgress => ({
+  kind: 'result',
+  forModel: [{ type: 'text', text: JSON.stringify(value) }],
+  output: value,
+});

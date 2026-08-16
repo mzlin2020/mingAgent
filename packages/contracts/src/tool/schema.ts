@@ -44,14 +44,28 @@ const FORBIDDEN_REASONS: Readonly<Record<string, string>> = {
   intersection: '交叉类型导出的 JSON Schema 是 allOf，模型支持参差。请手工合并成一个对象。',
 };
 
+/**
+ * 这个 schema 描述的是入参还是规范输出值。
+ *
+ * 两者共用同一个可序列化子集**不是偷懒**：规范输出值要跨 QuickJS 客体域边界交给程序
+ * （ADR-0069 / ADR-0071），能不能 JSON 化的约束与入参完全一样。分开的只有措辞——
+ * 报错里说"入参"还是"输出值"，决定了看见它的人往哪个文件里找。
+ */
+export type ToolSchemaRole = 'input' | 'output';
+
 /** 断言失败时抛出的错误。刻意用普通 Error：这是开发期错误，不该进事件流。 */
 export class ToolSchemaError extends Error {
   readonly path: string;
+  readonly role: ToolSchemaRole;
 
-  constructor(path: string, message: string) {
-    super(`工具入参 schema 非法${path === '' ? '' : `（位于 ${path}）`}：${message}`);
+  constructor(path: string, message: string, role: ToolSchemaRole = 'input') {
+    super(
+      `工具${role === 'input' ? '入参' : '规范输出值'} schema 非法` +
+        `${path === '' ? '' : `（位于 ${path}）`}：${message}`,
+    );
     this.name = 'ToolSchemaError';
     this.path = path;
+    this.role = role;
   }
 }
 
@@ -90,20 +104,21 @@ function defOf(schema: unknown): ZodInternalDef | undefined {
  *   - `z.lazy()` 递归产出 `{"$ref":"#"}`——语法合法
  * 三者导出全不报错，只能靠结构化遍历拦下。
  */
-export function assertToolSchema(schema: unknown, path = ''): void {
+export function assertToolSchema(schema: unknown, path = '', role: ToolSchemaRole = 'input'): void {
   const def = defOf(schema);
   if (def === undefined) {
-    throw new ToolSchemaError(path, '不是一个 Zod schema');
+    throw new ToolSchemaError(path, '不是一个 Zod schema', role);
   }
 
   const forbidden = FORBIDDEN_REASONS[def.type];
   if (forbidden !== undefined) {
-    throw new ToolSchemaError(path, forbidden);
+    throw new ToolSchemaError(path, forbidden, role);
   }
   if (!ALLOWED_TYPES.has(def.type)) {
     throw new ToolSchemaError(
       path,
       `不支持的构造 \`${def.type}\`。允许的子集见 docs/10 §5.2；确需放开请写 ADR。`,
+      role,
     );
   }
 
@@ -119,10 +134,11 @@ export function assertToolSchema(schema: unknown, path = ''): void {
             ? '必须用 z.strictObject()。裸 z.object() 是 strip 模式，会静默丢弃模型多填的字段，' +
               '让它以为参数生效了（参考项目 2.7 的坑）。'
             : '必须用 z.strictObject()，不能用 z.looseObject()。模型多填的字段说明它在幻觉，必须报错。',
+          role,
         );
       }
       for (const [key, child] of Object.entries(def.shape ?? {})) {
-        assertToolSchema(child, path === '' ? key : `${path}.${key}`);
+        assertToolSchema(child, path === '' ? key : `${path}.${key}`, role);
       }
       return;
     }
@@ -132,10 +148,11 @@ export function assertToolSchema(schema: unknown, path = ''): void {
         throw new ToolSchemaError(
           path,
           '裸 union 模型极难稳定产出。请用 z.discriminatedUnion()，且各分支均为 strictObject。',
+          role,
         );
       }
       for (const [i, option] of (def.options ?? []).entries()) {
-        assertToolSchema(option, `${path}[${String(i)}]`);
+        assertToolSchema(option, `${path}[${String(i)}]`, role);
       }
       return;
     }
@@ -143,16 +160,16 @@ export function assertToolSchema(schema: unknown, path = ''): void {
     case 'optional':
     case 'nullable':
     case 'default':
-      assertToolSchema(def.innerType, path);
+      assertToolSchema(def.innerType, path, role);
       return;
 
     case 'array':
-      assertToolSchema(def.element, `${path}[]`);
+      assertToolSchema(def.element, `${path}[]`, role);
       return;
 
     case 'record':
-      assertToolSchema(def.keyType, `${path}{key}`);
-      assertToolSchema(def.valueType, `${path}{value}`);
+      assertToolSchema(def.keyType, `${path}{key}`, role);
+      assertToolSchema(def.valueType, `${path}{value}`, role);
       return;
 
     default:

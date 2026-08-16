@@ -1,4 +1,5 @@
 import type { AbortLike, ExecutionFileSystem } from '@xm/kernel';
+import type { SearchHit } from './search-hit.js';
 
 /**
  * `search.text` 在宿主没有 ripgrep 时的纯 Node 退路（ADR-0051）。
@@ -57,7 +58,7 @@ export interface FallbackSearchInput {
 }
 
 export interface FallbackSearchOutcome {
-  readonly lines: readonly string[];
+  readonly hits: readonly SearchHit[];
   readonly matches: number;
   readonly limited: boolean;
   readonly interrupted: boolean;
@@ -74,7 +75,7 @@ export async function nodeTextSearch(
     pattern = new RegExp(input.pattern, smartCaseFlags(input.pattern, input.caseSensitive));
   } catch (error) {
     return {
-      lines: [],
+      hits: [],
       matches: 0,
       limited: false,
       interrupted: false,
@@ -83,7 +84,7 @@ export async function nodeTextSearch(
   }
 
   const globs = input.globs.map(compileGlob);
-  const state: MutableOutcome = { lines: [], matches: 0, limited: false, interrupted: false };
+  const state: MutableOutcome = { hits: [], matches: 0, limited: false, interrupted: false };
   for await (const file of walk(fs, input.path, input.signal)) {
     if (input.signal.aborted) {
       state.interrupted = true;
@@ -97,7 +98,7 @@ export async function nodeTextSearch(
 }
 
 interface MutableOutcome {
-  lines: string[];
+  hits: SearchHit[];
   matches: number;
   limited: boolean;
   interrupted: boolean;
@@ -175,6 +176,8 @@ async function scanFile(
   const shown = displayPath(fs, input.cwd, file);
   /** 行号 → column。匹配行给真实列号，上下文行给 0，不伪装成匹配（与 ripgrep 路径同一约定） */
   const selected = new Map<number, number>();
+  /** 哪些行是真的命中。**不从 column 反推**——列号是不是 0 是渲染约定，不是判据 */
+  const matched = new Set<number>();
 
   for (const [index, raw] of lines.entries()) {
     if (state.limited || input.signal.aborted) break;
@@ -193,15 +196,21 @@ async function scanFile(
       const at = index + offset;
       if (at < 0 || at >= lines.length) continue;
       // 匹配行的真实列号优先：同一行先作为上下文出现过时要被覆盖回来
-      if (offset === 0) selected.set(at, characterColumn(line, match.index));
-      else if (!selected.has(at)) selected.set(at, 0);
+      if (offset === 0) {
+        selected.set(at, characterColumn(line, match.index));
+        matched.add(at);
+      } else if (!selected.has(at)) selected.set(at, 0);
     }
   }
 
   for (const at of [...selected.keys()].sort((a, b) => a - b)) {
-    state.lines.push(
-      `${shown}:${String(at + 1)}:${String(selected.get(at) ?? 0)}: ${oneLine(stripCr(lines[at] ?? ''))}`,
-    );
+    state.hits.push({
+      path: shown,
+      line: at + 1,
+      column: selected.get(at) ?? 0,
+      text: oneLine(stripCr(lines[at] ?? '')),
+      context: !matched.has(at),
+    });
   }
 }
 

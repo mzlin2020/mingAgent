@@ -39,6 +39,32 @@ const Input = z.strictObject({
   body: z.string().optional().describe('纯文本请求体（不支持二进制上传）'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `kind: 'redirect'` 单列一档是有意的：这个工具**不跟随重定向**，而 3xx 在散文里
+ * 只是一句话。程序如果按"status 是不是 200"来判断，会把一次没跟随的跳转当成失败；
+ * 按 `kind` 判断则一眼看出"要不要对 `location` 再调一次"——那正是这里希望它做的事。
+ *
+ * `body` 只在 `kind: 'ok'` 时非空：3xx 与非文本响应都主动 `cancel()` 了响应体，
+ * 正文根本没有读进来。
+ */
+const Output = z.strictObject({
+  url: z.string(),
+  method: z.string(),
+  kind: z.enum(['ok', 'redirect', 'non_text', 'request_failed', 'rejected']),
+  status: z.number().int().optional(),
+  statusText: z.string().optional(),
+  contentType: z.string().optional(),
+  /** `kind: 'redirect'` 时的 Location；服务器没给就缺席 */
+  location: z.string().optional(),
+  body: z.string(),
+  /** 正文读到 512 KB 上限就停了，`body` 不完整 */
+  truncated: z.boolean(),
+  /** 请求根本没发出去或发失败时的说明 */
+  message: z.string().optional(),
+});
+
 /** 请求体大小上限 */
 const MAX_REQUEST_BYTES = 1024 * 1024;
 /** 响应体按流读、读满即停的上限——代价与结果大小同阶，不先囤积整份响应体再截断 */
@@ -64,10 +90,13 @@ export const webFetchTool = (): RegisteredTool =>
     capabilities: ['net.fetch'],
     concurrency: 'parallel',
     hostInputs: ['url'],
+    outputSchema: Output,
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
+      const base = { url: input.url, method: input.method ?? 'GET', body: '', truncated: false };
       if (input.body !== undefined && Buffer.byteLength(input.body, 'utf8') > MAX_REQUEST_BYTES) {
-        yield text(`拒绝发送：请求体超过单次上限 ${String(MAX_REQUEST_BYTES)} 字节。`);
+        const message = `拒绝发送：请求体超过单次上限 ${String(MAX_REQUEST_BYTES)} 字节。`;
+        yield text(message, { ...base, kind: 'rejected', message });
         return;
       }
 
@@ -119,7 +148,8 @@ export const webFetchTool = (): RegisteredTool =>
             signal: controller.signal,
           });
         } catch (e) {
-          yield text(`请求失败：${e instanceof Error ? e.message : String(e)}`);
+          const message = `请求失败：${e instanceof Error ? e.message : String(e)}`;
+          yield text(message, { ...base, kind: 'request_failed', message });
           return;
         }
 
@@ -129,6 +159,13 @@ export const webFetchTool = (): RegisteredTool =>
           yield text(
             `${String(response.status)} 重定向到 ${location ?? '（未提供 Location）'}。` +
               `本工具不自动跟随——每一跳都必须重新判权。如果确实要跟随，请对新地址再调用一次 web.fetch。`,
+            {
+              ...base,
+              kind: 'redirect',
+              status: response.status,
+              statusText: response.statusText,
+              ...(location === null ? {} : { location }),
+            },
           );
           return;
         }
@@ -139,6 +176,13 @@ export const webFetchTool = (): RegisteredTool =>
           yield text(
             `响应不是文本内容（Content-Type: ${contentType || '（未提供）'}），` +
               `本工具当前不支持二进制响应体，没有读取正文。`,
+            {
+              ...base,
+              kind: 'non_text',
+              status: response.status,
+              statusText: response.statusText,
+              contentType,
+            },
           );
           return;
         }
@@ -147,7 +191,15 @@ export const webFetchTool = (): RegisteredTool =>
         const note = body.truncated
           ? `\n[... 已读到 ${String(MAX_RESPONSE_BYTES / 1024)} KB 上限，响应可能不完整 ...]`
           : '';
-        yield text(`${String(response.status)} ${response.statusText}\n\n${body.text}${note}`);
+        yield text(`${String(response.status)} ${response.statusText}\n\n${body.text}${note}`, {
+          ...base,
+          kind: 'ok',
+          status: response.status,
+          statusText: response.statusText,
+          contentType,
+          body: body.text,
+          truncated: body.truncated,
+        });
       } finally {
         clearTimeout(timeout);
         ctx.signal.removeEventListener('abort', onAbort);
@@ -232,4 +284,8 @@ async function readCapped(
   return { text: Buffer.concat(chunks).toString('utf8'), truncated };
 }
 
-const text = (s: string): ToolProgress => ({ kind: 'result', forModel: [{ type: 'text', text: s }] });
+const text = (s: string, output: z.infer<typeof Output>): ToolProgress => ({
+  kind: 'result',
+  forModel: [{ type: 'text', text: s }],
+  output,
+});

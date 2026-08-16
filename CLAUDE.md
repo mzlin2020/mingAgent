@@ -13,7 +13,7 @@ TypeScript 单语言 monorepo（pnpm workspace）+ Electron 外壳 + React 渲�
 当前阶段：**M2 已完成**（含 M2-e 桌面人工验收与总验收 §5.2 的真实功能开发，留痕见
 `docs/experience/m2/收官记录.md`）。**下一阶段是 M3「微内核化重构」**——2026-08-14 新增的里程碑，
 原 M3–M6 顺延为 M4–M7；规划见 `docs/11-微内核与插件容器.md` 与 `docs/M3-阶段划分.md`，
-决策见 ADR-0052 ~ 0068（其中 0062–0066 是 2026-08-14 规划复审的产物，
+决策见 ADR-0052 ~ 0071（其中 0062–0066 是 2026-08-14 规划复审的产物，
 复审结论见 `docs/11 §10`）。**M3-a～M3-g 已完成并通过全量门禁**：
 `@xm/kernel/src/container/`、确定性 `clock` / `ids`、`@xm/compose` profile 装配和
 `@xm/tool-runtime` 已存在，desktop/headless 共用装配器；Turn 命名扩展点、工具十二步链、
@@ -25,7 +25,7 @@ M3-g 已落地 `ext.persisted` / `ext.transient` 两个信封（未声明即拒�
 运行时不变量注册表（各包 `src/invariant.ts` 伴生模块 + `check:invariants`）与
 四张生成表进 `pnpm verify`。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
-M3-a～M3-g 证据见 `docs/experience/m3/`；下一段是 M3-h（Code Mode）。
+M3-a～M3-g 证据见 `docs/experience/m3/`；下一段是 M3-h（Code Mode）本体。
 
 **H2（Code Mode 的隔离机制）已于 2026-08-15 定案 → ADR-0069：QuickJS-WASM 客体域 + worker。**
 `docs/09` 里写的旧倾向（独立子进程 + Node permission model）**被实测否掉**——
@@ -35,8 +35,13 @@ Node 的权限模型没有网络这一档。别照那条倾向补代码。ADR-00
 `Date`/`Math.random` 要显式覆盖），实施以 ADR-0069 §三 为准。
 机制侧的断言在 `evals/spikes/h2-code-runtime-isolation.test.ts`，证据见
 `docs/experience/m3/H2-隔离机制验证记录.md`。
-**M3-h 的前置二仍未满足**：工具的规范 JSON 输出值（`docs/10 §9.5.4`）是一次覆盖
-二十多个工具的契约迁移，可先于 Code Mode 独立交付。
+**M3-h 的前置二已于 2026-08-16 满足 → ADR-0071**：22 个内建工具全部声明 `outputSchema`
+并在结果里 yield `output`。规范值与 `forModel`（模型看的散文）、`presentation`（回放期
+卡片投影）三分，**不落库**——它与另两者大量重复且体积不受控，而"模型可见 ⟺ 已落库"
+约束的是进入模型请求的东西。闸门在 `pnpm generate:docs --check`：内建工具缺一个就红。
+写新工具时**必须**给它 `outputSchema`；在任何"包一层别的工具"的地方（M3-h 的子调用尤其）
+**必须显式翻译内层的规范值**——形状不符会被静默丢掉，程序拿到 `undefined` 且日志无痕。
+**M3-h 的两个前置至此全部解除**，剩下的是它本体。
 
 ## 常用命令
 

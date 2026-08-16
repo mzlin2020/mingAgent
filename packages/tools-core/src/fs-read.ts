@@ -26,6 +26,26 @@ const Input = z.strictObject({
   limit: z.number().int().positive().optional().describe('最多读多少行。默认读到大小上限为止'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `content` 是**不带行号前缀**的原文——`forModel` 里那份带行号是给模型数行用的，
+ * 程序拿到它只会先把前缀切掉，那正是"程序去解析散文"要避免的事。
+ */
+const Output = z.strictObject({
+  path: z.string(),
+  /** `text` 之外都表示没有读出正文，`content` 为空串 */
+  kind: z.enum(['text', 'directory', 'binary', 'empty', 'out_of_range']),
+  content: z.string(),
+  /** 本次返回的第一行行号，1 起算 */
+  firstLine: z.number().int(),
+  lineCount: z.number().int(),
+  /** 读到字节上限提前停下；接着读要用 firstLine + lineCount */
+  truncated: z.boolean(),
+  /** 文件总字节数 */
+  size: z.number().int(),
+});
+
 /** 读取的字节硬上限。比默认结果上限（64 KB）宽一些，让截断标记有东西可截 */
 const MAX_BYTES = 512 * 1024;
 /** 一行的长度上限。极长的单行（压缩后的 JS、base64）会让行号毫无意义，就地截掉 */
@@ -43,11 +63,17 @@ export const fsReadTool = (): RegisteredTool =>
     concurrency: 'parallel',
     pathInputs: ['path'],
     resources: (input) => [{ kind: 'path', mode: 'read', glob: input.path }],
+    outputSchema: Output,
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const info = await ctx.executor.fs.stat(input.path);
+      const base = { path: input.path, content: '', firstLine: 0, lineCount: 0, truncated: false };
       if (info.directory) {
-        yield text(`${input.path} 是一个目录，不是文件。用 fs.list 列出它的内容。`);
+        yield text(`${input.path} 是一个目录，不是文件。用 fs.list 列出它的内容。`, {
+          ...base,
+          kind: 'directory',
+          size: info.size,
+        });
         return;
       }
 
@@ -60,6 +86,7 @@ export const fsReadTool = (): RegisteredTool =>
           `${input.path} 看起来是二进制文件（前几千字节里有空字节），` +
             `共 ${String(info.size)} 字节。没有按文本读出来——` +
             `乱码进上下文既占预算又会误导判断。`,
+          { ...base, kind: 'binary', size: info.size },
         );
         return;
       }
@@ -69,6 +96,7 @@ export const fsReadTool = (): RegisteredTool =>
           info.size === 0
             ? `${input.path} 是空文件。`
             : `${input.path} 共 ${String(outcome.scanned)} 行，第 ${String(from)} 行之后没有内容。`,
+          { ...base, kind: info.size === 0 ? 'empty' : 'out_of_range', size: info.size },
         );
         return;
       }
@@ -77,7 +105,15 @@ export const fsReadTool = (): RegisteredTool =>
       const note = outcome.stoppedEarly
         ? `\n[... 已读到 ${String(MAX_BYTES / 1024)} KB 上限，用 offset=${String(from + outcome.lines.length)} 继续 ...]`
         : '';
-      yield text(body + note);
+      yield text(body + note, {
+        path: input.path,
+        kind: 'text',
+        content: outcome.lines.join('\n'),
+        firstLine: from,
+        lineCount: outcome.lines.length,
+        truncated: outcome.stoppedEarly,
+        size: info.size,
+      });
     },
   });
 
@@ -148,4 +184,8 @@ const clip = (line: string): string => {
     : `${trimmed.slice(0, MAX_LINE)} […本行还有 ${String(trimmed.length - MAX_LINE)} 个字符]`;
 };
 
-const text = (s: string): ToolProgress => ({ kind: 'result', forModel: [{ type: 'text', text: s }] });
+const text = (s: string, output: z.infer<typeof Output>): ToolProgress => ({
+  kind: 'result',
+  forModel: [{ type: 'text', text: s }],
+  output,
+});

@@ -22,6 +22,30 @@ const Input = z.strictObject({
   depth: z.number().int().min(1).max(4).optional().describe('递归层数，默认 1（只列直接子项）'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。给模型的那份是对齐过的文本，程序要的是逐条的结构。
+ *
+ * `size` 只在普通文件、且 stat 得到时出现——**缺席就是"读不到"**，
+ * 不填 0，理由与 `sizeOf()` 里那句"不要显示一个编的大小"完全一样。
+ */
+const Output = z.strictObject({
+  path: z.string(),
+  kind: z.enum(['directory', 'not_directory']),
+  /** 撞上条目上限提前停了，还有更多没列 */
+  truncated: z.boolean(),
+  entries: z.array(
+    z.strictObject({
+      /** 相对入参 path 的位置，`/` 分隔 */
+      path: z.string(),
+      kind: z.enum(['dir', 'file', 'symlink', 'other']),
+      size: z.number().int().optional(),
+      /** 目录条目是否被递归展开；非目录恒为 false */
+      expanded: z.boolean(),
+    }),
+  ),
+});
+type Entry = z.infer<typeof Output>['entries'][number];
+
 /** 一次列出的条目上限。超过就停并说明——不是"截断到看不见"，是"说清楚还有多少" */
 const MAX_ENTRIES = 500;
 /** 不递归进去的目录名。**只影响递归，不影响是否列出** */
@@ -40,6 +64,7 @@ export const fsListTool = (): RegisteredTool =>
     concurrency: 'parallel',
     pathInputs: ['path'],
     resources: (input) => [{ kind: 'path', mode: 'read', glob: input.path }],
+    outputSchema: Output,
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const root = input.path;
@@ -49,36 +74,45 @@ export const fsListTool = (): RegisteredTool =>
         yield {
           kind: 'result',
           forModel: [{ type: 'text', text: `${root} 不是目录。用 fs.read 读它。` }],
+          output: { path: root, kind: 'not_directory', truncated: false, entries: [] },
         };
         return;
       }
 
       const lines: string[] = [];
+      const entries: Entry[] = [];
 
       /** 返回值是"有没有撞到条目上限"。用返回值而不是外层的可变标志，是为了让递归里的
        *  提前退出能一路传上来——半路停下却报"列全了"，就是又一次悄悄的省略 */
       const walk = async (dir: string, depth: number): Promise<boolean> => {
         if (ctx.signal.aborted) return false;
-        const entries = [...await fs.list(dir)];
-        entries.sort((a, b) => a.name.localeCompare(b.name));
+        const children = [...await fs.list(dir)];
+        children.sort((a, b) => a.name.localeCompare(b.name));
 
-        for (const e of entries) {
+        for (const e of children) {
           if (lines.length >= MAX_ENTRIES) return true;
           const full = fs.path.join(dir, e.name);
           const shown = fs.path.relative(root, full) || e.name;
+          const at = shown.replaceAll('\\', '/');
 
           if (e.directory) {
             const skip = NO_DESCEND.has(e.name);
             lines.push(`${shown}/${skip ? '    （未展开）' : ''}`);
+            // `expanded` 说的是"真的递归进去了"，与文本里那个只标 NO_DESCEND 的
+            // 标记**不是同一件事**：depth 用完时也没进去，但文本历来不标（保持原样）
+            entries.push({ path: at, kind: 'dir', expanded: !skip && depth > 1 });
             if (!skip && depth > 1 && (await walk(full, depth - 1))) return true;
           } else if (e.symbolicLink) {
             // 符号链接**标出来**：它的判权目标由网关 realpath 决定，可能落在目录之外
             lines.push(`${shown}    → 符号链接`);
+            entries.push({ path: at, kind: 'symlink', expanded: false });
           } else if (e.file) {
             const size = await sizeOf(fs, full);
-            lines.push(`${shown}    ${size}`);
+            lines.push(`${shown}    ${size === undefined ? '（读不到大小）' : humanSize(size)}`);
+            entries.push({ path: at, kind: 'file', expanded: false, ...(size === undefined ? {} : { size }) });
           } else {
             lines.push(`${shown}    （设备/管道/套接字）`);
+            entries.push({ path: at, kind: 'other', expanded: false });
           }
         }
         return false;
@@ -92,20 +126,30 @@ export const fsListTool = (): RegisteredTool =>
         forModel: [
           { type: 'text', text: lines.length === 0 ? `${root} 是空目录。` : `${header}\n${lines.join('\n')}` },
         ],
+        output: { path: root, kind: 'directory', truncated, entries },
       };
     },
   });
 
-async function sizeOf(fs: import('@xm/kernel').ExecutionFileSystem, file: string): Promise<string> {
+/**
+ * 字节数。**读不到就是 `undefined`**——列举与 stat 之间文件可能已经没了，
+ * 那时要说出来，不要显示一个编的大小。以前这里直接返回渲染好的字符串，
+ * 于是"读不到"与"0 B"在结构上无从分辨；规范输出值需要的正是这个区分（ADR-0071）。
+ */
+async function sizeOf(
+  fs: import('@xm/kernel').ExecutionFileSystem,
+  file: string,
+): Promise<number | undefined> {
   try {
-    const s = await fs.stat(file);
-    return s.size < 1024
-      ? `${String(s.size)} B`
-      : s.size < 1024 * 1024
-        ? `${(s.size / 1024).toFixed(1)} KB`
-        : `${(s.size / 1024 / 1024).toFixed(1)} MB`;
+    return (await fs.stat(file)).size;
   } catch {
-    // 列举与 stat 之间文件可能已经没了。**说出来**，不要显示一个编的大小
-    return '（读不到大小）';
+    return undefined;
   }
 }
+
+const humanSize = (size: number): string =>
+  size < 1024
+    ? `${String(size)} B`
+    : size < 1024 * 1024
+      ? `${(size / 1024).toFixed(1)} KB`
+      : `${(size / 1024 / 1024).toFixed(1)} MB`;

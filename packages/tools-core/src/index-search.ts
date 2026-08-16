@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { AbortLike, RegisteredTool, ToolContext, WorkspaceIndex, WorkspaceIndexState } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
-import { textSearchTool, type TextSearchOptions } from './search-text.js';
+import { SearchHit } from './search-hit.js';
+import { TextSearchOutput, textSearchTool, type TextSearchOptions } from './search-text.js';
 
 export const SEARCH_SYMBOL = 'search.symbol';
 export const SEARCH_INDEXED = 'search.indexed';
@@ -11,6 +12,47 @@ const Input = z.strictObject({
   query: z.string().min(1).max(1000),
   path: z.string().min(1).default('.').describe('限定查询范围的目录或文件，默认整个工作区'),
   maxResults: z.number().int().min(1).max(1000).default(100),
+});
+
+/**
+ * 两个索引增强工具**共用**的规范输出值（ADR-0071）。
+ *
+ * 三个结果数组并列、而不是按 `source` 做判别联合，是因为这两个工具**随时可能退到
+ * 文本搜索**（索引冷、损坏、查询太短……）。判别联合会逼调用方为一条它没主动选择的
+ * 退路写第二个分支；三个数组则让"没有就是空"这件事自然成立，
+ * 而 `source` + `indexState` 已经把"这次到底走了哪条路"说清楚了。
+ *
+ * ⚠️ `fallback()` 必须把内层 `search.text` 的规范值**翻译**成这个形状。
+ * 直接把内层的 output 透传出去，它会因为形状不符被 `parseOutput` 静默丢掉——
+ * 模型照常拿到结果，程序却拿到 `undefined`，而且哪里都不会报错。
+ */
+const Output = z.strictObject({
+  query: z.string(),
+  path: z.string(),
+  source: z.enum(['tree-sitter-index', 'fts5-index', 'text-fallback']),
+  indexState: z.enum(['cold', 'building', 'ready', 'stale', 'failed']),
+  /** `search.symbol` 命中索引时的符号 */
+  symbols: z.array(
+    z.strictObject({
+      path: z.string(),
+      name: z.string(),
+      kind: z.string(),
+      line: z.number().int(),
+      column: z.number().int(),
+      signature: z.string(),
+    }),
+  ),
+  /** `search.indexed` 命中索引时的全文匹配 */
+  matches: z.array(
+    z.strictObject({
+      path: z.string(),
+      line: z.number().int(),
+      column: z.number().int(),
+      snippet: z.string(),
+    }),
+  ),
+  /** 退到文本搜索时的命中，与 `search.text` 的 `hits` 同形 */
+  hits: z.array(SearchHit),
 });
 
 /** 后台刷新不挂在任何一次工具调用上（见 startRefresh 的注释）。 */
@@ -46,13 +88,25 @@ export const symbolSearchTool = (options: IndexSearchOptions): RegisteredTool =>
     concurrency: 'parallel',
     pathInputs: ['path'],
     resources: (input) => [{ kind: 'path', mode: 'read', glob: input.path }],
+    outputSchema: Output,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const scope = queryScope(options, input, ctx);
       if (scope.state === 'ready') {
         try {
           const symbols = options.index.searchSymbols(scope.query);
           startRefresh(options, scope.query.root);
-          yield jsonResult({ ok: true, source: 'tree-sitter-index', state: scope.state, symbols });
+          yield jsonResult(
+            { ok: true, source: 'tree-sitter-index', state: scope.state, symbols },
+            {
+              query: input.query,
+              path: input.path,
+              source: 'tree-sitter-index',
+              indexState: scope.state,
+              symbols: [...symbols],
+              matches: [],
+              hits: [],
+            },
+          );
           return;
         } catch {
           // 索引查询失败必须走同一条即时退路；下面会同时触发重建。
@@ -75,6 +129,7 @@ export const indexedTextSearchTool = (options: IndexSearchOptions): RegisteredTo
     concurrency: 'parallel',
     pathInputs: ['path'],
     resources: (input) => [{ kind: 'path', mode: 'read', glob: input.path }],
+    outputSchema: Output,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const scope = queryScope(options, input, ctx);
       // trigram 分词器对 3 字符以下的查询无能为力，那不是"零结果"而是"这条索引答不了"
@@ -82,7 +137,18 @@ export const indexedTextSearchTool = (options: IndexSearchOptions): RegisteredTo
         try {
           const matches = options.index.searchText(scope.query);
           startRefresh(options, scope.query.root);
-          yield jsonResult({ ok: true, source: 'fts5-index', state: scope.state, matches });
+          yield jsonResult(
+            { ok: true, source: 'fts5-index', state: scope.state, matches },
+            {
+              query: input.query,
+              path: input.path,
+              source: 'fts5-index',
+              indexState: scope.state,
+              symbols: [],
+              matches: [...matches],
+              hits: [],
+            },
+          );
           return;
         } catch {
           // 与符号查询相同：索引是可丢缓存，失败不应泄漏成搜索不可用。
@@ -161,7 +227,21 @@ async function* fallback(
         ? { ...block, text: `[source: text-fallback; indexState: ${state}]\n${block.text}` }
         : block,
     );
-    yield { ...progress, forModel: blocks };
+    // 内层规范值的形状是 search.text 的，与本工具的不同——**必须翻译，不能透传**
+    const inner = TextSearchOutput.safeParse(progress.output);
+    yield {
+      ...progress,
+      forModel: blocks,
+      output: {
+        query: input.query,
+        path: input.path,
+        source: 'text-fallback',
+        indexState: state,
+        symbols: [],
+        matches: [],
+        hits: inner.success ? inner.data.hits : [],
+      },
+    };
   }
 }
 
@@ -214,7 +294,8 @@ function stateOf(index: WorkspaceIndex, root: string): WorkspaceIndexState {
 }
 
 const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-const jsonResult = (value: unknown): ToolProgress => ({
+const jsonResult = (value: unknown, output: z.infer<typeof Output>): ToolProgress => ({
   kind: 'result',
   forModel: [{ type: 'text', text: JSON.stringify(value) }],
+  output,
 });

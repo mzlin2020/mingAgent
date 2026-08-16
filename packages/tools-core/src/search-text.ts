@@ -3,6 +3,7 @@ import type { ToolProgress } from '@xm/contracts';
 import type { AbortLike, ExecutionFileSystem, ExecutionProcess, OsFamily, RegisteredTool, ToolContext } from '@xm/kernel';
 import { defineTool } from '@xm/kernel';
 import { nodeTextSearch } from './search-fallback.js';
+import { SearchHit, formatHit } from './search-hit.js';
 
 export const SEARCH_TEXT = 'search.text';
 
@@ -17,6 +18,29 @@ const Input = z.strictObject({
   context: z.number().int().min(0).max(20).optional().describe('每条匹配前后附带的上下文行数'),
   maxResults: z.number().int().min(1).max(1000).default(100).describe('全局匹配条数上限'),
 });
+
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `source` 留在规范值里不是冗余：ripgrep 与纯 Node 退路的**召回集合不一样**
+ * （退路不读 `.gitignore`，见 `search-fallback.ts` 顶部）。程序按结果数量下结论之前
+ * 得知道自己拿的是哪一份，否则"没搜到"可能只是"这条路径搜不了那么全"。
+ */
+export const TextSearchOutput = z.strictObject({
+  pattern: z.string(),
+  path: z.string(),
+  source: z.enum(['ripgrep', 'node-fallback']),
+  kind: z.enum(['ok', 'no_match', 'interrupted', 'failed']),
+  /** 命中条数（不含上下文行），封顶在 maxResults */
+  matches: z.number().int(),
+  /** 撞到 maxResults 提前停了，还有更多没找 */
+  limited: z.boolean(),
+  hits: z.array(SearchHit),
+  /** `kind: 'failed'` 时的原因 */
+  message: z.string().optional(),
+});
+
+const Output = TextSearchOutput;
 
 const MAX_COLUMNS = 4000;
 const MAX_STDERR = 16 * 1024;
@@ -39,9 +63,11 @@ export const textSearchTool = (options: TextSearchOptions): RegisteredTool =>
     concurrency: 'parallel',
     pathInputs: ['path'],
     resources: (input) => [{ kind: 'path', mode: 'read', glob: input.path }],
+    outputSchema: Output,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
+      const base = { pattern: input.pattern, path: input.path, source: 'ripgrep' as const, matches: 0, limited: false, hits: [] };
       if (ctx.signal.aborted) {
-        yield result('搜索已中断，没有启动 ripgrep。');
+        yield result('搜索已中断，没有启动 ripgrep。', { ...base, kind: 'interrupted' });
         return;
       }
 
@@ -73,16 +99,18 @@ export const textSearchTool = (options: TextSearchOptions): RegisteredTool =>
         return;
       }
       if (outcome.interrupted) {
-        yield result('搜索已中断，ripgrep 进程已经结束。');
+        yield result('搜索已中断，ripgrep 进程已经结束。', { ...base, kind: 'interrupted' });
         return;
       }
       if (outcome.parseError !== undefined) {
-        yield result(`ripgrep 返回了无法解析的 JSON：${outcome.parseError}`);
+        const message = `ripgrep 返回了无法解析的 JSON：${outcome.parseError}`;
+        yield result(message, { ...base, kind: 'failed', message });
         return;
       }
       if (outcome.code !== 0 && outcome.code !== 1 && !outcome.limited) {
         const detail = outcome.stderr === '' ? '没有错误详情。' : outcome.stderr;
-        yield result(`ripgrep 搜索失败（退出码 ${String(outcome.code ?? -1)}）：${detail}`);
+        const message = `ripgrep 搜索失败（退出码 ${String(outcome.code ?? -1)}）：${detail}`;
+        yield result(message, { ...base, kind: 'failed', message });
         return;
       }
 
@@ -90,7 +118,7 @@ export const textSearchTool = (options: TextSearchOptions): RegisteredTool =>
         '[搜索遵守 .gitignore/.ignore 等 ignore 规则；二进制文件默认跳过；' +
         `超过 ${String(MAX_COLUMNS)} 字节的单行由 ripgrep 跳过。]`;
       if (outcome.matches === 0) {
-        yield result(`没有匹配。\n${notes}`);
+        yield result(`没有匹配。\n${notes}`, { ...base, kind: 'no_match' });
         return;
       }
 
@@ -98,7 +126,14 @@ export const textSearchTool = (options: TextSearchOptions): RegisteredTool =>
         ? `\n[已达 ${String(input.maxResults)} 条上限，可能还有更多匹配；请缩小 path/glob/pattern。]`
         : '';
       yield result(
-        `找到 ${String(outcome.matches)} 条匹配。\n${outcome.lines.join('\n')}${limitNote}\n${notes}`,
+        `找到 ${String(outcome.matches)} 条匹配。\n${outcome.hits.map(formatHit).join('\n')}${limitNote}\n${notes}`,
+        {
+          ...base,
+          kind: 'ok',
+          matches: outcome.matches,
+          limited: outcome.limited,
+          hits: [...outcome.hits],
+        },
       );
     },
   });
@@ -120,6 +155,14 @@ async function* nodeFallbackResult(
     signal: ctx.signal,
   }, ctx.executor.fs);
 
+  const base = {
+    pattern: input.pattern,
+    path: input.path,
+    source: 'node-fallback' as const,
+    matches: 0,
+    limited: false,
+    hits: [],
+  };
   const banner =
     `[source: node-fallback；未能启动 ${options.executable ?? 'rg'}：${spawnError}。` +
     '退路不读 .gitignore，只跳过隐藏项与 node_modules/dist/build/out/coverage/release/' +
@@ -127,22 +170,27 @@ async function* nodeFallbackResult(
     '安装 ripgrep 可获得完整忽略规则与更好性能。]';
 
   if (outcome.patternError !== undefined) {
-    yield result(`${banner}\n正则表达式无法解析：${outcome.patternError}`);
+    yield result(`${banner}\n正则表达式无法解析：${outcome.patternError}`, {
+      ...base,
+      kind: 'failed',
+      message: `正则表达式无法解析：${outcome.patternError}`,
+    });
     return;
   }
   if (outcome.interrupted) {
-    yield result(`${banner}\n搜索已中断。`);
+    yield result(`${banner}\n搜索已中断。`, { ...base, kind: 'interrupted' });
     return;
   }
   if (outcome.matches === 0) {
-    yield result(`${banner}\n没有匹配。`);
+    yield result(`${banner}\n没有匹配。`, { ...base, kind: 'no_match' });
     return;
   }
   const limitNote = outcome.limited
     ? `\n[已达 ${String(input.maxResults)} 条上限，可能还有更多匹配；请缩小 path/glob/pattern。]`
     : '';
   yield result(
-    `找到 ${String(outcome.matches)} 条匹配。\n${outcome.lines.join('\n')}${limitNote}\n${banner}`,
+    `找到 ${String(outcome.matches)} 条匹配。\n${outcome.hits.map(formatHit).join('\n')}${limitNote}\n${banner}`,
+    { ...base, kind: 'ok', matches: outcome.matches, limited: outcome.limited, hits: [...outcome.hits] },
   );
 }
 
@@ -162,7 +210,7 @@ interface RunInput {
 }
 
 interface RunOutcome {
-  readonly lines: readonly string[];
+  readonly hits: readonly SearchHit[];
   readonly matches: number;
   readonly limited: boolean;
   readonly interrupted: boolean;
@@ -193,7 +241,7 @@ async function runRipgrep(input: RunInput): Promise<RunOutcome> {
     for (const glob of input.globs) args.push('--glob', glob);
     args.push('--', input.pattern, input.path);
 
-    const lines: string[] = [];
+    const hits: SearchHit[] = [];
     let pending = '';
     let stderr = '';
     let matches = 0;
@@ -225,11 +273,15 @@ async function runRipgrep(input: RunInput): Promise<RunOutcome> {
           return false;
         }
       }
-      const start = event.type === 'match' ? (data.submatches?.[0]?.start ?? 0) : -1;
-      const column = start < 0 ? 0 : unicodeColumn(text, start);
-      lines.push(
-        `${displayPath(input.fs, input.cwd, path)}:${String(lineNumber)}:${String(column)}: ${oneLine(text)}`,
-      );
+      const isMatch = event.type === 'match';
+      const start = isMatch ? (data.submatches?.[0]?.start ?? 0) : -1;
+      hits.push({
+        path: displayPath(input.fs, input.cwd, path),
+        line: lineNumber,
+        column: start < 0 ? 0 : unicodeColumn(text, start),
+        text: oneLine(text),
+        context: !isMatch,
+      });
       return true;
     };
 
@@ -258,7 +310,7 @@ async function runRipgrep(input: RunInput): Promise<RunOutcome> {
     });
     if (pending !== '' && parseError === undefined && !run.stoppedByConsumer) consume(pending);
     return {
-      lines,
+      hits,
       matches,
       limited,
       interrupted: run.interrupted,
@@ -280,7 +332,8 @@ function displayPath(fs: ExecutionFileSystem, cwd: string, path: string): string
 }
 
 const oneLine = (text: string): string => text.replace(/\r?\n/g, '↵').replace(/↵$/, '');
-const result = (text: string): ToolProgress => ({
+const result = (text: string, output: z.infer<typeof Output>): ToolProgress => ({
   kind: 'result',
   forModel: [{ type: 'text', text }],
+  output,
 });

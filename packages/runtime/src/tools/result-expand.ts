@@ -19,6 +19,24 @@ const Input = z.strictObject({
   limit: z.number().int().min(1).max(MAX_LINES).default(DEFAULT_LINES).describe('最多读取多少行'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `content` 是**不带行号前缀**的原文，与 `fs.read` 同一约定：模型要行号来引用位置，
+ * 程序要的是原样的字节。两处都带前缀的话，Code Mode 里每次展开都得先写一遍切割逻辑。
+ */
+const Output = z.strictObject({
+  ref: z.string(),
+  kind: z.enum(['range', 'empty', 'out_of_range', 'not_found', 'bad_ref', 'interrupted', 'failed']),
+  /** 本次返回的第一行行号，1 起算；没有内容时为 0 */
+  firstLine: z.number().int(),
+  lineCount: z.number().int(),
+  /** 完整结果一共多少行 */
+  totalLines: z.number().int(),
+  content: z.string(),
+  message: z.string().optional(),
+});
+
 export interface ResultRefQuery {
   readonly sessionId: SessionId;
   readonly hash: string;
@@ -41,22 +59,26 @@ export const resultExpandTool = (options: ResultExpandOptions): RegisteredTool =
     capabilities: [],
     concurrency: 'parallel',
     resultLimits: { maxBytes: 256 * 1024, maxLines: 60, strategy: 'head' },
+    outputSchema: Output,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
+      const base = { ref: input.ref, firstLine: 0, lineCount: 0, totalLines: 0, content: '' };
       const hash = LOCATOR.exec(input.ref)?.[1];
       if (hash === undefined) {
-        yield result('完整结果引用格式不正确。');
+        const message = '完整结果引用格式不正确。';
+        yield result(message, { ...base, kind: 'bad_ref', message });
         return;
       }
 
       try {
         const ref = await options.resolveRef({ sessionId: ctx.sessionId, hash });
         if (ref === undefined) {
-          yield result('这个完整结果引用不属于当前会话，或对应的工具结果尚未持久化。');
+          const message = '这个完整结果引用不属于当前会话，或对应的工具结果尚未持久化。';
+          yield result(message, { ...base, kind: 'not_found', message });
           return;
         }
         const expanded = await readRange(options.blobs, ref, input.offset, input.limit, ctx.signal);
         if (expanded.interrupted) {
-          yield result('结果展开已中断。');
+          yield result('结果展开已中断。', { ...base, kind: 'interrupted' });
           return;
         }
         if (expanded.lines.length === 0) {
@@ -64,6 +86,11 @@ export const resultExpandTool = (options: ResultExpandOptions): RegisteredTool =
             expanded.total === 0
               ? '完整工具结果是空文本。'
               : `完整工具结果共 ${String(expanded.total)} 行，第 ${String(input.offset)} 行之后没有内容。`,
+            {
+              ...base,
+              kind: expanded.total === 0 ? 'empty' : 'out_of_range',
+              totalLines: expanded.total,
+            },
           );
           return;
         }
@@ -71,9 +98,18 @@ export const resultExpandTool = (options: ResultExpandOptions): RegisteredTool =
         yield result(
           `${input.ref} 第 ${String(input.offset)}-${String(end)} 行（原文共 ${String(expanded.total)} 行）：\n` +
             expanded.lines.map((line, index) => `${String(input.offset + index)}\t${line}`).join('\n'),
+          {
+            ref: input.ref,
+            kind: 'range',
+            firstLine: input.offset,
+            lineCount: expanded.lines.length,
+            totalLines: expanded.total,
+            content: expanded.lines.join('\n'),
+          },
         );
       } catch (error) {
-        yield result(`无法展开完整工具结果：${error instanceof Error ? error.message : String(error)}`);
+        const message = `无法展开完整工具结果：${error instanceof Error ? error.message : String(error)}`;
+        yield result(message, { ...base, kind: 'failed', message });
       }
     },
   });
@@ -137,7 +173,8 @@ const clip = (line: string): string =>
     ? line
     : `${line.slice(0, MAX_LINE_CHARS)} […本行还有 ${String(line.length - MAX_LINE_CHARS)} 个字符]`;
 
-const result = (text: string): ToolProgress => ({
+const result = (text: string, output: z.infer<typeof Output>): ToolProgress => ({
   kind: 'result',
   forModel: [{ type: 'text', text }],
+  output,
 });

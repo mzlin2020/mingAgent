@@ -46,6 +46,35 @@ const Input = z.strictObject({
   timeoutMs: z.number().int().positive().optional().describe('超时毫秒数，默认 120000'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `describe()` 那段散文把六种结局揉进了一句开头语（"退出码 0"、"超时，已连同…"、
+ * "输出超过 256 KB 上限"…）。程序不该去认那句中文，所以 `kind` 把它们拆成闭集，
+ * 而 `exitCode` / `signal` 这些**事实**照原样给出。
+ *
+ * 特别注意 `exitCode`：**缺席不等于 0**。被信号杀掉、被截断中止、根本没起来，
+ * 三种情况都没有退出码，而 `?? -1` 那种兜底会让程序把"没跑成"当成"跑失败了"。
+ */
+const Output = z.strictObject({
+  argv: z.array(z.string()),
+  cwd: z.string(),
+  kind: z.enum([
+    'exited',
+    'signalled',
+    'timed_out',
+    'interrupted',
+    'clipped',
+    'spawn_failed',
+    'not_started',
+  ]),
+  exitCode: z.number().int().optional(),
+  signal: z.string().optional(),
+  stdout: z.string(),
+  stderr: z.string(),
+  spawnError: z.string().optional(),
+});
+
 const DEFAULT_TIMEOUT_MS = 120_000;
 /** 输出上限。超过就停止收集并在结果里说明——悄悄截断与悄悄省略是同一类错误 */
 const MAX_OUTPUT_BYTES = 256 * 1024;
@@ -113,10 +142,13 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
     concurrency: 'exclusive',
     commandInputs: { argv: 'argv', cwd: 'cwd' },
     resources: (input) => [{ kind: 'path', mode: 'write', glob: input.cwd ?? '.' }],
+    outputSchema: Output,
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
+      const cwd = input.cwd ?? ctx.cwd;
+      const base = { argv: [...input.argv], cwd, stdout: '', stderr: '' };
       if (ctx.signal.aborted) {
-        yield result(`没有执行：本轮已被中断。`);
+        yield result(`没有执行：本轮已被中断。`, { ...base, kind: 'not_started' });
         return;
       }
 
@@ -125,7 +157,7 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
         process: ctx.executor.process,
         bin,
         args,
-        cwd: input.cwd ?? ctx.cwd,
+        cwd,
         timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         ...shellEnvironment(options),
         os: options.os,
@@ -133,13 +165,39 @@ export const shellExecTool = (options: ShellExecOptions): RegisteredTool =>
       });
 
       if (run.spawnError !== undefined) {
-        yield result(`没能启动 ${bin}：${run.spawnError}`);
+        yield result(`没能启动 ${bin}：${run.spawnError}`, {
+          ...base,
+          kind: 'spawn_failed',
+          spawnError: run.spawnError,
+        });
         return;
       }
 
-      yield result(describe(bin, run));
+      yield result(describe(bin, run), {
+        argv: [...input.argv],
+        cwd,
+        kind: outcomeKind(run),
+        ...(run.code === undefined ? {} : { exitCode: run.code }),
+        ...(run.signal === undefined ? {} : { signal: run.signal }),
+        stdout: run.stdout,
+        stderr: run.stderr,
+      });
     },
   });
+
+/**
+ * 把 `RunOutcome` 的几个布尔标志归成一个种类。
+ *
+ * 顺序与 `describe()` 里那串三元完全一致，且**必须一致**——两处给出不同的结论，
+ * 就等于模型看到"超时了"而程序看到"正常退出"。这是同一个判断的两种呈现，不是两个判断。
+ */
+function outcomeKind(run: RunOutcome): z.infer<typeof Output>['kind'] {
+  if (run.interrupted) return 'interrupted';
+  if (run.timedOut) return 'timed_out';
+  if (run.clipped) return 'clipped';
+  if (run.signal !== undefined) return 'signalled';
+  return 'exited';
+}
 
 /** 子进程能看到的环境。白名单之外的一律不给 */
 export function shellEnvironment(options: ShellExecOptions): {
@@ -201,7 +259,8 @@ function describe(bin: string, run: RunOutcome): string {
   return parts.join('\n');
 }
 
-const result = (text: string): ToolProgress => ({
+const result = (text: string, output: z.infer<typeof Output>): ToolProgress => ({
   kind: 'result',
   forModel: [{ type: 'text', text } satisfies ResultBlock],
+  output,
 });

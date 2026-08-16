@@ -15,6 +15,20 @@ const Input = z.strictObject({
     .describe('任务清单的完整快照；传空数组表示清空清单'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * 工具收的是**完整快照**，所以"现在清单长什么样"这件事调用方自己就有；
+ * 这里只回它算不出来的那部分——按状态分组的计数，以及"这次是不是清空"。
+ */
+const Output = z.strictObject({
+  total: z.number().int(),
+  completed: z.number().int(),
+  inProgress: z.number().int(),
+  pending: z.number().int(),
+  cleared: z.boolean(),
+});
+
 export interface TodoUpdate {
   readonly sessionId: SessionId;
   readonly todos: readonly Todo[];
@@ -39,6 +53,7 @@ export const todoUpdateTool = (updater: TodoUpdater): RegisteredTool =>
     risk: 'safe',
     capabilities: [],
     concurrency: 'exclusive',
+    outputSchema: Output,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const duplicate = duplicateId(input.todos);
       if (duplicate !== undefined) {
@@ -47,7 +62,9 @@ export const todoUpdateTool = (updater: TodoUpdater): RegisteredTool =>
 
       await updater({ sessionId: ctx.sessionId, todos: input.todos });
 
-      const completed = input.todos.filter((todo) => todo.status === 'completed').length;
+      const count = (status: Todo['status']): number =>
+        input.todos.filter((todo) => todo.status === status).length;
+      const completed = count('completed');
       yield {
         kind: 'result',
         forModel: [
@@ -59,6 +76,13 @@ export const todoUpdateTool = (updater: TodoUpdater): RegisteredTool =>
                 : `任务清单已更新：${String(completed)}/${String(input.todos.length)} 已完成。`,
           },
         ],
+        output: {
+          total: input.todos.length,
+          completed,
+          inProgress: count('in_progress'),
+          pending: count('pending'),
+          cleared: input.todos.length === 0,
+        },
       };
     },
   });

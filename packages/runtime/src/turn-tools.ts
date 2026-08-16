@@ -1,4 +1,4 @@
-import type { PermissionRequest, PolicyVerdict, ResultBlock, TurnId } from '@xm/contracts';
+import type { PolicyVerdict, ResultBlock, TurnId } from '@xm/contracts';
 import { xmError } from '@xm/contracts';
 import type {
   AbortLike,
@@ -6,13 +6,9 @@ import type {
   RegisteredTool,
   ToolContext,
 } from '@xm/kernel';
-import {
-  GatewayError,
-  ToolInputError,
-  claimsOfCapabilities,
-  evaluate,
-} from '@xm/kernel';
+import { GatewayError, ToolInputError, claimsOfCapabilities } from '@xm/kernel';
 import type { TurnExtensionHost } from './turn-extension-host.js';
+import { evaluateClaims, recordDenial } from './turn-guard.js';
 import type { ToolExecutionResult, ToolGuardResult } from './turn-events.js';
 import { NEVER_TURN_ABORTS } from './turn-events.js';
 import { isExecutionReceipt, issueExecutionReceipt } from './turn-receipt.js';
@@ -155,84 +151,6 @@ async function prepareCall(
   return { tool, input: deepFreeze(input), ctx: Object.freeze(ctx), claims };
 }
 
-function evaluateClaims(
-  deps: TurnDeps,
-  call: PendingCall,
-  tool: RegisteredTool,
-  claims: readonly PermissionClaim[],
-): ToolGuardResult {
-  for (const claim of claims) {
-    const verdict = evaluate({
-      request: requestOf(deps, call, tool, claim),
-      layers: deps.layers,
-      executor: deps.executor.kind,
-      ...(deps.pathCaseInsensitive === undefined
-        ? {}
-        : { pathCaseInsensitive: deps.pathCaseInsensitive }),
-    });
-    if (verdict.effect === 'deny') return { verdict, deniedClaim: claim };
-  }
-  return {
-    verdict: {
-      effect: 'allow',
-      ruleId: 'runtime.all-claims-allowed',
-      reason: '全部权限主张均已放行。',
-    },
-  };
-}
-
-const requestOf = (
-  deps: TurnDeps,
-  call: PendingCall,
-  tool: RegisteredTool,
-  claim: PermissionClaim,
-): PermissionRequest => ({
-  requestId: deps.runtime.ids.request(),
-  sessionId: deps.runtime.sessionId,
-  callId: call.callId,
-  capability: claim.capability,
-  target: claim.target,
-  risk: tool.descriptor.risk,
-  reason: `工具 ${call.name} 需要「${claim.capability}」`,
-  trustLevel: deps.runtime.state.untrustedContext === undefined ? 'model' : 'untrusted',
-});
-
-async function recordDenial(
-  deps: TurnDeps,
-  turnId: TurnId,
-  call: PendingCall,
-  tool: RegisteredTool,
-  result: ToolGuardResult,
-): Promise<void> {
-  const claim = result.deniedClaim;
-  if (claim === undefined) return;
-  const request = requestOf(deps, call, tool, claim);
-  await deps.runtime.record({
-    type: 'permission.request',
-    turnId,
-    payload: {
-      requestId: request.requestId,
-      callId: call.callId,
-      capability: request.capability,
-      target: request.target,
-      risk: request.risk,
-      reason: result.verdict.reason,
-      trustLevel: request.trustLevel,
-    },
-  });
-  await deps.runtime.record({
-    type: 'permission.decision',
-    turnId,
-    payload: {
-      requestId: request.requestId,
-      effect: 'deny',
-      scope: 'once',
-      by: 'policy',
-      ruleId: result.verdict.ruleId,
-    },
-  });
-}
-
 async function executeCall(
   deps: TurnDeps,
   extensions: TurnExtensionHost,
@@ -325,6 +243,7 @@ async function executeToolBody(
   );
   let forModel: ResultBlock[] = [];
   let presentation: unknown;
+  let output: unknown;
   let error: ReturnType<typeof xmError> | undefined;
   try {
     for await (const progress of prepared.tool.execute(prepared.input, ctx)) {
@@ -341,6 +260,8 @@ async function executeToolBody(
       } else {
         forModel = [...progress.forModel];
         presentation = progress.presentation;
+        // 规范值不落库，工具 yield 的这一刻是它唯一的校验关口（ADR-0071）
+        output = prepared.tool.parseOutput(progress.output);
       }
     }
   } catch (caught) {
@@ -354,6 +275,7 @@ async function executeToolBody(
     forModel,
     receipt,
     ...(presentation === undefined ? {} : { presentation }),
+    ...(output === undefined ? {} : { output }),
     ...(error === undefined ? {} : { error }),
   };
 }

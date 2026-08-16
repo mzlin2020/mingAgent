@@ -32,6 +32,20 @@ const Input = z.strictObject({
   content: z.string().describe('文件的完整新内容。这是全量覆盖，不是追加也不是局部替换'),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `kind` 把"写成了"与"没写"分开在结构里：`rejected` / `cancelled` 两种情况下
+ * 这个工具**照常正常返回**（不抛），文本里说明原因。程序要能不读那句中文就知道
+ * 盘上什么也没变——这正是散文与规范值分开的意义。
+ */
+const Output = z.strictObject({
+  path: z.string(),
+  kind: z.enum(['created', 'overwritten', 'rejected', 'cancelled']),
+  /** 打算写入的字节数；`rejected` 时是被拒的那个体积，`cancelled` 时同样是未写入的体积 */
+  bytes: z.number().int(),
+});
+
 /** 单次写入上限。模型一次吐出超过这个量，多半是它自己出了问题 */
 const MAX_BYTES = 5 * 1024 * 1024;
 
@@ -46,6 +60,7 @@ export const fsWriteTool = (): RegisteredTool =>
     concurrency: 'parallel',
     pathInputs: ['path'],
     resources: (input) => [{ kind: 'path', mode: 'write', glob: input.path }],
+    outputSchema: Output,
 
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       const bytes = Buffer.byteLength(input.content, 'utf8');
@@ -58,6 +73,7 @@ export const fsWriteTool = (): RegisteredTool =>
               text: `拒绝写入：${String(bytes)} 字节超过单次上限 ${String(MAX_BYTES)} 字节。`,
             },
           ],
+          output: { path: input.path, kind: 'rejected', bytes },
         };
         return;
       }
@@ -68,7 +84,11 @@ export const fsWriteTool = (): RegisteredTool =>
       // 取消检查放在真正动手之前。之后就不再检查了——一次 rename 中途"停下来"
       // 只会留下临时文件，而那比写完更难收拾
       if (ctx.signal.aborted) {
-        yield { kind: 'result', forModel: [{ type: 'text', text: '已取消，没有写入。' }] };
+        yield {
+          kind: 'result',
+          forModel: [{ type: 'text', text: '已取消，没有写入。' }],
+          output: { path: input.path, kind: 'cancelled', bytes },
+        };
         return;
       }
 
@@ -82,6 +102,7 @@ export const fsWriteTool = (): RegisteredTool =>
             text: `已${existed ? '覆盖' : '写入'} ${input.path}（${String(bytes)} 字节）。`,
           },
         ],
+        output: { path: input.path, kind: existed ? 'overwritten' : 'created', bytes },
       };
     },
   });

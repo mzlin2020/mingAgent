@@ -31,10 +31,11 @@ export const echoTool = (): RegisteredTool =>
     risk: 'safe',
     capabilities: [],
     concurrency: 'parallel',
+    outputSchema: z.strictObject({ text: z.string() }),
     // eslint-disable-next-line @typescript-eslint/require-await
     async *execute(input): AsyncIterable<ToolProgress> {
       yield { kind: 'progress', message: '回显中' };
-      yield { kind: 'result', forModel: [{ type: 'text', text: input.text }] };
+      yield { kind: 'result', forModel: [{ type: 'text', text: input.text }], output: { text: input.text } };
     },
   });
 
@@ -47,9 +48,15 @@ export const fakeDeleteTool = (): RegisteredTool =>
     risk: 'high',
     capabilities: ['fs.delete'],
     concurrency: 'exclusive',
+    // `deleted` 恒为 false 不是占位：工具名里的 fake 得在规范值里也说得出口
+    outputSchema: z.strictObject({ path: z.string(), deleted: z.boolean() }),
     // eslint-disable-next-line @typescript-eslint/require-await
     async *execute(input): AsyncIterable<ToolProgress> {
-      yield { kind: 'result', forModel: [{ type: 'text', text: `假装删除了 ${input.path}` }] };
+      yield {
+        kind: 'result',
+        forModel: [{ type: 'text', text: `假装删除了 ${input.path}` }],
+        output: { path: input.path, deleted: false },
+      };
     },
   });
 

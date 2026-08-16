@@ -5,7 +5,13 @@ import type {
   ToolProgress,
   XmError,
 } from '@xm/contracts';
-import { DEFAULT_RESULT_LIMITS, assertToolSchema, toModelSchema, xmError } from '@xm/contracts';
+import {
+  DEFAULT_RESULT_LIMITS,
+  ToolSchemaError,
+  assertToolSchema,
+  toModelSchema,
+  xmError,
+} from '@xm/contracts';
 import type {
   RegisteredTool,
   ToolAvailabilityContext,
@@ -134,9 +140,13 @@ export class ToolInputError extends Error {
  * 泛型 `I` 的作用是把 `inputSchema: ZodType<I>` 与 `execute(input: I)` 绑在一起——
  * 写错了（schema 说是 string、execute 当 number 用）在定义处就编译失败。
  */
-export function defineTool<I, M = unknown>(spec: ToolSpec<I, M>): RegisteredTool {
+export function defineTool<I, M = unknown, O = unknown>(spec: ToolSpec<I, M, O>): RegisteredTool {
   // 注册时就炸，而不是等模型在生产里填出一个诡异参数（ADR-0009）
   assertToolSchema(spec.inputSchema);
+  if (spec.outputSchema !== undefined) {
+    assertToolSchema(spec.outputSchema, '', 'output');
+    assertOutputIsObject(spec.name, spec.outputSchema);
+  }
 
   // 声明空能力集必须显式登记（ADR-0032 #5），同样是注册时就炸
   if (spec.capabilities.length === 0 && !(spec.name in EMPTY_CAPABILITIES_ALLOWLIST)) {
@@ -164,6 +174,19 @@ export function defineTool<I, M = unknown>(spec: ToolSpec<I, M>): RegisteredTool
   const parsePresentation = (value: unknown): M | undefined => {
     if (spec.presentationSchema === undefined || value === undefined) return undefined;
     const parsed = spec.presentationSchema.safeParse(value);
+    return parsed.success ? parsed.data : undefined;
+  };
+
+  /*
+   * 规范输出值同样是失败关闭：没声明 schema 就当这个工具不产出规范值，校验不过就丢掉。
+   *
+   * 丢掉而不是抛出，是因为它的消费者是**程序**（M3-h 的 Code Mode），而程序拿到一个
+   * 形状不对的对象比拿不到更糟——它会照着自己以为的字段名读出一串 undefined 继续跑。
+   * 拿不到至少是个能被 catch、能被断言的事实。
+   */
+  const parseOutput = (value: unknown): O | undefined => {
+    if (spec.outputSchema === undefined || value === undefined) return undefined;
+    const parsed = spec.outputSchema.safeParse(value);
     return parsed.success ? parsed.data : undefined;
   };
 
@@ -232,8 +255,29 @@ export function defineTool<I, M = unknown>(spec: ToolSpec<I, M>): RegisteredTool
       }
     },
     parsePresentation,
+    parseOutput,
+    ...(spec.outputSchema === undefined ? {} : { outputSchema: spec.outputSchema }),
     actions: (spec.actions ?? {}),
   };
+}
+
+/**
+ * 规范输出值的顶层必须是一个对象。
+ *
+ * 拦的是"顺手返回一个字符串/数组"：那种形状**没法演进**——将来想补一个 `truncated`
+ * 字段，所有已经写好的程序都得改。对象则是加字段不破坏任何调用方。
+ * 这与入参必须是 `strictObject` 是同一条理由的两侧（ADR-0071）。
+ */
+function assertOutputIsObject(toolName: string, schema: unknown): void {
+  const type: unknown = (schema as { _zod?: { def?: { type?: unknown } } })._zod?.def?.type;
+  if (type === 'object') return;
+  throw new ToolSchemaError(
+    '',
+    `工具 "${toolName}" 的 outputSchema 顶层是 \`${String(type)}\`，必须是 z.strictObject()。` +
+      `标量与数组没法在不破坏已有程序的前提下加字段——需要返回一列东西，就包一层 ` +
+      `{ items: [...] }。`,
+    'output',
+  );
 }
 
 /**

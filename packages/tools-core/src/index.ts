@@ -10,6 +10,8 @@
 
 export * from './diff.js';
 export * from './edit.js';
+export * from './git-argv.js';
+export * from './git-output.js';
 export * from './git.js';
 export * from './index-search.js';
 export * from './fs-read.js';

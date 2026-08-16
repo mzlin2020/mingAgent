@@ -98,6 +98,17 @@ export interface ToolExecutionResult {
    * 没声明 schema 或校验不过就不落。
    */
   readonly presentation?: unknown;
+  /**
+   * 工具随结果 yield 出来的**规范输出值**（ADR-0071）。**已过工具自己的 `outputSchema`**
+   * ——与 `presentation` 相反，它在 `executeToolBody` 捕获的那一刻就校验完了。
+   *
+   * 差别的理由：展示事实还要走到 `record('tool.end')` 那一步，schema 是它进事件流前的
+   * 最后一道关；规范值永远不进事件流，工具 yield 的那一刻就是唯一的关口。
+   *
+   * **它不落库**，只在这一次调用的生命周期内存在，供 `tool/post-execute`、
+   * `tool/result` 与（M3-h 起）Code Mode 的子调用返回值使用。
+   */
+  readonly output?: unknown;
 }
 
 export interface ToolPostExecuteInput extends ToolExecuteInput {

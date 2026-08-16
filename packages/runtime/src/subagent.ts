@@ -40,6 +40,25 @@ const Input = z.strictObject({
   timeoutMs: z.number().int().min(1_000).max(120_000).default(60_000),
 });
 
+/**
+ * 规范输出值（ADR-0071）。
+ *
+ * `injected` 那一档是这份规范值存在的理由：子 Agent 的结论被 `Agent.inject()` 注入时，
+ * `forModel` 只剩一句"结论已注入当前会话"——**结论本身不在返回值里**（它按自己的 seq
+ * 折进了历史，见 ADR-0064）。程序照着散文读只会拿到那句话，
+ * 而 `injected: true` 让它知道要去别处看，不是把那句话当成结论。
+ */
+const Output = z.strictObject({
+  agentId: z.string(),
+  childSessionId: z.string(),
+  ok: z.boolean(),
+  reason: z.enum(['completed', 'failed', 'aborted', 'timeout', 'interrupted']),
+  /** 结论已由 Agent.inject 注入会话历史，`summary` 因此为空 */
+  injected: z.boolean(),
+  /** 结论的文本部分；非文本块不进规范值（它们进不了 JSON） */
+  summary: z.string(),
+});
+
 export type SubagentEndReason = 'completed' | 'failed' | 'aborted' | 'timeout' | 'interrupted';
 
 export interface SubagentExploreRequest {
@@ -73,6 +92,7 @@ export const subagentExploreTool = (explore: SubagentExplorer): RegisteredTool =
     risk: 'safe',
     capabilities: [],
     concurrency: 'exclusive',
+    outputSchema: Output,
     async *execute(input, ctx): AsyncIterable<ToolProgress> {
       if (ctx.callId === undefined) {
         throw new ToolInputError(SUBAGENT_EXPLORE, '缺少当前 callId，无法关联父子生命周期。');
@@ -91,6 +111,19 @@ export const subagentExploreTool = (explore: SubagentExplorer): RegisteredTool =
         forModel: outcome.injected
           ? [{ type: 'text', text: '子 Agent 结论已通过 Agent.inject 注入当前会话。' }]
           : [...outcome.summary],
+        output: {
+          agentId: outcome.agentId,
+          childSessionId: outcome.childSessionId,
+          ok: outcome.ok,
+          reason: outcome.reason,
+          injected: outcome.injected,
+          summary: outcome.injected
+            ? ''
+            : outcome.summary
+                .map((block) => (block.type === 'text' ? block.text : ''))
+                .join('\n')
+                .trim(),
+        },
       };
     },
   });

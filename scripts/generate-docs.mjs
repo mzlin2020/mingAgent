@@ -241,8 +241,22 @@ const allTools = () => {
     markReviewed: noop,
     reviewed: () => false,
   };
+  /*
+   * 索引增强工具需要一个 WorkspaceIndex 才会被注册。以前这里不传，于是
+   * `search.symbol` / `search.indexed` 两个**真实工具**从来没进过这张表——
+   * 一份声称"全部内建工具"的目录漏掉两个，正是这张表最该拦住的那类漂移。
+   */
+  const indexStub = {
+    state: () => 'cold',
+    stats: () => ({ roots: [] }),
+    refresh: () => Promise.resolve({ state: 'cold', indexed: 0, unchanged: 0, removed: 0, errors: [] }),
+    clear: noop,
+    searchText: () => [],
+    searchSymbols: () => [],
+    close: noop,
+  };
   return [
-    ...coreTools({ os: 'linux', tempDir: '/tmp' }),
+    ...coreTools({ os: 'linux', tempDir: '/tmp', index: indexStub }),
     ...shellSessionTools(ptyStub),
     todoUpdateTool(noop),
     resultExpandTool(noop),
@@ -252,8 +266,34 @@ const allTools = () => {
   ];
 };
 
+/**
+ * 规范输出值的顶层字段名（ADR-0071）。
+ *
+ * 读的是 Zod 4 的半公开内部 def，与 `contracts/src/tool/schema.ts` 同一姿势、同一风险：
+ * zod 升级把它挪走时这里会当场炸，而不是悄悄产出一张空表。
+ */
+const outputFields = (tool) => Object.keys(tool.outputSchema?._zod?.def?.shape ?? {});
+
 const toolTable = () => {
-  const rows = allTools()
+  const tools = allTools();
+
+  /*
+   * 闸门：内建工具**必须**声明 outputSchema（ADR-0071）。
+   *
+   * 放在这里而不是 `defineTool()` 里，是因为测试夹具与临时工具没有理由被迫定义规范值；
+   * 而"内建工具集"这个概念只在这个脚本里被完整枚举过一次。`pnpm verify` 会跑
+   * `generate-docs --check`，所以漏一个就是红的。
+   */
+  const missing = tools.filter((tool) => tool.outputSchema === undefined).map((t) => t.descriptor.name);
+  if (missing.length > 0) {
+    throw new Error(
+      `这些内建工具没有声明 outputSchema：${missing.join('、')}。\n` +
+        `规范输出值是 Code Mode 的前置（docs/10 §9.5.4 / ADR-0071）：程序拿不到结构就只能去解析散文。\n` +
+        `给它加一个 z.strictObject()，并在 result 里 yield output。`,
+    );
+  }
+
+  const rows = tools
     .map((tool) => ({
       name: tool.descriptor.name,
       group: tool.descriptor.group,
@@ -262,6 +302,7 @@ const toolTable = () => {
       concurrency: tool.descriptor.concurrency ?? '—',
       card: tool.presentCall !== undefined || tool.presentResult !== undefined ? '有' : '通用降级',
       actions: Object.keys(tool.actions ?? {}),
+      output: outputFields(tool),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -272,13 +313,16 @@ const toolTable = () => {
     '所以这一列是读权限行为最直接的入口。\n\n' +
     '「卡片」列为"通用降级"表示该工具没写 `presentCall`/`presentResult`，' +
     '渲染层按通用卡片显示——这是有意的默认，不是缺陷（ADR-0058）。\n\n' +
+    '「规范输出值」列是该工具交给**程序**的那份结构的顶层字段（ADR-0071）。' +
+    '它不进提示词、不落库；模型看到的仍是 `forModel` 那份散文。' +
+    '**内建工具必须有这一列**，缺失时本脚本直接报错。\n\n' +
     `共 ${String(rows.length)} 个工具。\n\n` +
-    '| 工具 | 分组 | 风险 | 能力 | 卡片 | 卡片动作 |\n|---|---|---|---|---|---|\n' +
+    '| 工具 | 分组 | 风险 | 能力 | 卡片 | 卡片动作 | 规范输出值 |\n|---|---|---|---|---|---|---|\n' +
     rows
       .map(
         (row) =>
           `| \`${row.name}\` | ${row.group} | ${row.risk} | ${cell(row.capabilities)} | ` +
-          `${row.card} | ${cell(row.actions)} |`,
+          `${row.card} | ${cell(row.actions)} | ${cell(row.output)} |`,
       )
       .join('\n') +
     '\n'

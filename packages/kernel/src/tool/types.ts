@@ -121,9 +121,10 @@ export interface ToolActionSpec<I, M> {
  * 跨进程传输的是从它派生出的 `ToolDescriptor`。这条分界让内置工具、插件工具、
  * MCP 工具在注册表里长得完全一样。
  *
- * `M` 是这个工具落库的展示事实的类型，由 `presentationSchema` 绑定。
+ * `M` 是这个工具落库的展示事实的类型，由 `presentationSchema` 绑定；
+ * `O` 是它的**规范输出值**的类型，由 `outputSchema` 绑定。
  */
-export interface ToolSpec<I, M = unknown> {
+export interface ToolSpec<I, M = unknown, O = unknown> {
   /** 形如 "fs.read"，必须带分组前缀 */
   readonly name: string;
   readonly group: string;
@@ -217,6 +218,24 @@ export interface ToolSpec<I, M = unknown> {
   readonly presentationSchema?: z.ZodType<M>;
 
   /**
+   * **规范输出值**的形状（`docs/10 §9.5.4`，ADR-0071）——这个工具交给**程序**的那份结构。
+   *
+   * 三件事必须同时成立，缺一条这个字段就没有意义：
+   *
+   * 1. **必须是 `z.strictObject()`**，`defineTool()` 当场拒绝标量与数组。理由是演进：
+   *    往对象里加一个可选字段不破坏任何已有程序，把 `string` 改成对象则会。
+   * 2. **必须落在与入参同一个可序列化子集里**（`assertToolSchema(..., 'output')`）。
+   *    它要跨 QuickJS 客体域边界，能不能 JSON 化的约束一字不差。
+   * 3. **不声明就不产出**：工具 yield 出来的 `output` 会被丢掉，失败关闭，
+   *    与 `presentationSchema` 同形同理。
+   *
+   * ⚠️ **不进 `ToolDescriptor`。** 模型看的是 `forModel` 那份散文，不需要知道程序拿到的是
+   * 什么形状——描述符的每个字段都要进提示词、占 token。需要它的是 M3-h 的 SDK 生成，
+   * 而那发生在主进程里，手上有的是 `ToolSpec` 本身。
+   */
+  readonly outputSchema?: z.ZodType<O>;
+
+  /**
    * 挂起卡片：工具刚开始跑时显示什么。**纯函数**——禁 I/O、禁读会话状态、禁时钟随机。
    *
    * 它与 `presentResult` 在实时流与日志回放两条路上都要跑。一个会读盘的 `presentCall`
@@ -279,5 +298,20 @@ export interface RegisteredTool {
   presentResult(rawInput: unknown, outcome: ToolResultOutcome): ToolCard | undefined;
   /** 校验工具 yield 出来的展示事实。没声明 schema、或校验不过，一律 `undefined`（不落库） */
   parsePresentation(value: unknown): unknown;
+  /**
+   * 校验工具 yield 出来的规范输出值。没声明 schema、或校验不过，一律 `undefined`。
+   *
+   * 与 `parsePresentation` 的差别只有**在哪一步调用**：展示事实要活到落库那一刻，
+   * 所以它在 `record('tool.end')` 前才过 schema；规范值永远不进事件流，
+   * 于是工具 yield 出来的那一刻就是它唯一的关口——过了这里它就直接交给程序了。
+   */
+  parseOutput(value: unknown): unknown;
+  /**
+   * 规范输出值的 schema 原件，缺席表示这个工具不产出规范值。
+   *
+   * 留着它是为了 M3-h 的 SDK 生成要 `z.toJSONSchema()`，以及 `pnpm generate:docs`
+   * 要把顶层字段列进工具目录——两者都在主进程里跑，用不着跨进程的描述符。
+   */
+  readonly outputSchema?: z.ZodType;
   readonly actions: Readonly<Record<string, ToolActionSpec<unknown, unknown>>>;
 }
