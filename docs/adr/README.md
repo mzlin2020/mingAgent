@@ -87,6 +87,7 @@
 | [0070](./0070-会话状态副表的有界化.md) | `presentations` / `editProposals` 从只增不删改为有界：前者留最近 256 条并走 ADR-0058 既有的通用卡片降级，后者留 64 条且优先淘汰终态、被淘汰后复用 `edit.apply` 已有的"找不到提案"分支。事件流仍是唯一真相，丢的只是投影里的驻留副本 | 🟢 Accepted | 2026-08-15 |
 | [0071](./0071-工具的规范JSON输出值.md) | 每个内建工具定义并返回一份**规范 JSON 输出值**（M3-h 前置二）：`ToolProgress.result.output` + `ToolSpec.outputSchema`，与入参共用可序列化子集、顶层必须 `strictObject`、没声明就不产出。**不落库**——它与 `forModel`/`presentation` 大量重复且体积不受控，而“模型可见 ⇔ 已落库”不约束不进模型请求的东西。闸门在 `generate-docs`，缺一个就红 | 🟢 Accepted | 2026-08-16 |
 | [0072](./0072-CodeMode子调用的记录面与再入口.md) | Code Mode 的子调用**只落一条 `tool.code.dispatch`**，不落 `tool.start`/`tool.end`——payload 里没有 `forModel` 的位置，程序中间值因此结构性地进不了模型请求。十二步链参数化在 `CallSink` 上，判定那一半两条路共用同一份实现；`ctx.codeMode` 是**再入口不是权限**（每次子调用从头判）；呈现模式只作用于模型视野，`code` 模式下模型点名别的工具得到的是 `tool_not_found` 而不是被拒绝 | 🟢 Accepted | 2026-08-16 |
+| [0073](./0073-设计语言换轨与三层token.md) | 设计语言换轨（M3.5-a）：token 分三层（调色板 `--p-*` 明暗同值 → 语义别名进 `@theme` → 组件专用 `--xm-*`），**组件只能用中间那层**；**亮色靠描边、暗色靠填充**——亮色下 `canvas` 与 `surface` 同为纯白不是漏改，卡片的边界由那圈 `border` 给出；强调色换冷调蓝，四个别名集中一处可一键换回。**部分推翻 ADR-0004/0037 的配色约定**（布局与导航结论不变）。深色定义写两份是 CSS 没有 mixin 的代价，同批配 `check:design-tokens` 上锁，并补掉 `cn.ts` ↔ `@theme` 那句只写在注释里的"两处一起改" | 🟢 Accepted | 2026-08-16 |
 
 ## 什么时候要写 ADR
 

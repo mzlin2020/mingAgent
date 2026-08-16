@@ -49,6 +49,9 @@ jobs:
       # no-unsafe-*（看着像代码问题，其实是装配问题）。本地有 dist，永远复现不出来。
       - name: tsconfig paths 映射完整（没有构建产物时才暴露的那一类）
         run: node scripts/check-tsconfig-paths.mjs
+      # 纯文本扫描，不需要构建产物，所以搭在这个 job 上（ADR-0073）。
+      - name: 设计 token 边界（组件只能用语义别名层）
+        run: node scripts/check-design-tokens.mjs
       - run: pnpm exec eslint .
 
   # 三平台矩阵：内核与契约是纯逻辑，理应处处一致。

@@ -20,8 +20,13 @@ M3「微内核化重构」是 2026-08-14 新增的里程碑，原 M3–M6 顺延
 `node:*`，物理删除 `tools-core` 后仍能通过 typecheck 与空工具 headless 冒烟。
 渲染层只认识四种卡片种类（M3-f）；`ext.persisted` / `ext.transient` 两个信封、
 运行时不变量注册表与四张生成表进 `pnpm verify`（M3-g）。
-证据逐段见 `docs/experience/m3/`。**下一阶段是 M4「能扩展」**：三方插件隔离（`docs/09` H1）、
-MCP 与污点传播（G2）、Skill、多 Provider 角色路由、`xm` CLI 产品化。
+证据逐段见 `docs/experience/m3/`。**下一阶段是 M3.5「桌面端界面与设置」**（2026-08-16 新增的插段，
+性质同 M1.5，**设计已定稿、代码未动**）：设计语言从暖色 Claude Code 调性换到冷调中性 + 三层 token、
+两栏让位链、工具调用压成单行，以及**把配置中心从 M4 前移**——`config.json` 的 17 个字段里桌面端
+现在只能改 3 个，`tools.presentation`（M3-h 刚做完的 Code Mode 开关）与 `permission.rules`
+（ADR-0039 之后唯一的用户侧权限入口）在界面上根本不存在。规划见 `docs/12-桌面端界面与设置.md`
+与 `docs/M3.5-阶段划分.md`，决策待写 ADR-0073 ~ 0077。**再往后才是 M4「能扩展」**：
+三方插件隔离（`docs/09` H1）、MCP 与污点传播（G2）、Skill、多 Provider 角色路由、`xm` CLI 产品化。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
 
 **Code Mode 已落地（M3-h）**，三份 ADR 各管一段，改它之前三份都要读：
@@ -243,4 +248,5 @@ git pre-commit 钩子只做一件事：`scripts/check-secrets.mjs` 拦密钥（�
 | 体验验收与复盘 | `docs/experience/` |
 | **参考 deepseek-harness 补代码前** | 本机源码路径是 `C:\Users\EDY\Desktop\code_mine\deepseek-harness`；先读 `docs/11-微内核与插件容器.md` §4「不拿什么，以及为什么」——那个仓库有 `ask`、有「没有特权内核」、有 51 个包，这三条小明都刻意不要 |
 | 做 M3 任一段之前 | `docs/M3-阶段划分.md`（八段的边界、验收与反向演练清单） |
+| **动界面样式或加设置项之前** | `docs/12-桌面端界面与设置.md` §3「不拿什么」+ §4「三层 token」+ §8「设置中心的可写边界」；分段见 `docs/M3.5-阶段划分.md`。**界面借鉴的是 deepseek-harness 的 web 端，但不拿左侧会话侧栏**（顶栏 tabs 是 ADR-0037 拍过板的），也不拿插槽体系、CSS Modules 与 Figma 坐标注释 |
 | 改 Code Mode 之前 | ADR-0061（做什么）+ ADR-0069（跑在哪）+ ADR-0072（子调用怎么记），外加 `docs/10 §9.5.6` |

@@ -1,23 +1,101 @@
 @import 'tailwindcss';
 
 /**
- * 渲染层唯一的样式来源：设计 token + 少量全局规则。
+ * 渲染层唯一的样式来源：设计 token + 少量全局规则（ADR-0073）。
+ *
+ * ── 三层 token ──
+ *
+ * 1. **调色板层** `--p-*`：只有色号，没有语义。住在下面的 `:root` 里，**不进 `@theme`**，
+ *    因此不生成任何工具类——组件想用也用不到（`scripts/check-design-tokens.mjs` 另外还会拦一次）。
+ *    **明暗同值**：换主题换的是第二层的指向，不是色号本身。
+ * 2. **语义别名层** `--color-* / --radius-* / --text-* / --shadow-*`：住在 `@theme` 里，
+ *    生成 `bg-surface` / `text-muted` 这类工具类。**组件只能用这一层。**
+ * 3. **组件专用层** `--xm-*`：由组件在自己的根节点上声明并消费（本文件只给滚动条留了默认值）。
  *
  * ── 为什么要把 Tailwind 自带的命名空间清零 ──
  *
- * 上一版这里只有 12 个颜色变量，圆角/间距/字号/阴影/焦点环一个都没有登记，于是它们散在
- * 13 个组件的内联类里各长各的：圆角同时存在 rounded / rounded-sm / rounded-md / rounded-lg
- * 四档，字号有七档。这类不一致不是靠 review 能长期盯住的。
+ * 更早那一版这里只有 12 个颜色变量，圆角/间距/字号/阴影/焦点环一个都没有登记，于是它们散在
+ * 13 个组件的内联类里各长各的。`--color-*: initial` 之后，`bg-red-500` / `rounded-lg` / `text-4xl`
+ * **在编译期就不存在**，想跑偏必须先回到这个文件登记一档——约束从"人的自觉"变成"构建期的事实"。
  *
- * `--color-*: initial` 之后，`bg-red-500` / `rounded-lg` / `text-4xl` **在编译期就不存在**，
- * 想跑偏必须先回到这个文件登记一档。约束从"人的自觉"变成"构建期的事实"——
- * 与 docs/01 原则七同一条思路："不能被 CI 或代码审查检验的原则等于没有"。
+ * ── 亮色靠描边，暗色靠填充（ADR-0073 的核心）──
  *
- * 配色仍是 Claude Code 桌面端的调性：暖白底、低饱和、橙色强调（ADR-0004；ADR-0037
- * 明确布局借鉴 openCode 但**不换成它的灰白调**）。深色模式只跟随系统，应用内不设开关——
- * 设置页归 M3。
+ * 上一版亮色是暖白 `#faf9f5` 底 + 白卡片 + 米色次级块，**三层都靠填充**分层，
+ * 三个米白挨在一起，边界既不靠对比也不靠描边，看久了就是一片糊。
+ * 现在反过来：
+ *
+ *   · 亮色：`canvas` 与 `surface` **同为纯白**，层次**全靠描边**（黑 10% / 16% 两档）。
+ *   · 暗色：描边退到白 12% / 20%，层次**全靠填充**逐层提亮（#151517 → #232324 → #2c2c2e）。
+ *
+ * 所以「`surface` 和 `canvas` 在亮色下是同一个值」不是漏改：每一处 `bg-surface` 都同时带着
+ * `border border-border`（`ui.tsx` 的 `Card`/`Button`、菜单、输入区外壳、tabs 全部如此），
+ * 卡片的边界由那圈描边给出。**给 `bg-surface` 去掉边框会让它在亮色下凭空消失**，
+ * 这条约束比色值本身更要紧。
+ *
+ * 深色定义**写了两份**（跟随系统的 `@media` 一份、手动选择的 `[data-theme]` 一份），
+ * 两份必须逐字节一致——这条由 `check:design-tokens` 检查，不靠自觉。
  */
 
+/**
+ * ── 第一层：调色板 ──
+ *
+ * 冷调中性（带蓝灰）+ DeepSeek 蓝 + 红。取自参考实现 `deepseek-harness` 的
+ * `ui-theme/src/styles/design-platform.css`，rgb 转十六进制，色号一一对应。
+ *
+ * **明暗同值**：参考实现的 `--dsw-static-*` 在明暗两份里一字不差，我们照办。
+ * 绿/琥珀（成功/警告）等到有别名要用它们时再进来——现在加进来就是没有使用者的色号。
+ */
+:root {
+  --p-neutral-0: #ffffff;
+  --p-neutral-50: #f9fafb;
+  --p-neutral-60: #f5f6f7;
+  --p-neutral-75: #f1f3f5;
+  --p-neutral-100: #ebeef2;
+  --p-neutral-150: #e9ecf2;
+  --p-neutral-200: #e1e5ee;
+  --p-neutral-300: #cfd3d6;
+  --p-neutral-400: #adb2b8;
+  --p-neutral-500: #979da6;
+  --p-neutral-600: #81858c;
+  --p-neutral-700: #61666b;
+  --p-neutral-750: #43454a;
+  --p-neutral-800: #353638;
+  --p-neutral-850: #2c2c2e;
+  --p-neutral-875: #232324;
+  --p-neutral-900: #1b1b1c;
+  --p-neutral-950: #151517;
+  --p-neutral-1000: #0f1115;
+
+  --p-blue-50: #edf3fe;
+  --p-blue-100: #e4edfd;
+  --p-blue-200: #d3e2ff;
+  --p-blue-300: #b7c8fe;
+  --p-blue-400: #679efe;
+  --p-blue-450: #5686fe;
+  --p-blue-500: #4176e6;
+  /* 见文件下方 --color-accent：这一档与 --p-red-700 是本调色板里仅有的两个
+     **不来自参考实现**的色号，按对比度实测取值 */
+  --p-blue-550: #2f66d8;
+  --p-blue-600: #4868b2;
+  --p-blue-800: #34415b;
+  --p-blue-900: #283142;
+
+  --p-red-50: #fef2f2;
+  --p-red-100: #fee2e2;
+  --p-red-400: #f25a5a;
+  --p-red-500: #ef4444;
+  --p-red-600: #ec1313;
+  /* 同上：`#ec1313` 压在 `--color-danger-bg` 上只有 4.11:1，达不到正文对比度 */
+  --p-red-700: #c81111;
+  --p-red-900: #570c0c;
+}
+
+/**
+ * ── 第二层：语义别名 ──
+ *
+ * 这里的值是**亮色**那一套；深色在文件下方重定义同一批名字。
+ * 组件里一个 `dark:` 变体都不需要——工具类编译成 `var(--color-*)`，换的是变量的值。
+ */
 @theme {
   /* ── 命名空间清零 ── */
   --color-*: initial;
@@ -32,41 +110,62 @@
   --color-current: currentColor;
   --color-inherit: inherit;
 
-  /* ── 表面与文字 ── */
+  /* ── 表面 ── */
   /* 页面底色叫 canvas 而不是 bg：`bg-bg` 这种类名读不出来 */
-  --color-canvas: #faf9f5;
-  --color-surface: #ffffff;
-  --color-surface-2: #f2f0e9;
-  --color-border: #e5e2d8;
-  --color-border-strong: #d2cec1;
+  --color-canvas: var(--p-neutral-0);
+  /* 亮色下与 canvas 同值，见文件头：卡片的边界由描边给出，不由填充给出 */
+  --color-surface: var(--p-neutral-0);
+  /* 次级块：代码块、行内码、用户气泡、hover 着色。亮色下它是唯一一档着色 */
+  --color-surface-2: var(--p-neutral-75);
 
-  --color-fg: #1f1e1b;
-  --color-muted: #75726a;
+  /* ── 描边：两档，用透明度而不是实色 ──
+     实色描边在任何底色上都是同一个灰，压在 surface-2 上会显得脏；
+     alpha 描边跟着底下的表面走，这也是暗色能直接换成白色 alpha 的原因。 */
+  --color-border: rgb(0 0 0 / 0.1);
+  --color-border-strong: rgb(0 0 0 / 0.16);
+
+  /* ── 文字三级 ── */
+  --color-fg: var(--p-neutral-1000);
+  --color-muted: var(--p-neutral-700);
   /* 第三级文字：列表符号、快捷键提示这类"在场即可、不必被读"的信息 */
-  --color-faint: #a19d92;
+  --color-faint: var(--p-neutral-500);
 
-  /* ── 强调色 ── */
-  --color-accent: #c96442;
-  --color-accent-hover: #b5573a;
-  /* 选中态/气泡的极淡底，比 surface-2 更偏暖 */
-  --color-accent-weak: #f7ece7;
-  --color-on-accent: #ffffff;
+  /* ── 强调色 ──
+     换成冷调蓝不是审美偏好：hover / 选中态是中性冷灰的叠加，暖橙压在冷灰上会发脏。
+     整套强调色就这四行，要换回暖橙（或任何别的色）只改这里，不碰任何组件。
 
-  /* ── 危险态 ── */
-  --color-danger: #b8402f;
-  --color-danger-bg: #fdf0ee;
-  --color-danger-border: #efcabf;
+     取 `--p-blue-550` 而不是参考实现的 `-500`，是因为**一个别名承担两种角色**：
+     它既是焦点环/选中色，也是 `Button variant="primary"` 的填充（上面压白字）。
+     实测 `#4176e6` + 白字只有 4.23:1，达不到正文对比度；`#2f66d8` 是 5.23:1。
+     参考实现没有这个问题，因为它的主按钮是近黑色、蓝色只用于选中与链接——
+     真要拆成"品牌色 / 业务色"两支是后续段的事，本段不提前拆。 */
+  --color-accent: var(--p-blue-550);
+  /* hover 往**深**走而不是往浅走：实心按钮上压白字，往浅走会掉到 3:1 以下 */
+  --color-accent-hover: var(--p-blue-600);
+  /* 选中态/气泡的极淡底 */
+  --color-accent-weak: var(--p-blue-50);
+  --color-on-accent: var(--p-neutral-0);
 
-  /* 终端两色在明暗下相同：里面跑的是真实 ANSI 输出，跟着主题变浅会毁掉配色 */
-  --color-terminal-bg: #1c1b18;
-  --color-terminal-fg: #e8e5dd;
+  /* ── 危险态 ──
+     同样是"一个别名两种角色"：`danger` 既画文字也画描边，而它要压在 `danger-bg` 上
+     （`Button variant="danger"` 的 hover、`Card tone="danger"` 的正文）。
+     参考实现的 `red-600` 在那块底上只有 4.11:1，取实测过的 `--p-red-700`（5.42:1）。 */
+  --color-danger: var(--p-red-700);
+  --color-danger-bg: var(--p-red-50);
+  /* 从调色板推导而不是另取一个色号：描边要跟着危险色走，又不能重到抢正文 */
+  --color-danger-border: color-mix(in srgb, var(--p-red-500) 32%, transparent);
+
+  /* 终端两色在明暗下相同：里面跑的是真实 ANSI 输出，跟着主题变浅会毁掉配色。
+     因此它们**不出现在下面的深色块里**——出现即是 bug。 */
+  --color-terminal-bg: var(--p-neutral-950);
+  --color-terminal-fg: var(--p-neutral-150);
 
   /* ── 圆角只有三档 ── */
   --radius-card: 10px;
   --radius-control: 6px;
   --radius-chip: 999px;
 
-  /* ── 字号只有四档（上一版是七档） ── */
+  /* ── 字号只有四档 ── */
   --text-micro: 11px;
   --text-micro--line-height: 1.45;
   --text-meta: 12px;
@@ -77,8 +176,8 @@
   --text-title--line-height: 1.4;
 
   /* ── 阴影只有一档 ── */
-  /* 悬浮层：汉堡菜单、"完全访问权限"确认气泡 */
-  --shadow-pop: 0 1px 2px rgb(31 30 27 / 0.06), 0 12px 28px -10px rgb(31 30 27 / 0.18);
+  /* 悬浮层：汉堡菜单、确认气泡 */
+  --shadow-pop: 0 1px 2px rgb(15 17 21 / 0.06), 0 12px 28px -10px rgb(15 17 21 / 0.18);
 
   /* ── 字体 ── */
   --font-sans:
@@ -105,34 +204,63 @@
 }
 
 /**
- * 深色覆盖。工具类编译成 `var(--color-*)`，所以在 `:root` 上重定义同一批变量即可生效，
- * 组件里一个 `dark:` 变体都不需要。
+ * ── 深色（跟随系统）──
+ *
+ * 选择器是 `:root:not([data-theme='light'])` 而**不是**裸 `:root`：
+ * 裸 `:root` 会让"系统深色 + 用户手动选浅色"这一格失效——媒体查询与属性选择器特异性相同，
+ * 媒体查询在后就赢，用户点了"浅色"却什么也没发生。`check:design-tokens` 盯着这个选择器。
+ *
+ * 下面这份声明与再下面 `[data-theme='dark']` 那份**必须逐字节一致**，同样由闸门检查。
  */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --color-canvas: #1a1917;
-    /* 卡片与底色刻意贴得很近：深色下大面积高对比的卡片会让界面显得碎 */
-    --color-surface: #211f1d;
-    --color-surface-2: #2a2825;
-    --color-border: #33312c;
-    --color-border-strong: #46433c;
+  :root:not([data-theme='light']) {
+    --color-canvas: var(--p-neutral-950);
+    --color-surface: var(--p-neutral-875);
+    --color-surface-2: var(--p-neutral-850);
 
-    --color-fg: #edeae2;
-    --color-muted: #9b978b;
-    --color-faint: #6d6a60;
+    --color-border: rgb(255 255 255 / 0.12);
+    --color-border-strong: rgb(255 255 255 / 0.2);
 
-    --color-accent: #d97757;
-    --color-accent-hover: #e2896c;
-    --color-accent-weak: #2d2019;
-    /* 亮橙上压深色字：#d97757 配白字只有 3:1，达不到正文对比度要求 */
-    --color-on-accent: #1c1814;
+    --color-fg: var(--p-neutral-50);
+    --color-muted: var(--p-neutral-400);
+    --color-faint: var(--p-neutral-600);
 
-    --color-danger: #e06c5b;
-    --color-danger-bg: #33211e;
-    --color-danger-border: #543029;
+    --color-accent: var(--p-blue-450);
+    --color-accent-hover: var(--p-blue-400);
+    --color-accent-weak: var(--p-blue-900);
+    --color-on-accent: var(--p-neutral-1000);
+
+    --color-danger: var(--p-red-400);
+    --color-danger-bg: color-mix(in srgb, var(--p-red-500) 16%, var(--p-neutral-875));
+    --color-danger-border: color-mix(in srgb, var(--p-red-400) 35%, transparent);
 
     --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 28px -10px rgb(0 0 0 / 0.6);
   }
+}
+
+/** ── 深色（手动选择）── 与上面那份逐字节一致，理由见上。 */
+:root[data-theme='dark'] {
+  --color-canvas: var(--p-neutral-950);
+  --color-surface: var(--p-neutral-875);
+  --color-surface-2: var(--p-neutral-850);
+
+  --color-border: rgb(255 255 255 / 0.12);
+  --color-border-strong: rgb(255 255 255 / 0.2);
+
+  --color-fg: var(--p-neutral-50);
+  --color-muted: var(--p-neutral-400);
+  --color-faint: var(--p-neutral-600);
+
+  --color-accent: var(--p-blue-450);
+  --color-accent-hover: var(--p-blue-400);
+  --color-accent-weak: var(--p-blue-900);
+  --color-on-accent: var(--p-neutral-1000);
+
+  --color-danger: var(--p-red-400);
+  --color-danger-bg: color-mix(in srgb, var(--p-red-500) 16%, var(--p-neutral-875));
+  --color-danger-border: color-mix(in srgb, var(--p-red-400) 35%, transparent);
+
+  --shadow-pop: 0 1px 2px rgb(0 0 0 / 0.4), 0 12px 28px -10px rgb(0 0 0 / 0.6);
 }
 
 html,
@@ -158,7 +286,7 @@ body {
 }
 
 /**
- * 全局焦点环。上一版整个应用没有任何 focus-visible 样式——键盘走查时焦点完全不可见。
+ * 全局焦点环。更早那一版整个应用没有任何 focus-visible 样式——键盘走查时焦点完全不可见。
  * 用 outline 而不是 box-shadow：outline 不参与布局，也不会被 overflow 裁掉。
  */
 :focus-visible {
@@ -185,10 +313,22 @@ body {
 
 /**
  * 全局滚动条：细、淡、轨道透明。Firefox 走 scrollbar-*，Chromium/Electron 走 ::-webkit-scrollbar。
+ *
+ * ── 第三层 token 的唯一现存用例 ──
+ *
+ * 滑块颜色走 `--xm-scrollbar-thumb`（组件专用层），默认值绑在页面级的 `muted` 上。
+ * 一块**更浅的表面**（浮层、输入卡）里的滚动条压在它自己的底色上会显得糊，
+ * 那种容器可以在自己的根节点上重绑这两个变量，滚动条会跟着换档——
+ * 不需要为此新增任何工具类，也不需要选择器精确匹配到那个滚动的盒子。
  */
+:root {
+  --xm-scrollbar-thumb: color-mix(in srgb, var(--color-muted) 28%, transparent);
+  --xm-scrollbar-thumb-hover: color-mix(in srgb, var(--color-muted) 48%, transparent);
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-muted) 28%, transparent) transparent;
+  scrollbar-color: var(--xm-scrollbar-thumb) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -202,12 +342,12 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--color-muted) 28%, transparent);
+  background-color: var(--xm-scrollbar-thumb);
   border-radius: var(--radius-chip);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background-color: color-mix(in srgb, var(--color-muted) 48%, transparent);
+  background-color: var(--xm-scrollbar-thumb-hover);
 }
 
 @keyframes soft-view-enter {
@@ -288,6 +428,8 @@ details[open] > .disclosure-content {
 /*
  * 工作区在常规窗口中与聊天并排；窄窗口中改为右侧覆盖层，避免把正文和输入框挤成细条。
  * 它仍然是同一个组件和同一份状态，只改变布局方式。
+ *
+ * M3.5-b 会把这里换成可拖拽的让位链（`lib/columns.ts` 的纯函数解），本段不动。
  */
 .workspace-panel {
   width: 380px;

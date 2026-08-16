@@ -20,7 +20,7 @@
     "test:kernel-coverage": "vitest run --coverage --config vitest.kernel.config.ts",
     "depcruise": "depcruise packages apps --config .dependency-cruiser.cjs",
     "size": "size-limit",
-    "verify": "node scripts/assert-toolchain.mjs && node scripts/check-workflows.mjs && node scripts/check-tsconfig-paths.mjs && node scripts/check-file-size.mjs && node scripts/check-local-supply-chain.mjs && node scripts/check-determinism-boundary.mjs && node scripts/check-invariants.mjs && tsc -b && node scripts/generate-seam-map.mjs --check && node scripts/generate-docs.mjs --check && tsc -p tsconfig.tests.json && tsc -p apps/desktop/tsconfig.main.json && tsc -p apps/desktop/tsconfig.renderer.json && eslint . && vitest run && vitest run --coverage --config vitest.kernel.config.ts && node scripts/smoke-headless.mjs && node scripts/smoke-write-lease-recovery.mjs && pnpm depcruise && pnpm size",
+    "verify": "node scripts/assert-toolchain.mjs && node scripts/check-workflows.mjs && node scripts/check-tsconfig-paths.mjs && node scripts/check-file-size.mjs && node scripts/check-local-supply-chain.mjs && node scripts/check-determinism-boundary.mjs && node scripts/check-invariants.mjs && node scripts/check-design-tokens.mjs && tsc -b && node scripts/generate-seam-map.mjs --check && node scripts/generate-docs.mjs --check && tsc -p tsconfig.tests.json && tsc -p apps/desktop/tsconfig.main.json && tsc -p apps/desktop/tsconfig.renderer.json && eslint . && vitest run && vitest run --coverage --config vitest.kernel.config.ts && node scripts/smoke-headless.mjs && node scripts/smoke-write-lease-recovery.mjs && pnpm depcruise && pnpm size",
     "clean": "tsc -b --clean && rimraf packages/*/dist",
     "smoke": "node scripts/smoke.mjs",
     "check:workflows": "node scripts/check-workflows.mjs",
@@ -31,6 +31,7 @@
     "generate:seams": "tsc -b packages/compose && node scripts/generate-seam-map.mjs",
     "generate:docs": "tsc -b && node scripts/generate-docs.mjs",
     "check:invariants": "node scripts/check-invariants.mjs",
+    "check:design-tokens": "node scripts/check-design-tokens.mjs",
     "scan:invariants": "tsc -b && node scripts/scan-invariants.mjs"
   },
   "devDependencies": {
