@@ -75,3 +75,25 @@ describe('版本漂移', () => {
     expect(() => parseStoredEvent(future(EVENT_SPECS['session.renamed'].version))).not.toThrow();
   });
 });
+
+describe('占用投影不得进事件流（M3.5-f）', () => {
+  it('🔴 登记成 context.occupancy → 未知事件类型', () => {
+    expect(() =>
+      parseStoredEvent({
+        id: newEventId(),
+        sessionId: S,
+        seq: 1,
+        ts: 1,
+        type: 'context.occupancy',
+        v: 1,
+        payload: {
+          systemTokens: 1,
+          toolsTokens: 1,
+          conversationTokens: 1,
+          totalTokens: 3,
+          capacityTokens: 100,
+        },
+      }),
+    ).toThrow(/未知事件类型 "context.occupancy"/);
+  });
+});

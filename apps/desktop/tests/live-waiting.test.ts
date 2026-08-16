@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { liveWaitingText } from '../src/renderer/live-status.js';
+import { liveWaitingPhase, liveWaitingText } from '../src/renderer/live-status.js';
 
 const message = {
   messageId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee' as never,
@@ -11,10 +11,12 @@ const message = {
 describe('主回合等待状态', () => {
   it('message.start 后尚无首字节时立即显示连接计时', () => {
     expect(liveWaitingText(message, 0)).toBe('正在连接，已等待 0 秒');
+    expect(liveWaitingPhase(message)).toBe('正在连接');
   });
 
   it('收到思考增量后显示思考计时', () => {
     expect(liveWaitingText({ ...message, thinking: '分析中' }, 12)).toBe('思考中，已等待 12 秒');
+    expect(liveWaitingPhase({ ...message, thinking: '分析中' })).toBe('思考中');
   });
 
   it('自动重试时显示下一次尝试和退避时间', () => {
@@ -37,5 +39,6 @@ describe('主回合等待状态', () => {
 
   it('正文开始后不再显示等待状态', () => {
     expect(liveWaitingText({ ...message, text: '开始回答' }, 3)).toBeUndefined();
+    expect(liveWaitingPhase({ ...message, text: '开始回答' })).toBeUndefined();
   });
 });

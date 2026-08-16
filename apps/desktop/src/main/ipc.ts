@@ -161,7 +161,12 @@ export function registerIpc(services: Services, windows: () => BrowserWindow[]):
   services.bus.subscribe((event) => {
     // 卡片是随事件同行的纯函数投影，不是事件的一部分——它不落库、不参与 reduce()
     const card = services.cardForEvent(event);
-    const payload = card === undefined ? event : { ...event, card };
+    const occupancy = services.occupancyForEvent(event);
+    const payload = {
+      ...event,
+      ...(card === undefined ? {} : { card }),
+      ...(occupancy === undefined ? {} : { occupancy }),
+    };
     for (const win of windows()) {
       if (!win.isDestroyed()) win.webContents.send(CH.event, payload);
     }

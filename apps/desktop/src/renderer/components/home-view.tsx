@@ -3,13 +3,15 @@ import type { ReactNode } from 'react';
 import { Button } from './ui.js';
 import { SessionStatusBadge } from './session-status.js';
 import { cn } from '../lib/cn.js';
-import { COLUMN } from '../lib/layout.js';
+import { CHAT_COLUMN } from '../lib/layout.js';
 import { formatRelativeTime } from '../lib/relative-time.js';
 import { useUi } from '../store.js';
 
 /**
  * Home：最近会话（按 listSessions 的 updatedAt 倒序，服务端已排好）。
  * 不展示 cwd / 项目列（ADR-0037）。
+ *
+ * 这不是会话空态。新会话（零消息）走对话列里的 hero 输入卡，两者在 M3.5-c 拆开。
  */
 export function HomeView(): ReactNode {
   const sessions = useUi((s) => s.sessions);
@@ -34,7 +36,7 @@ export function HomeView(): ReactNode {
   }, []);
 
   return (
-    <div className={cn(COLUMN, 'flex flex-col gap-7 py-12')}>
+    <div className={cn(CHAT_COLUMN, 'flex flex-col gap-7 py-12')}>
       <div className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-title font-semibold tracking-tight">最近会话</h1>

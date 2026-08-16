@@ -24,6 +24,7 @@ import {
   CardActionRequest,
   SendUserMessageRequest,
   SessionListStatus,
+  UpdateSettingsRequest,
 } from '../src/shared/ipc.js';
 
 /**
@@ -115,12 +116,30 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
     const sessionId = newSessionId();
     const serialized = serializeSessionState(emptySessionState(sessionId));
     expect(
-      ReadSessionResult.safeParse({ ...serialized, cards: [], extRecords: [] }).success,
+      ReadSessionResult.safeParse({
+        ...serialized,
+        cards: [],
+        extRecords: [],
+        dispatches: [],
+        occupancy: undefined,
+      }).success,
     ).toBe(true);
     // 卡片不是可选的：漏送它渲染层会静默退回一行摘要，而那种降级看起来跟"工具没写投影"一模一样
     expect(ReadSessionResult.safeParse(serialized).success).toBe(false);
     // 插件记录同理：漏送它，未安装扩展留下的记录在界面上就是彻底的沉默（ADR-0057 §三）
     expect(ReadSessionResult.safeParse({ ...serialized, cards: [] }).success).toBe(false);
+    // 子调用投影同理：漏送它，重开会话后详情栏就打不开 Code Mode 的子调用
+    expect(ReadSessionResult.safeParse({ ...serialized, cards: [], extRecords: [] }).success).toBe(
+      false,
+    );
+    expect(
+      ReadSessionResult.safeParse({
+        ...serialized,
+        cards: [],
+        extRecords: [],
+        dispatches: [],
+      }).success,
+    ).toBe(false);
   });
 
   it('带着未清空 Map（runningCalls/ptySessions）的状态也能通过——这正是快照要处理的形状', () => {
@@ -141,6 +160,8 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
       ...serializeSessionState(state),
       cards: [],
       extRecords: [],
+      dispatches: [],
+      occupancy: undefined,
     });
     expect(result.success).toBe(true);
   });
@@ -150,7 +171,13 @@ describe('readSession 的返回值：SerializedSessionState（ADR-0032，修 G4/
     const serialized = serializeSessionState(emptySessionState(sessionId));
     // Electron 的 IPC 走结构化克隆，不是 JSON；Node 的 structuredClone 是同一族算法，
     // 用它模拟"数据真的跨了一次进程边界"比只 JSON.stringify/parse 更接近真实路径。
-    const cloned: unknown = structuredClone({ ...serialized, cards: [], extRecords: [] });
+    const cloned: unknown = structuredClone({
+      ...serialized,
+      cards: [],
+      extRecords: [],
+      dispatches: [],
+      occupancy: undefined,
+    });
     expect(ReadSessionResult.safeParse(cloned).success).toBe(true);
   });
 });
@@ -253,6 +280,31 @@ describe('渲染层对未知事件的容忍', () => {
   it('信封本身的必填字段还是必填的', () => {
     expect(PushedEvent.safeParse({ type: 'x', payload: {} }).success).toBe(false);
   });
+
+  it('occupancy 是 sidecar：可有可无，不在信封必填字段里', () => {
+    const base = {
+      id: newSessionId(),
+      sessionId: newSessionId(),
+      seq: 7,
+      ts: 1,
+      type: 'message.start',
+      v: 1,
+      payload: { messageId: newMessageId(), role: 'assistant' },
+    };
+    expect(PushedEvent.safeParse(base).success).toBe(true);
+    expect(
+      PushedEvent.safeParse({
+        ...base,
+        occupancy: {
+          systemTokens: 10,
+          toolsTokens: 20,
+          conversationTokens: 30,
+          totalTokens: 60,
+          capacityTokens: 8_000,
+        },
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('会话列表投影的形状', () => {
@@ -286,3 +338,52 @@ describe('通道名', () => {
     expect(new Set(Object.values(CH)).size).toBe(Object.values(CH).length);
   });
 });
+
+describe('UpdateSettingsRequest（ADR-0075）', () => {
+  const valid = {
+    workspace: { mode: 'choose' as const },
+    disabledTools: [],
+    presentation: 'native' as const,
+    model: { main: 'openai/gpt' },
+    providers: [],
+    prices: {},
+    permissionDenies: [],
+  };
+
+  it('合法请求通过', () => {
+    expect(UpdateSettingsRequest.safeParse(valid).success).toBe(true);
+  });
+
+  it('🔴 effect:allow 被拒绝', () => {
+    const parsed = UpdateSettingsRequest.safeParse({
+      ...valid,
+      permissionDenies: [{ id: 'x', effect: 'allow', capability: 'fs.write', reason: '放行' }],
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(formatIssues(parsed.error)).toBe('permissionDenies.0.effect: Invalid input: expected "deny"');
+  });
+
+  it('🔴 顶层 apiKey 被拒绝', () => {
+    const parsed = UpdateSettingsRequest.safeParse({ ...valid, apiKey: 'sk' });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(formatIssues(parsed.error)).toBe(': Unrecognized key: "apiKey"');
+  });
+
+  it('🔴 workspace.mode 不合法被拒绝', () => {
+    const parsed = UpdateSettingsRequest.safeParse({
+      ...valid,
+      workspace: { mode: 'nope' },
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(formatIssues(parsed.error)).toBe(
+      'workspace.mode: Invalid option: expected one of "choose"|"fixed"|"home"',
+    );
+  });
+});
+
+function formatIssues(error: { issues: readonly { path: readonly PropertyKey[]; message: string }[] }): string {
+  return error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('；');
+}

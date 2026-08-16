@@ -12,7 +12,7 @@
  *
  *   node scripts/smoke-headless.mjs
  */
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -73,9 +73,14 @@ import {
 // fileURLToPath 而不是 `.pathname`：后者在 Windows 上是 `/D:/a/...` 这种带
 // 前导斜杠的 URL 路径，不是合法的文件系统路径（同一个坑见 check-file-size.mjs）。
 const APP_ROOT = fileURLToPath(new URL('..', import.meta.url)).replace(/[/\\]$/, '');
-const dataDir = mkdtempSync(join(tmpdir(), 'xm-headless-'));
+/*
+ * macOS 上 `os.tmpdir()` 是 `/var/folders/…`，realpath 之后是 `/private/var/folders/…`。
+ * 网关判定走 realpath，红线里的 `home` 若不在同一坐标系，`rm -rf ~` 会匹配不上
+ * 然后真的把工作区删掉（ADR-0012 的两个坐标系）。这里先对齐到网关看到的那条路径。
+ */
+const dataDir = realpathSync(mkdtempSync(join(tmpdir(), 'xm-headless-')));
 /** 主 DoD 任务的工作区。真文件、真读写——闸门第一次被真实输入喂 */
-const workspace = mkdtempSync(join(tmpdir(), 'xm-workspace-'));
+const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'xm-workspace-')));
 
 const fail = (msg) => {
   console.error(`✗ ${msg}`);

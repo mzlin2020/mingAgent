@@ -11,6 +11,7 @@ import {
   PolicyRuleSet,
   findPlaintextSecrets,
   mergeConfigLayers,
+  stripRetiredConfigKeys,
 } from '@xm/contracts';
 import type { XmPaths } from '@xm/kernel';
 import { tightenOnly } from '@xm/kernel';
@@ -83,7 +84,6 @@ export const DEFAULT_CONFIG: ConfigPatch = {
   // presentation 写出来而不是靠 schema 的 default：Code Mode 开没开是要能一眼看见的事
   tools: { disabled: [], presentation: 'native' },
   workspace: { mode: 'choose' },
-  logging: { level: 'info', redact: true },
 };
 
 /**
@@ -116,7 +116,9 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
     project: projectRules(rulesOf(raw[1], files[1] ?? '', problems), files[1] ?? '', problems),
   };
 
-  const merged = mergeConfigLayers(...layers, { permission: { rules: [] } });
+  const merged = stripRetiredConfigKeys(
+    mergeConfigLayers(...layers, { permission: { rules: [] } }),
+  );
 
   /*
    * 明文密钥的检查**排在 schema 校验之前**。
@@ -178,7 +180,7 @@ export async function persistProviderConfig(options: PersistProviderConfigOption
     ...current,
     providers: { ...providers, [options.providerId]: options.provider },
   };
-  await writeJsonAtomic(file, merged);
+  await writeJsonAtomic(file, stripRetiredConfigKeys(merged));
 }
 
 /** 将受 UI 约束的用户级补丁原子写回 config.json。调用方仍需先按自己的窄 schema 校验。 */
@@ -188,7 +190,7 @@ export async function persistUserConfigPatch(
 ): Promise<void> {
   const file = join(paths.config, 'config.json');
   const current = await readJsonForUpdate(file);
-  await writeJsonAtomic(file, mergeConfigLayers(current, patch));
+  await writeJsonAtomic(file, stripRetiredConfigKeys(mergeConfigLayers(current, patch)));
 }
 
 async function readJsonForUpdate(file: string): Promise<Record<string, unknown>> {

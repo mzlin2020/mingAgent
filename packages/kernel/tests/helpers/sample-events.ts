@@ -44,7 +44,7 @@ export function sampleEvents(): XmEvent[] {
   const rows: { type: XmEventType; payload: unknown }[] = [
     { type: 'session.created', payload: { cwd: '/w', modelRef: 'anthropic/x' } },
     { type: 'session.renamed', payload: { title: '标题' } },
-    { type: 'session.configured', payload: { patch: { logging: { level: 'debug' } } } },
+    { type: 'session.configured', payload: { patch: { tools: { presentation: 'code' } } } },
     { type: 'turn.start', payload: { turnId, input: [{ type: 'text', text: '你好' }] } },
     { type: 'message.start', payload: { messageId, role: 'assistant' } },
     {
@@ -226,6 +226,15 @@ export function sampleEvents(): XmEvent[] {
   const missing = ALL_EVENT_TYPES.filter((t) => !covered.has(t));
   if (missing.length > 0) {
     throw new Error(`sample-events 缺少这些事件类型的样本：${missing.join(', ')}`);
+  }
+  /*
+   * 占用投影不是事件（M3.5-f）。登记成类型之后，上面那条缺样本检查会逼你
+   * 再补一条样本——那会让"塞进事件流"看起来像完成了契约，而不是被拦住。
+   * 所以这里单独拒绝带 occupancy 的名字，补样本也过不了。
+   */
+  const occupancyTypes = ALL_EVENT_TYPES.filter((t) => t.includes('occupancy'));
+  if (occupancyTypes.length > 0) {
+    throw new Error(`占用投影不得登记为事件类型：${occupancyTypes.join('、')}`);
   }
 
   return rows.map((r) =>

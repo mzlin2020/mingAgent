@@ -305,6 +305,12 @@ async function runRipgrep(input: RunInput): Promise<RunOutcome> {
       signal: input.signal,
       os: input.os,
       maxOutputBytes: 16 * 1024 * 1024,
+      /*
+       * 执行世界默认不把宿主环境交给子进程。不透传 PATH 时，
+       * 不在 Unix 默认搜索路径里的 rg（Homebrew / nvm 旁路 / Cursor 自带）
+       * 一律 ENOENT，整条 ripgrep 路径在本机恒定哑掉。
+       */
+      inheritEnv: ['PATH'],
       onStdout,
       onStderr,
     });

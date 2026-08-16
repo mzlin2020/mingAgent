@@ -1,10 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { findPlaintextSecrets } from '@xm/contracts';
 import type { XmPaths } from '@xm/kernel';
-import { loadConfig, parseModelRef } from '@xm/platform';
+import { loadConfig, parseModelRef, persistUserConfigPatch } from '@xm/platform';
 
 /**
  * 配置加载。
@@ -45,15 +45,16 @@ describe('分层与合并', () => {
   it('没有任何配置文件时用内置默认，且不报问题', async () => {
     const { config, problems } = await loadConfig({ paths });
     expect(config.permission.rules).toEqual([]);
-    expect(config.logging.redact).toBe(true);
+    expect(config.tools.presentation).toBe('native');
+    expect(config).not.toHaveProperty('logging');
     expect(problems).toEqual([]);
   });
 
   it('项目级覆盖用户级', async () => {
-    await writeUser({ logging: { level: 'debug' } });
-    await writeProject({ logging: { level: 'error' } });
+    await writeUser({ tools: { presentation: 'native' } });
+    await writeProject({ tools: { presentation: 'code' } });
     const { config } = await loadConfig({ paths, cwd: dir });
-    expect(config.logging.level).toBe('error');
+    expect(config.tools.presentation).toBe('code');
   });
 
   it('数组整体替换，不拼接（schema.ts 定死的语义）', async () => {
@@ -69,15 +70,27 @@ describe('失败关闭', () => {
     await writeFile(join(paths.config, 'config.json'), '{ 这不是 JSON');
     const { config, problems } = await loadConfig({ paths });
     // 起不来的话，用户连改配置的界面都打不开
-    expect(config.logging.redact).toBe(true);
+    expect(config.tools.presentation).toBe('native');
+    expect(config).not.toHaveProperty('logging');
     expect(problems.map((p) => p.code)).toContain('config.unreadable');
   });
 
   it('🔴 配置不合法时退回默认并报问题', async () => {
-    await writeUser({ logging: { level: '随便写的级别' } });
+    await writeUser({ workspace: { mode: 'nope' } });
     const { config, problems } = await loadConfig({ paths });
-    expect(config.logging.level).toBe('info');
+    expect(config.workspace.mode).toBe('choose');
     expect(problems.map((p) => p.code)).toContain('config.invalid');
+  });
+
+  it('旧 config.json 残留 logging 不让整份配置退回默认（ADR-0076）', async () => {
+    await writeUser({
+      logging: { level: '随便写的级别', redact: false },
+      model: { main: 'kept/model' },
+    });
+    const { config, problems } = await loadConfig({ paths });
+    expect(config).not.toHaveProperty('logging');
+    expect(config.model.main).toBe('kept/model');
+    expect(problems.map((p) => p.code)).not.toContain('config.invalid');
   });
 
   it('顶层不是对象时忽略这一层', async () => {
@@ -144,5 +157,23 @@ describe('parseModelRef', () => {
       provider: 'my-proxy',
       model: 'org/model-1',
     });
+  });
+});
+
+describe('persistUserConfigPatch 剥掉退役键', () => {
+  it('文件里残留的 logging 在下次写入时被拿掉', async () => {
+    await writeUser({
+      logging: { level: 'debug', redact: false },
+      model: { main: 'kept/model' },
+    });
+    await persistUserConfigPatch(paths, { tools: { presentation: 'code' } });
+    const written = JSON.parse(await readFile(join(paths.config, 'config.json'), 'utf8')) as {
+      logging?: unknown;
+      model: { main: string };
+      tools: { presentation: string };
+    };
+    expect(written.logging).toBeUndefined();
+    expect(written.model.main).toBe('kept/model');
+    expect(written.tools.presentation).toBe('code');
   });
 });

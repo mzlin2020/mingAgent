@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import type { BlobRef, CallId, ContentBlock, Message, ToolCard as Card } from '@xm/contracts';
+import type { BlobRef, ContentBlock, Message } from '@xm/contracts';
 import { api } from '../bridge.js';
 import { Disclosure } from './disclosure.js';
 import { MarkdownText } from './markdown.js';
-import { cn } from '../lib/cn.js';
-import { cardTone } from './cards.js';
-import { rendererFor } from '../lib/card-registry.js';
-import { useUi } from '../store.js';
+import { ToolCallRow } from './tool-row.js';
 
 /**
  * 消息流。工具结果先索引一遍，再交给每条消息——`tool_use` 与 `tool_result`
@@ -117,7 +114,7 @@ function BlockView({
 
     case 'tool_use':
       return (
-        <ToolCard
+        <ToolCallRow
           callId={block.id}
           name={block.name}
           input={block.input}
@@ -187,86 +184,4 @@ function ImageBlockView({ source }: { readonly source: BlobRef }): ReactNode {
   return (
     <img src={dataUrl} alt={source.name ?? '图片'} className="max-w-full rounded-control" />
   );
-}
-
-/**
- * 工具调用卡片：请求与结果合成一张。
- *
- * ── 这里已经不认识任何工具了（ADR-0058）──
- *
- * 卡片由主进程按工具自己的投影函数算好送来（`kernel/tool/present.ts`），这一层做三件事：
- * 挑一张（跑着的时候用挂起卡片，完成后用完成卡片）、按 `card.kind` 找渲染器、
- * 把动作原样回送。**找不到渲染器就退回一行摘要**——三方插件贡献的卡片种类
- * 在我们这里没有渲染器，是发布前测不到的组合，白屏比朴素难看得多。
- *
- * 结果默认折叠这条老规矩落在各个渲染器里：结果是给模型看的，经常几百行，
- * 铺开会把对话本身淹掉；而"它到底做了什么"（那行摘要）始终可见。
- */
-function ToolCard({
-  callId,
-  name,
-  input,
-  result,
-}: {
-  readonly callId: CallId;
-  readonly name: string;
-  readonly input: unknown;
-  readonly result: Extract<ContentBlock, { type: 'tool_result' }> | undefined;
-}): ReactNode {
-  const pair = useUi((s) => s.cards.get(callId));
-  const invoke = useUi((s) => s.cardAction);
-  const busy = useUi((s) => s.busy);
-  const failed = result?.isError === true;
-  const pending = result === undefined;
-  const card = (pending ? pair?.call : pair?.result ?? pair?.call) ?? fallbackCard(name, input);
-  const Renderer = rendererFor(card.kind);
-
-  return (
-    <div className={cardTone(failed)}>
-      <div className={cn('flex items-baseline gap-2.5 px-3 py-1.5', failed && 'bg-danger-bg')}>
-        <span className="min-w-0 flex-1 truncate font-mono">{card.summary}</span>
-        <span className={cn('shrink-0', failed ? 'text-danger' : 'text-faint')}>
-          {pending ? '进行中' : failed ? '失败' : '完成'}
-        </span>
-      </div>
-      {Renderer !== undefined && (
-        <Renderer
-          card={card}
-          pending={pending}
-          failed={failed}
-          busy={busy}
-          onAction={(actionId, payload) => {
-            void invoke(callId, actionId, payload);
-          }}
-        />
-      )}
-    </div>
-  );
-}
-
-/**
- * 主进程还没送来卡片时的占位（切会话的竞态、或一条来自更高版本的事件）。
- *
- * 它与 `kernel` 里那张通用兜底卡片长得一样但**不是同一份代码**：那一份是
- * "工具没写投影"的降级，这一份是"卡片还没到"的占位。两者恰好都退化成
- * 工具名 + 入参一行摘要，因为那本来就是不知道更多时唯一诚实的显示。
- */
-const fallbackCard = (name: string, input: unknown): Card => ({
-  kind: 'generic',
-  title: name,
-  summary: `${name} ${summarize(input)}`.trim().slice(0, 400),
-});
-
-/** 工具入参的一行摘要。路径类的最有用，其余退回紧凑 JSON */
-function summarize(input: unknown): string {
-  if (typeof input !== 'object' || input === null) return String(input);
-  const record = input as Record<string, unknown>;
-  const path = record.path;
-  if (typeof path === 'string') return path;
-  try {
-    return JSON.stringify(input);
-  } catch {
-    // 循环引用与 BigInt 都会让它抛。历史事件里的入参什么形状都有可能
-    return '';
-  }
 }

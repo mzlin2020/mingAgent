@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useState, useSyncExternalStore } from 'react';
 import type { ClipboardEvent, ReactNode } from 'react';
 import type { ImageAttachment } from '../../shared/ipc.js';
 import { MAX_IMAGES_PER_MESSAGE, MAX_IMAGE_RAW_BYTES } from '../../shared/ipc.js';
 import { Button, Textarea } from './ui.js';
+import { ContextMeter } from './context-meter.js';
 import { cn } from '../lib/cn.js';
-import { COLUMN } from '../lib/layout.js';
+import { readEnterToSend, subscribeUiPrefs } from '../lib/ui-prefs.js';
 import { useUi } from '../store.js';
 
 /**
@@ -57,6 +58,7 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
   const steer = useUi((s) => s.steer);
   const stop = useUi((s) => s.stop);
   const pendingInputs = useUi((s) => s.pendingInputs);
+  const enterToSend = useSyncExternalStore(subscribeUiPrefs, () => readEnterToSend(window.localStorage));
   const [text, setText] = useState('');
   const [images, setImages] = useState<readonly PendingImage[]>([]);
   const [attachError, setAttachError] = useState<string | undefined>(undefined);
@@ -133,12 +135,10 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
 
   return (
     /*
-      不画 `border-t`：输入区自己已经是一个有边框的盒子，再来一条横贯全宽的线等于把界面
-      切成两半。也不用向上的 box-shadow 或渐隐带——阴影在停止处留硬线，渐隐带则会
-      盖住输入区正上方的错误横幅，把底边糊成半透明。
+      宽度由外层 `.composer-seat` 的 clearance 轴给出（正文 + 32）。
+      渐变遮罩也在座上，这里不再自己画一条切全宽的线或渐隐带。
     */
-    <div className="relative shrink-0 bg-canvas pb-5 pt-1">
-      <div className={COLUMN}>
+    <div className="composer-card">
         {pendingInputs.length > 0 && (
           <div className="mb-1.5 rounded-control border border-border bg-surface-2 px-3 py-2 text-meta">
             <p className="font-medium text-fg">待处理队列（进程退出前为易失）</p>
@@ -198,7 +198,15 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
               setText(e.target.value);
             }}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key !== 'Enter') return;
+              if (enterToSend) {
+                if (!e.shiftKey) {
+                  e.preventDefault();
+                  submit();
+                }
+                return;
+              }
+              if (e.metaKey || e.ctrlKey) {
                 e.preventDefault();
                 submit();
               }
@@ -208,10 +216,12 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
           />
           <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-0.5">
             <p className="select-none px-1 text-micro text-faint">
-              Enter 发送 · Shift+Enter 换行 · 可粘贴图片
+              {enterToSend ? 'Enter 发送 · Shift+Enter 换行' : 'Enter 换行 · Ctrl/Cmd+Enter 发送'}
+              {' · 可粘贴图片'}
             </p>
             {running ? (
               <div className="flex items-center gap-2">
+                <ContextMeter />
                 <Button size="sm" variant="ghost" onClick={submitSteer} disabled={text.trim() === '' || disabled}>
                   纠偏（下一步）
                 </Button>
@@ -223,19 +233,21 @@ export function Composer({ disabled, running }: { readonly disabled: boolean; re
                 </Button>
               </div>
             ) : (
-              <Button
-                size="icon"
-                onClick={submit}
-                disabled={!canSend}
-                aria-label="发送"
-                title="发送"
-              >
-                <SendIcon />
-              </Button>
+              <div className="flex items-center gap-2">
+                <ContextMeter />
+                <Button
+                  size="icon"
+                  onClick={submit}
+                  disabled={!canSend}
+                  aria-label="发送"
+                  title="发送"
+                >
+                  <SendIcon />
+                </Button>
+              </div>
             )}
           </div>
         </div>
-      </div>
     </div>
   );
 }

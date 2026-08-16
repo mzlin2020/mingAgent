@@ -88,6 +88,10 @@
 | [0071](./0071-工具的规范JSON输出值.md) | 每个内建工具定义并返回一份**规范 JSON 输出值**（M3-h 前置二）：`ToolProgress.result.output` + `ToolSpec.outputSchema`，与入参共用可序列化子集、顶层必须 `strictObject`、没声明就不产出。**不落库**——它与 `forModel`/`presentation` 大量重复且体积不受控，而“模型可见 ⇔ 已落库”不约束不进模型请求的东西。闸门在 `generate-docs`，缺一个就红 | 🟢 Accepted | 2026-08-16 |
 | [0072](./0072-CodeMode子调用的记录面与再入口.md) | Code Mode 的子调用**只落一条 `tool.code.dispatch`**，不落 `tool.start`/`tool.end`——payload 里没有 `forModel` 的位置，程序中间值因此结构性地进不了模型请求。十二步链参数化在 `CallSink` 上，判定那一半两条路共用同一份实现；`ctx.codeMode` 是**再入口不是权限**（每次子调用从头判）；呈现模式只作用于模型视野，`code` 模式下模型点名别的工具得到的是 `tool_not_found` 而不是被拒绝 | 🟢 Accepted | 2026-08-16 |
 | [0073](./0073-设计语言换轨与三层token.md) | 设计语言换轨（M3.5-a）：token 分三层（调色板 `--p-*` 明暗同值 → 语义别名进 `@theme` → 组件专用 `--xm-*`），**组件只能用中间那层**；**亮色靠描边、暗色靠填充**——亮色下 `canvas` 与 `surface` 同为纯白不是漏改，卡片的边界由那圈 `border` 给出；强调色换冷调蓝，四个别名集中一处可一键换回。**部分推翻 ADR-0004/0037 的配色约定**（布局与导航结论不变）。深色定义写两份是 CSS 没有 mixin 的代价，同批配 `check:design-tokens` 上锁，并补掉 `cn.ts` ↔ `@theme` 那句只写在注释里的"两处一起改" | 🟢 Accepted | 2026-08-16 |
+| [0074](./0074-桌面端两栏让位链与右栏详情.md) | 桌面端两栏让位链（M3.5-b）与右栏「详情 + 工作区」壳：`computeColumns(viewport, details)` 只有两栏（不抄参考实现的侧栏参数）；让位三步是契约；**自动关闭绝不回写偏好**；关闭 = 零宽但保持挂载。细化 ADR-0004 的观察面板，不改 ADR-0037 的顶栏 tabs。详情 tab 的内容在 M3.5-d 接 | 🟢 Accepted | 2026-08-16 |
+| [0075](./0075-设置中心的信息架构与可写边界.md) | 设置中心：模态 + 左导航六节，不是第三主视图。`allow` 与 API key 由主进程拒绝（不靠 UI 隐藏）；红线只读投影 `{ target, capabilities, why }`；手写 allow 保存时保留。模型/呈现/权限下一回合生效，工作目录只影响新任务 | 🟢 Accepted | 2026-08-16 |
+| [0076](./0076-logging死配置的处置.md) | 删除从未被读取的 `logging.level` / `logging.redact`。`redact` 不可配是底座属性（ADR-0053）。旧 `config.json` 残留 `logging` 在校验前剥离，不让整份配置退回默认 | 🟢 Accepted | 2026-08-16 |
+| [0077](./0077-UI偏好的存放判据.md) | UI 偏好存放判据：能进 `localStorage` 当且仅当**既不进模型请求、也不参与任何判定**。详情栏宽/开、主题、Enter 行为走 `localStorage`；`tools.presentation` / `permission.rules` 必须进 `config.json`。划清与不变量一、配置分层的边界 | 🟢 Accepted | 2026-08-16 |
 
 ## 什么时候要写 ADR
 

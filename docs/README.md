@@ -6,7 +6,7 @@
 
 | 项 | 结论 |
 |---|---|
-| 产品形态 | 桌面应用。Tier 1: Windows / macOS；Tier 2: Linux（除计算机操作外全功能）。CLI 形态 M4 补上。**视觉调性正在换轨**：暖色 Claude Code 调性 → 冷调中性 + 三层 token，设计见 [12](./12-桌面端界面与设置.md)，M3.5 实施，ADR-0073 落地时才算生效 |
+| 产品形态 | 桌面应用。Tier 1: Windows / macOS；Tier 2: Linux（除计算机操作外全功能）。CLI 形态 M4 补上。**视觉调性已换轨**（M3.5-a，[ADR-0073](./adr/0073-设计语言换轨与三层token.md)）：冷调中性 + 三层 token + 亮暗分层反转。两栏让位链已落地（M3.5-b，[ADR-0074](./adr/0074-桌面端两栏让位链与右栏详情.md)）。总纲见 [12](./12-桌面端界面与设置.md) |
 | 技术栈 | TypeScript **7.0** 单语言 monorepo（编译走 TS 7 原生、工具 API 走 TS 6，见 [ADR-0010](./adr/0010-TypeScript双编译器工具链.md)）+ Electron 外壳 + React 渲染层；热点可在后续引入 Rust sidecar |
 | 架构范式 | 六边形架构（Ports & Adapters）+ 事件溯源。**M3 起转向「微内核 + 插件容器 + 不可绕过的安全底座」**（[11](./11-微内核与插件容器.md)）；M3-a～M3-e 已落地容器、profile、Turn 扩展点、Inbox 与执行世界，三方插件宿主更靠后（M4） |
 | 内核定位 | `@xm/kernel` 纯逻辑、零 I/O、零 Node API，可在浏览器/Node/测试中运行 |
@@ -36,7 +36,7 @@
 | [experience/](./experience/README.md) | 各版本体验测试用例与体验报告归档（按里程碑分册） | 上手打磨 / 体验验收与复盘 |
 | [adr/](./adr/) | 架构决策记录（一决策一文件，只增不改） | 决策落定后立刻写 |
 
-## 代码现状（2026-08-14）
+## 代码现状（2026-08-16）
 
 **M2 已完成**（含 M2-e 桌面人工验收与总验收 §5.2 的真实功能开发，留痕见
 [M2 收官记录](./experience/m2/收官记录.md)）。`pnpm verify`、M2-b 至 M2-i 的同链路 dist smoke 和 Electron renderer/main/preload 三段生产构建均通过；完整证据见 [M2 体验报告](./experience/m2/体验报告.md)、[ADR-0049](./adr/0049-M2-i串行只读子Agent.md) 与 [M2 阶段划分](./M2-阶段划分.md)。
@@ -56,11 +56,21 @@ Code Mode 已落地（M3-h）：程序跑在 QuickJS-WASM 客体域 + worker 里
 类型来自 22 个内建工具的规范 JSON 输出值（[ADR-0071](./adr/0071-工具的规范JSON输出值.md)）。
 **默认 `native`，Code Mode 是 opt-in**（`tools.presentation`）。
 
-下一阶段是 **M3.5「桌面端界面与设置」**（2026-08-16 新增的插段，性质同 M1.5）：
-设计语言换轨、两栏让位链、工具行单行化，以及**把配置中心从 M4 前移**——
-`config.json` 的 17 个字段里桌面端现在只能改 3 个，`tools.presentation` 与
-`permission.rules` 在界面上根本不存在。总纲见 [12-桌面端界面与设置](./12-桌面端界面与设置.md)，
-分段见 [M3.5 阶段划分](./M3.5-阶段划分.md)。
+当前阶段是 **M4「能扩展」**。M3.5「桌面端界面与设置」（2026-08-16 插段，性质同 M1.5）已收官：
+a（token 换轨，[ADR-0073](./adr/0073-设计语言换轨与三层token.md)）、
+b（两栏让位链，[ADR-0074](./adr/0074-桌面端两栏让位链与右栏详情.md) /
+[ADR-0077](./adr/0077-UI偏好的存放判据.md)）、
+c（对话流重制，[M3.5-c 收官记录](./experience/m3.5/M3.5-c-收官记录.md)）、
+d（右栏详情 + 工作区，[M3.5-d 收官记录](./experience/m3.5/M3.5-d-收官记录.md)）与
+e（设置中心，[ADR-0075](./adr/0075-设置中心的信息架构与可写边界.md) /
+[ADR-0076](./adr/0076-logging死配置的处置.md) /
+[M3.5-e 收官记录](./experience/m3.5/M3.5-e-收官记录.md)）与
+f（上下文占用环，[M3.5-f 收官记录](./experience/m3.5/M3.5-f-收官记录.md)）已落地，
+**M3.5 收官**（[收官记录](./experience/m3.5/收官记录.md)）。
+`config.json` 现为 14 个字段，桌面端可改叶子 10 个（含 `tools.presentation` 与
+`permission.rules`）；死配置 `logging.*` 已删。
+总纲见 [12-桌面端界面与设置](./12-桌面端界面与设置.md)，
+分段见 [M3.5-阶段划分](./M3.5-阶段划分.md)。
 插件宿主、MCP、Skill 加载器与正式 CLI 仍在其后（M4）。
 
 权限模型已在 2026-08-11 收敛为「红线 + 拒绝清单」：没有审批 UI、权限档位、会话授权或

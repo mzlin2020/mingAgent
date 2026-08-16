@@ -22,6 +22,7 @@ import {
   SetApiKeyResult,
   SettingsResult,
   StatusResult,
+  UpdateSettingsRequest,
 } from '../shared/ipc.js';
 import { IpcError } from './ipc-error.js';
 
@@ -138,10 +139,8 @@ export const api = {
 
   settings: () => call(bridge().settings(), SettingsResult),
 
-  updateSettings: (settings: {
-    workspace: { mode: 'choose' | 'fixed' | 'home'; defaultPath?: string };
-    disabledTools: readonly string[];
-  }) => call(bridge().updateSettings(settings), SettingsResult),
+  updateSettings: (settings: UpdateSettingsRequest) =>
+    call(bridge().updateSettings(settings), SettingsResult),
 
   clearSearchIndex: () => call(bridge().clearSearchIndex(), SettingsResult),
 

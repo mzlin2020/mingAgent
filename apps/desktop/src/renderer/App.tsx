@@ -1,28 +1,23 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { AppMenu } from './components/app-menu.js';
-import {
-  InterruptedSessionBanner,
-  ExtRecordsBanner,
-  NoticeBanner,
-  SessionConflictBanner,
-  SetupBanner,
-  TurnErrorBanner,
-  UntrustedBanner,
-} from './components/banners.js';
-import { Composer } from './components/composer.js';
+import { Conversation } from './components/conversation.js';
 import { HomeView } from './components/home-view.js';
-import { LiveMessage } from './components/live-views.js';
-import { MessageStream } from './components/message-stream.js';
 import { SessionTabs } from './components/session-tabs.js';
 import { installBuiltinRenderers } from './components/cards.js';
-import { SecurityView } from './components/security-view.js';
+import { SettingsModal } from './components/settings-modal.js';
 import { WorkbenchPanel } from './components/workbench-panel.js';
 import { Button } from './components/ui.js';
 import { PanelRightIcon } from './components/icons.js';
 import { api } from './bridge.js';
 import { cn } from './lib/cn.js';
-import { COLUMN } from './lib/layout.js';
+import {
+  countNativeToolCalls,
+  shouldOpenDetailsOnSelect,
+  shouldShowDetailsColumn,
+} from './lib/call-material.js';
+import { useDetailsColumn } from './lib/use-details-column.js';
+import { useScrollPin } from './lib/use-scroll-pin.js';
 import { useUi } from './store.js';
 
 /**
@@ -39,13 +34,16 @@ import { useUi } from './store.js';
 installBuiltinRenderers();
 
 export function App(): ReactNode {
-  const { currentId, session, busy, error, shellView } = useUi();
+  const { currentId, session, error, shellView, settingsOpen } = useUi();
   const live = useUi((s) => s.live);
   const refreshSessions = useUi((s) => s.refreshSessions);
   const refreshStatus = useUi((s) => s.refreshStatus);
   const refreshOrphanedSessions = useUi((s) => s.refreshOrphanedSessions);
   const applyEvent = useUi((s) => s.applyEvent);
-  const [workbenchOpen, setWorkbenchOpen] = useState(false);
+  const details = useDetailsColumn();
+  const selectedCallId = useUi((s) => s.selectedCallId);
+  const dispatches = useUi((s) => s.dispatches);
+  const prevSelected = useRef(selectedCallId);
 
   useEffect(() => {
     void refreshSessions();
@@ -67,77 +65,54 @@ export function App(): ReactNode {
     if (shellView === 'home') void refreshSessions();
   }, [shellView, refreshSessions]);
 
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const stickToBottom = useRef(true);
-
-  useEffect(() => {
-    stickToBottom.current = true;
-    setWorkbenchOpen(false);
-  }, [currentId]);
-
-  /*
-   * Home 与对话共用同一个滚动容器。对话默认贴底，scrollTop 很大；若不复位，
-   * 跳回 Home 时列表（最新在上）会停在底部——用户看到的是最旧会话。
-   * 反过来：Home 把滚动顶到 0 后 onScroll 会把 stickToBottom 冲成 false，
-   * 再点回同一会话 tab 时 currentId 不变、贴底标志也不会被上面那条重置，
-   * 于是对话也贴不上底。进出 Home 时成对处理。
-   */
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (shellView === 'home') {
-      if (el !== null) el.scrollTop = 0;
-      return;
-    }
-    stickToBottom.current = true;
-  }, [shellView]);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el === null) return;
-    const onScroll = (): void => {
-      stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-    };
-    el.addEventListener('scroll', onScroll);
-    return () => {
-      el.removeEventListener('scroll', onScroll);
-    };
-  }, [currentId, shellView]);
-
-  useEffect(() => {
-    if (shellView !== 'chat') return;
-    const el = scrollRef.current;
-    if (el === null || !stickToBottom.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [session?.messages, live.message, shellView]);
-
   const inChat = shellView === 'chat' && currentId !== undefined;
-  const hasWorkbenchContent = session !== undefined && (
+  const scroll = useScrollPin({
+    resetKey: `${shellView}:${currentId ?? ''}`,
+    mode: inChat ? 'pin' : 'top',
+    contentKey: inChat
+      ? `${String(session?.messages.length ?? 0)}:${live.message?.text ?? ''}:${live.message?.thinking ?? ''}`
+      : 'home',
+  });
+
+  useEffect(() => {
+    if (shouldOpenDetailsOnSelect(prevSelected.current, selectedCallId, details.openPref)) {
+      details.toggleOpen();
+    }
+    prevSelected.current = selectedCallId;
+  }, [selectedCallId, details.openPref, details.toggleOpen]);
+
+  const hasWorkspaceBlocks = session !== undefined && (
     session.todos.length > 0 ||
     session.checkpoints.length > 0 ||
     session.runningCalls.size > 0 ||
     live.terminals.size > 0
   );
+  const showPanel = inChat && session !== undefined && shouldShowDetailsColumn({
+    hasWorkspaceBlocks,
+    selected: selectedCallId !== undefined,
+    nativeCalls: countNativeToolCalls(session.messages),
+    dispatchCount: dispatches.size,
+  });
 
   return (
     <div className="flex h-screen flex-col bg-canvas text-fg">
       {/*
-        顶栏坐在页面底色上，不再自己顶一层 surface —— 选中的 tab 才用 surface。
-        上一版两者同色，选中态在顶栏上等于看不见（见 `session-tabs.tsx`）。
-        定高 44px：汉堡 / Home / tabs / 工作区开关落在同一条基线上。
+        顶栏坐在页面底色上。选中 tab 用底部 2px 指示条（ADR-0074），不再靠填充区分。
+        定高 44px：汉堡 / Home / tabs / 右栏开关落在同一条基线上。
       */}
       <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
         <AppMenu />
         <SessionTabs />
         <div className="flex shrink-0 items-center gap-2">
-          {inChat && hasWorkbenchContent && (
+          {inChat && showPanel && (
             <Button
               size="icon"
               variant="ghost"
-              className={cn(workbenchOpen && 'bg-surface-2 text-fg')}
-              aria-label={workbenchOpen ? '隐藏工作区' : '显示工作区'}
-              aria-expanded={workbenchOpen}
-              title={workbenchOpen ? '隐藏工作区' : '显示工作区'}
-              onClick={() => { setWorkbenchOpen((value) => !value); }}
+              className={cn(details.openPref && 'bg-accent-weak text-fg')}
+              aria-label={details.openPref ? '隐藏右栏' : '显示右栏'}
+              aria-expanded={details.openPref}
+              title={details.openPref ? '隐藏右栏' : '显示右栏'}
+              onClick={details.toggleOpen}
             >
               <PanelRightIcon />
             </Button>
@@ -152,55 +127,45 @@ export function App(): ReactNode {
       )}
 
       {/*
-        `scrollbar-gutter: stable both-edges` 不是可有可无的细节：滚动条只占滚动区的宽度，
-        而输入区在滚动区之外。不预留就会出现"有滚动条时消息栏比输入框往左偏 3px"——
-        肉眼说不出哪里不对，但两条本该对齐的竖线一直差着一点。两边都留，居中才与输入区一致。
+        输入区进了滚动容器（sticky bottom），竖线天然同轴，不再需要 both-edges。
+        单侧 stable 仍要：sticky 贴的是 content box，滚动条出没会让整列横移。
       */}
-      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+      <div ref={details.frameRef} className="relative flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <div
-            ref={scrollRef}
-            className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable_both-edges]"
+            ref={scroll.ref}
+            className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable]"
           >
-            <div key={`${shellView}:${currentId ?? ''}`} className="ui-view-enter">
-              {shellView === 'security' ? (
-                <SecurityView />
-              ) : shellView === 'home' || currentId === undefined ? (
+            <div
+              key={`${shellView}:${currentId ?? ''}`}
+              className="ui-view-enter flex min-h-full flex-col"
+            >
+              {shellView === 'home' || currentId === undefined ? (
                 <HomeView />
               ) : (
-                <div className={cn(COLUMN, 'flex flex-col gap-6 py-6')}>
-                  <SetupBanner />
-                  <SessionConflictBanner />
-                  <NoticeBanner />
-                  <ExtRecordsBanner />
-                  <UntrustedBanner />
-                  <MessageStream messages={session?.messages ?? []} />
-                  <LiveMessage />
-                </div>
+                <Conversation
+                  showToBottom={!scroll.pinned}
+                  onToBottom={scroll.scrollToBottom}
+                />
               )}
             </div>
           </div>
-
-          {inChat && (
-            <>
-              <div className={cn(COLUMN, 'flex shrink-0 flex-col gap-2 pb-2 empty:hidden')}>
-                <InterruptedSessionBanner />
-                <TurnErrorBanner />
-              </div>
-              <Composer disabled={busy} running={session?.status === 'running'} />
-            </>
-          )}
         </div>
 
-        {inChat && hasWorkbenchContent && (
+        {inChat && showPanel && (
           <WorkbenchPanel
             sessionId={session.id}
             todos={session.todos}
             checkpoints={session.checkpoints}
-            open={workbenchOpen}
+            width={details.width}
+            innerWidth={details.collapsed ? details.prefWidth : details.width}
+            collapsed={details.collapsed}
+            resizing={details.resizing}
+            onResizeStart={details.beginResize}
           />
         )}
       </div>
+      {settingsOpen && <SettingsModal />}
     </div>
   );
 }

@@ -426,55 +426,426 @@ details[open] > .disclosure-content {
 }
 
 /*
- * 工作区在常规窗口中与聊天并排；窄窗口中改为右侧覆盖层，避免把正文和输入框挤成细条。
- * 它仍然是同一个组件和同一份状态，只改变布局方式。
- *
- * M3.5-b 会把这里换成可拖拽的让位链（`lib/columns.ts` 的纯函数解），本段不动。
+ * 右栏宽度由 `lib/columns.ts` 的让位链投影到 `--xm-details-width`（ADR-0074）。
+ * 关闭 = 零宽但保持挂载：内层仍按 `--xm-details-inner-width` 布局，滚动位置不丢。
+ * `[data-details-collapsed]` 去掉左边框，否则零宽也会画出一条 1px 缝。
+ * 拖拽期间关列宽过渡，否则列会追不上指针。
  */
 .workspace-panel {
-  width: 380px;
+  position: relative;
+  width: var(--xm-details-width, 0px);
   overflow: hidden;
   border-left: 1px solid var(--color-border);
-  opacity: 1;
-  transform: translateX(0);
   transition:
     width 220ms var(--ease-out-soft),
-    border-color 160ms var(--ease-out-soft),
-    opacity 160ms var(--ease-out-soft),
-    transform 220ms var(--ease-out-soft);
+    border-color 160ms var(--ease-out-soft);
 }
 
-.workspace-panel[data-open='false'] {
-  width: 0;
+.workspace-panel[data-details-collapsed] {
   border-left-color: transparent;
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(0);
+}
+
+.workspace-panel[data-resizing] {
+  transition: none;
 }
 
 .workspace-panel__inner {
-  width: 380px;
+  width: var(--xm-details-inner-width, var(--xm-details-width, 0px));
+  min-width: var(--xm-details-inner-width, var(--xm-details-width, 0px));
+  height: 100%;
 }
 
-@media (max-width: 900px) {
-  .workspace-panel {
-    position: absolute;
-    inset-block: 0;
-    right: 0;
-    z-index: 20;
-    width: min(380px, calc(100% - 48px));
-    box-shadow: var(--shadow-pop);
-  }
+/*
+ * 8px 命中带跨在列边界上（负 margin 探到正文一侧 4px）。
+ * 药丸默认透明：指针进入详情栏或把手、以及正在拖时才显形。
+ */
+.details-handle {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  z-index: 2;
+  width: 8px;
+  margin-left: -4px;
+  cursor: col-resize;
+  touch-action: none;
+}
 
-  .workspace-panel[data-open='false'] {
-    width: min(380px, calc(100% - 48px));
-    box-shadow: none;
-    transform: translateX(100%);
-  }
+.details-handle__pill {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 12px;
+  height: 32px;
+  margin: -16px 0 0 -6px;
+  pointer-events: none;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-chip);
+  background: var(--color-surface);
+  opacity: 0;
+  transition: opacity 130ms var(--ease-out-soft);
+}
 
-  .workspace-panel__inner {
-    width: 100%;
+.workspace-panel:hover .details-handle__pill,
+.details-handle:hover .details-handle__pill,
+.workspace-panel[data-resizing] .details-handle__pill {
+  opacity: 1;
+}
+
+.session-tab {
+  font-size: 13px;
+  line-height: 16px;
+}
+
+.panel-tab {
+  font-size: 13px;
+  line-height: 16px;
+}
+
+/**
+ * 详情栏 Input / Output 代码段：r12 / pad16 / mono 13-22（总纲 §7）。
+ * 住在组件层，不进 `@theme`——这是这一处的规格，不是新的语义别名。
+ */
+.details-code {
+  --xm-details-code-radius: 12px;
+  --xm-details-code-pad: 16px;
+  --xm-details-code-size: 13px;
+  --xm-details-code-leading: 22px;
+  max-height: 50%;
+  overflow: auto;
+  padding: var(--xm-details-code-pad);
+  border: 1px solid var(--color-border);
+  border-radius: var(--xm-details-code-radius);
+  background: var(--color-canvas);
+  font-family: var(--font-mono);
+  font-size: var(--xm-details-code-size);
+  line-height: var(--xm-details-code-leading);
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tool-row__children {
+  display: flex;
+  flex-direction: column;
+  padding-left: 20px;
+}
+
+.tool-row--dispatch {
+  padding-left: 4px;
+}
+
+/**
+ * 共享宽度轴（M3.5-c）。三个 --xm 变量是组件专用层，绑在 `.chat-axis` 根上。
+ * 数字与 `lib/layout.ts` 同值，由 layout.test.ts 钉死。
+ *
+ * clearance = max(0, (100% - W - 32) / 2)：
+ *   正文 padding = clearance + 16 → 内宽 W
+ *   输入卡 padding = clearance     → 内宽 W+32
+ */
+.chat-axis {
+  --xm-chat-content-width: 720px;
+  --xm-composer-card-max-width: calc(var(--xm-chat-content-width) + 32px);
+  --xm-chat-gutter: 16px;
+  --xm-chat-clearance: max(0px, calc((100% - var(--xm-chat-content-width) - 32px) / 2));
+}
+
+.chat-axis__body {
+  padding-inline: calc(var(--xm-chat-clearance) + var(--xm-chat-gutter));
+}
+
+.conversation {
+  display: flex;
+  flex-direction: column;
+  /*
+   * 必须真正撑满滚动视口。父级 `.ui-view-enter` 只有 min-height、没有 height 时，
+   * 子级 `min-height: 100%` 会算成 auto——输入卡贴在滚动区顶部，下面空出一整屏。
+   * flex: 1 吃掉父级 flex 列里多出来的高度；min-height: 100% 是父级没做成 flex 时的退路。
+   */
+  flex: 1 0 auto;
+  min-height: 100%;
+}
+
+.conversation--hero {
+  justify-content: center;
+  /* 光学中心略高于几何中心：下面多留一点，避免卡片落在屏幕正中显得坠 */
+  padding-top: 40px;
+  padding-bottom: min(22vh, 168px);
+}
+
+.conversation--hero .chat-axis__body {
+  flex: 0 0 auto;
+}
+
+.conversation--docked .chat-axis__body {
+  flex: 1 0 auto;
+  padding-top: 24px;
+  padding-bottom: 8px;
+}
+
+.composer-seat {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding-top: 36px;
+  padding-right: var(--xm-chat-clearance);
+  padding-bottom: 20px;
+  padding-left: var(--xm-chat-clearance);
+  /* 36px 必须是像素：百分比会跟着输入框长高把正文越糊越多 */
+  background: linear-gradient(
+    180deg,
+    transparent 0px,
+    var(--color-canvas) 36px,
+    var(--color-canvas) 100%
+  );
+}
+
+.composer-seat--hero {
+  position: relative;
+  padding-top: 0;
+  padding-bottom: 0;
+  background: none;
+}
+
+.composer-hero-intro {
+  margin: 0 auto 20px;
+  max-width: var(--xm-composer-card-max-width);
+  padding-inline: 8px;
+  text-align: center;
+}
+
+.composer-hero-intro__title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: var(--text-title--line-height);
+  color: var(--color-fg);
+}
+
+.composer-hero-intro__meta {
+  margin-top: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-meta);
+  line-height: var(--text-meta--line-height);
+  color: var(--color-muted);
+}
+
+.composer-card {
+  width: 100%;
+  max-width: var(--xm-composer-card-max-width);
+  margin-inline: auto;
+}
+
+.to-bottom-slot {
+  height: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.to-bottom {
+  pointer-events: auto;
+  width: 34px;
+  height: 34px;
+  margin-top: -34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-chip);
+  background: var(--color-surface);
+  color: var(--color-muted);
+  box-shadow: var(--shadow-pop);
+}
+
+.to-bottom:hover {
+  color: var(--color-fg);
+}
+
+/* 发送键旁占用环：视觉 14px，命中带跟 icon 按钮一样大 */
+.context-meter {
+  width: 2rem;
+  height: 2rem;
+}
+
+.context-meter__ring {
+  width: 14px;
+  height: 14px;
+}
+
+.context-meter__fill {
+  transition: stroke-dasharray 180ms var(--ease-out-soft);
+}
+
+.tool-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 24px;
+  overflow: hidden;
+  padding-inline: 4px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.tool-row:hover {
+  background: var(--color-surface-2);
+}
+
+.tool-row[data-selected] {
+  background: var(--color-accent-weak);
+}
+
+.tool-row__toggle {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 24px;
+  margin-right: 4px;
+  padding: 0;
+  color: var(--color-faint);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.tool-row__toggle[aria-expanded='true'] {
+  transform: rotate(90deg);
+}
+
+.tool-row__icon {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-right: 6px;
+  color: var(--color-muted);
+}
+
+.tool-row__name {
+  flex-shrink: 1;
+  max-width: 40%;
+  margin-right: 8px;
+  overflow: hidden;
+  font-size: var(--text-body);
+  line-height: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-row__dots {
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: 2px 2px;
+  gap: 2px;
+  margin-right: 8px;
+}
+
+.tool-row__dots i {
+  width: 2px;
+  height: 2px;
+  border-radius: var(--radius-chip);
+  background: var(--color-faint);
+}
+
+.tool-row__summary {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  font-size: var(--text-meta);
+  line-height: 24px;
+  color: var(--color-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-row[data-failed] .tool-row__summary {
+  color: var(--color-danger);
+}
+
+.tool-row__elapsed {
+  flex-shrink: 0;
+  margin-left: 8px;
+  font-size: var(--text-micro);
+  font-variant-numeric: tabular-nums;
+  line-height: 24px;
+  color: var(--color-faint);
+}
+
+/*
+ * 运行中扫光带。亮色下 canvas 就是白，用「背景色 60%」扫过去等于没有；
+ * 改用 fg 的低 alpha，明暗两套都能看见，也不需要 dark: 变体。
+ */
+.tool-row[data-pending]::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -300px;
+  width: 300px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-fg) 8%, transparent),
+    transparent
+  );
+  animation: tool-row-glare 1.6s var(--ease-out-soft) infinite;
+}
+
+@keyframes tool-row-glare {
+  from {
+    left: -300px;
   }
+  to {
+    left: 100%;
+  }
+}
+
+.turn-status {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: var(--text-meta);
+}
+
+.turn-status-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-muted) 0%,
+    var(--color-fg) 45%,
+    var(--color-muted) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: turn-status-shimmer 1.8s linear infinite;
+}
+
+@keyframes turn-status-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+.turn-status__elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-faint);
+}
+
+.stats-line {
+  margin-top: 8px;
+  font-size: var(--text-meta);
+  line-height: 20px;
+  color: var(--color-muted);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -485,6 +856,22 @@ details[open] > .disclosure-content {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* shimmer / 扫光带在减动效下必须静止，不能只是「快到看不清的扫」 */
+  .turn-status-shimmer {
+    background: none;
+    color: var(--color-muted);
+    animation: none;
+  }
+
+  .tool-row[data-pending]::after {
+    content: none;
+    animation: none;
+  }
+
+  .context-meter__fill {
+    transition: none;
   }
 }
 

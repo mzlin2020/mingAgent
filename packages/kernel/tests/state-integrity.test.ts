@@ -53,9 +53,9 @@ describe('会话级配置不得提权', () => {
 
   it('无害的会话覆盖照常生效 —— 限制的是特定键，不是整个机制', () => {
     const st = reduceAll(emptySessionState(S), [
-      ev('session.configured', { patch: { logging: { level: 'debug' }, model: { main: 'x/y' } } }),
+      ev('session.configured', { patch: { tools: { presentation: 'code' }, model: { main: 'x/y' } } }),
     ]);
-    expect(st.config).toEqual({ logging: { level: 'debug' }, model: { main: 'x/y' } });
+    expect(st.config).toEqual({ tools: { presentation: 'code' }, model: { main: 'x/y' } });
   });
 });
 

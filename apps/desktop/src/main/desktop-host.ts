@@ -1,5 +1,4 @@
 import { app, safeStorage } from 'electron';
-import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Profile } from '@xm/compose';
 import type {
@@ -10,15 +9,18 @@ import type {
   CheckpointManifestV2,
   Config,
   ContentBlock,
+  ContextOccupancy,
+  PolicyRuleSet,
   SessionId,
   ToolCardPair,
   XmEvent,
 } from '@xm/contracts';
 import { Config as ConfigSchema } from '@xm/contracts';
+import type { CodeDispatchView } from '../shared/code-dispatch.js';
+import { toDispatchView } from '../shared/code-dispatch.js';
 import type {
   ExtRecordSummary,
   OrphanedTurn,
-  ExecutionWorld,
   PlatformPort,
   RuleLayer,
   SecretBackend,
@@ -73,12 +75,20 @@ import {
   nodeCheckpointRestorer,
   nodeToolGateway,
 } from '@xm/tool-runtime';
-import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind } from '../shared/ipc.js';
+import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind, SettingsResult, UpdateSettingsRequest } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { assembleDesktopProfile } from './desktop-profile.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
 import { openProductionTools, type PtySessionEvent } from './production-tools.js';
+import { readSettingsSnapshot } from './settings-snapshot.js';
+import {
+  assertSettingsUpdate,
+  buildSettingsPatch,
+  nextConfig,
+  nextProviders,
+  nextUserRules,
+} from './settings-update.js';
 import {
   configuredModelRef,
   guessProviderKind,
@@ -110,33 +120,6 @@ export interface RuntimeStatus {
     readonly terminalMode: 'controlled-argv-no-stdin';
     readonly logRedaction: true;
   };
-}
-
-export interface SettingsSnapshot {
-  readonly workspace: Config['workspace'];
-  readonly tools: readonly {
-    readonly name: string;
-    readonly description: string;
-    readonly enabled: boolean;
-    readonly available: boolean;
-  }[];
-  readonly storage: {
-    readonly dataDirectory: string;
-    readonly configDirectory: string;
-    readonly cacheDirectory: string;
-    readonly logsDirectory: string;
-    readonly items: readonly {
-      readonly id: 'search-index' | 'sessions' | 'recovery' | 'logs' | 'config';
-      readonly bytes: number;
-      readonly clearable: boolean;
-    }[];
-    readonly index: ReturnType<OpenedStores['index']['stats']>;
-  };
-}
-
-export interface SettingsUpdate {
-  readonly workspace: Config['workspace'];
-  readonly disabledTools: readonly string[];
 }
 
 function recordPtyEvent(runtime: SessionRuntime, event: PtySessionEvent): Promise<unknown> {
@@ -198,6 +181,11 @@ export interface Services {
    * 这里查不到就说明它不是工具事件，返回 `undefined` 即可。
    */
   cardForEvent(event: AnyEvent): ToolCardPair | undefined;
+  /**
+   * 占用投影随 `message.start` 同行（ContextBuilder 在 pre-step 里刚写完 sidecar）。
+   * 其它事件不带——每个 delta 都附一份没有新信息。
+   */
+  occupancyForEvent(event: AnyEvent): ContextOccupancy | undefined;
   inspectCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<CheckpointManifestV2>;
   restoreCheckpoint(sessionId: SessionId, checkpointId: CheckpointId): Promise<boolean>;
   /**
@@ -210,9 +198,9 @@ export interface Services {
   /** 停止本会话正在跑的这一轮。返回是否真的有东西被停下 */
   interrupt(sessionId: SessionId): boolean;
   status(): Promise<RuntimeStatus>;
-  settings(): Promise<SettingsSnapshot>;
-  updateSettings(update: SettingsUpdate): Promise<SettingsSnapshot>;
-  clearSearchIndex(): Promise<SettingsSnapshot>;
+  settings(): Promise<SettingsResult>;
+  updateSettings(update: UpdateSettingsRequest): Promise<SettingsResult>;
+  clearSearchIndex(): Promise<SettingsResult>;
   setApiKey(providerId: string, key: string): Promise<void>;
   /**
    * 崩溃恢复（M1-e，docs/04 §8）。启动时扫描出的、停在没收尾回合里的会话。
@@ -227,10 +215,12 @@ export interface Services {
   close(): Promise<void>;
 }
 
-/** `readSession` 的返回形状：序列化状态 + 按 `callId` 索引的全量卡片 + 插件记录汇总 */
+/** `readSession` 的返回形状：序列化状态 + 全量卡片 + 插件记录汇总 + 子调用投影 */
 export type ReadSessionPayload = SerializedSessionState & {
   readonly cards: readonly (readonly [CallId, ToolCardPair])[];
   readonly extRecords: readonly ExtRecordSummary[];
+  readonly dispatches: readonly (readonly [CallId, CodeDispatchView])[];
+  readonly occupancy: ContextOccupancy | undefined;
 };
 
 /**
@@ -292,10 +282,12 @@ export async function startServices(): Promise<Services> {
    * 用户 clone 来的仓库里，而小明自己有 `fs.write`。被丢弃的条目进 `problems`，
    * 变成一条用户看得见的 notice：不生效可以，不告诉他不行。
    */
-  const layers: readonly RuleLayer[] = composeRules({
+  let userRules: PolicyRuleSet = loaded.permissionRules.user;
+  const projectRules = loaded.permissionRules.project;
+  let layers: readonly RuleLayer[] = composeRules({
     env: policyEnv,
-    user: loaded.permissionRules.user,
-    project: loaded.permissionRules.project,
+    user: userRules,
+    project: projectRules,
   });
 
   const tools = new ToolRegistry();
@@ -400,6 +392,20 @@ export async function startServices(): Promise<Services> {
    * 只记日志，不让一次输出块的写入失败拖垮整个 PTY 会话。
    */
   const executor = createLocalExecutionWorld();
+  const snapshot = (): Promise<SettingsResult> =>
+    readSettingsSnapshot({
+      config,
+      userRules,
+      tools,
+      stores,
+      platform,
+      executor,
+      secrets,
+      policyEnv,
+      secretBackend,
+      version: app.getVersion(),
+      configProblems: loaded.problems,
+    });
   const toolHost = await openProductionTools({
     os: platform.os,
     index: stores.index,
@@ -641,7 +647,9 @@ export async function startServices(): Promise<Services> {
     platform,
     stores,
     bus,
-    layers,
+    get layers() {
+      return layers;
+    },
     tools,
 
     async createSession(options: { title?: string; cwd?: string } = {}): Promise<SessionId> {
@@ -816,15 +824,25 @@ export async function startServices(): Promise<Services> {
       const runtime = await runtimeFor(sessionId);
       /*
        * 插件记录走一次按类型过滤的读，而不是往 `SessionState` 里加字段（ADR-0057 §三）。
-       * 代价是打开会话多一次带条件的查询；换来的是"删掉插件仍能 reduce 历史会话"
-       * 这件事在类型上就是显然的——核心状态里根本没有插件的位置。
+       * 子调用投影同一次读（`tool.code.dispatch`）：`reduce()` 对它只推进 lastSeq
+       * （ADR-0072），详情栏又必须能按 callId 拿到入参，所以跟 extRecords 走同一条路。
        */
-      const extEvents: XmEvent[] = [];
-      for await (const e of runtime.read({ types: ['ext.persisted'] })) extEvents.push(e);
+      const extraEvents: XmEvent[] = [];
+      for await (const e of runtime.read({ types: ['ext.persisted', 'tool.code.dispatch'] })) {
+        extraEvents.push(e);
+      }
+      const extEvents = extraEvents.filter((e) => e.type === 'ext.persisted');
+      const dispatches = extraEvents.flatMap((e) => {
+        if (e.type !== 'tool.code.dispatch') return [];
+        const view = toDispatchView(e.payload);
+        return [[view.callId, view] as const];
+      });
       return {
         ...serializeSessionState(runtime.state),
         cards: [...projectSessionCards(runtime.state, tools).entries()],
         extRecords: summarizeExtRecords(extEvents, INSTALLED_PLUGIN_IDS),
+        dispatches,
+        occupancy: runtime.occupancy,
       };
     },
 
@@ -885,6 +903,11 @@ export async function startServices(): Promise<Services> {
       return event.type === 'tool.start'
         ? { ...(card.call === undefined ? {} : { call: card.call }) }
         : { ...(card.result === undefined ? {} : { result: card.result }) };
+    },
+
+    occupancyForEvent(event) {
+      if (event.type !== 'message.start') return undefined;
+      return runtimes.get(event.sessionId)?.occupancy;
     },
 
     async cardAction(sessionId, request) {
@@ -966,29 +989,38 @@ export async function startServices(): Promise<Services> {
       };
     },
 
-    async settings(): Promise<SettingsSnapshot> {
-      return readSettingsSnapshot(config, tools, stores, platform, executor);
+    async settings(): Promise<SettingsResult> {
+      return snapshot();
     },
 
-    async updateSettings(update: SettingsUpdate): Promise<SettingsSnapshot> {
-      const workspace = ConfigSchema.shape.workspace.parse(update.workspace);
-      if (workspace.mode === 'fixed' && workspace.defaultPath === undefined) {
-        throw new Error('固定工作目录模式必须先选择一个目录。');
-      }
+    async updateSettings(update: UpdateSettingsRequest): Promise<SettingsResult> {
+      assertSettingsUpdate(update);
       const knownTools = new Set(tools.descriptors().map((tool) => tool.name));
-      const disabled = [...new Set(update.disabledTools)].filter((name) => knownTools.has(name)).sort();
-      await persistUserConfigPatch(paths, { workspace, tools: { disabled } });
-      config = ConfigSchema.parse({
-        ...config,
-        workspace,
-        tools: { ...config.tools, disabled },
-      });
-      return readSettingsSnapshot(config, tools, stores, platform, executor);
+      const nextProv = nextProviders(config.providers, update.providers);
+      const nextRules = nextUserRules(userRules, update.permissionDenies);
+      let nextLayers: readonly RuleLayer[];
+      try {
+        nextLayers = composeRules({ env: policyEnv, user: nextRules, project: projectRules });
+      } catch (cause) {
+        const error = new Error(cause instanceof Error ? cause.message : String(cause));
+        error.name = 'settings.invalid';
+        throw error;
+      }
+      const next = nextConfig(config, update, nextProv, knownTools);
+      ConfigSchema.parse(next);
+      await persistUserConfigPatch(
+        paths,
+        buildSettingsPatch(config, update, nextProv, nextRules, knownTools),
+      );
+      config = next;
+      userRules = nextRules;
+      layers = nextLayers;
+      return snapshot();
     },
 
-    async clearSearchIndex(): Promise<SettingsSnapshot> {
+    async clearSearchIndex(): Promise<SettingsResult> {
       await stores.index.clear();
-      return readSettingsSnapshot(config, tools, stores, platform, executor);
+      return snapshot();
     },
 
     /**
@@ -1045,72 +1077,4 @@ function workspaceForNewSession(config: Config, home: string): string {
   const error = new Error('请先选择这个任务的工作目录。');
   error.name = 'WorkspaceRequiredError';
   throw error;
-}
-
-async function readSettingsSnapshot(
-  config: Config,
-  tools: ToolRegistry,
-  stores: OpenedStores,
-  platform: PlatformPort,
-  executor: ExecutionWorld,
-): Promise<SettingsSnapshot> {
-  const paths = platform.paths();
-  const availability = {
-    cwd: paths.home,
-    executor,
-    platform: platform.capabilities(),
-  };
-  const available = new Set(tools.descriptors({ ...availability, disabledTools: [] }).map((tool) => tool.name));
-  const disabled = new Set(config.tools.disabled);
-  const indexDb = join(stores.layout.dataDir, 'workspace-index.sqlite');
-  const [indexBytes, sessionBytes, recoveryBytes, logBytes, configBytes] = await Promise.all([
-    sizeOfSqlite(indexDb),
-    sizeOfSqlite(stores.layout.eventsDb),
-    sizeOfPath(stores.layout.blobsDir),
-    sizeOfPath(paths.logs),
-    sizeOfPath(paths.config),
-  ]);
-  return {
-    workspace: config.workspace,
-    tools: tools.descriptors().map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      enabled: !disabled.has(tool.name),
-      available: available.has(tool.name),
-    })),
-    storage: {
-      dataDirectory: paths.data,
-      configDirectory: paths.config,
-      cacheDirectory: paths.cache,
-      logsDirectory: paths.logs,
-      items: [
-        { id: 'search-index', bytes: indexBytes, clearable: true },
-        { id: 'sessions', bytes: sessionBytes, clearable: false },
-        { id: 'recovery', bytes: recoveryBytes, clearable: false },
-        { id: 'logs', bytes: logBytes, clearable: false },
-        { id: 'config', bytes: configBytes, clearable: false },
-      ],
-      index: stores.index.stats(),
-    },
-  };
-}
-
-const sizeOfSqlite = async (path: string): Promise<number> =>
-  (await Promise.all([path, `${path}-wal`, `${path}-shm`].map(sizeOfPath))).reduce((a, b) => a + b, 0);
-
-async function sizeOfPath(path: string): Promise<number> {
-  try {
-    const info = await stat(path);
-    if (info.isFile()) return info.size;
-    if (!info.isDirectory()) return 0;
-    const children = await readdir(path, { withFileTypes: true });
-    const sizes = await Promise.all(
-      children
-        .filter((child) => !child.isSymbolicLink())
-        .map((child) => sizeOfPath(join(path, child.name))),
-    );
-    return sizes.reduce((a, b) => a + b, 0);
-  } catch {
-    return 0;
-  }
 }

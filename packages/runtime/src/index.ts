@@ -23,6 +23,7 @@ export * from './turn-sink.js';
 export * from './turn-code.js';
 export * from './code-sdk.js';
 export * from './context-builder.js';
+export * from './context-occupancy.js';
 export * from './subagent.js';
 export * from './crash-recovery.js';
 export * from './card-action.js';

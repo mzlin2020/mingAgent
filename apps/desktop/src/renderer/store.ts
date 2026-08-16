@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { AnyEvent, SessionId } from '@xm/contracts';
+import type { AnyEvent, ContextOccupancy, SessionId } from '@xm/contracts';
 import { parseStoredEvent } from '@xm/contracts';
 import type { ExtRecordSummary, LiveBuffer, SessionState } from '@xm/kernel';
 import { EMPTY_LIVE, applyLive, deserializeSessionState, reduce } from '@xm/kernel';
@@ -16,6 +16,11 @@ import type { OrphanedSlice } from './orphaned-sessions.js';
 import { createOrphanedSlice } from './orphaned-sessions.js';
 import type { CardsSlice } from './cards-slice.js';
 import { createCardsSlice, mergeCard } from './cards-slice.js';
+import type { DetailsSlice } from './details-slice.js';
+import { createDetailsSlice, emptyDetailsOnSwitch, mergeDispatch } from './details-slice.js';
+import { emptyOccupancyOnSwitch, mergeOccupancy } from './occupancy-slice.js';
+import type { SettingsSlice } from './settings-slice.js';
+import { createSettingsSlice } from './settings-slice.js';
 
 type Status = z.infer<typeof StatusResult>;
 
@@ -41,10 +46,10 @@ type Status = z.infer<typeof StatusResult>;
  * 为了拿几百个会话的标题去回放几百条事件流是荒唐的（ADR-0013 决策六）。
  */
 
-/** 壳层主区：Home 最近会话 vs 当前焦点会话（ADR-0037） */
-export type ShellView = 'home' | 'chat' | 'security';
+/** 壳层主区：Home 最近会话 vs 当前焦点会话（ADR-0037）。设置是模态，不是第三视图（ADR-0075）。 */
+export type ShellView = 'home' | 'chat';
 
-interface UiState extends OrphanedSlice, CardsSlice {
+interface UiState extends OrphanedSlice, CardsSlice, DetailsSlice, SettingsSlice {
   sessions: ListSessionsResult;
   /**
    * 顶栏 tabs 的打开集合（ADR-0037）。纯 UI 态，不持久化、不进事件流。
@@ -73,6 +78,11 @@ interface UiState extends OrphanedSlice, CardsSlice {
    * 见 `live-buffer.ts` 的说明。
    */
   live: LiveBuffer;
+  /**
+   * 最近一次组装完的上下文占用。不是 `SessionState`：ContextBuilder 的 sidecar，
+   * 随 `message.start` 同行，切会话即丢。
+   */
+  occupancy: ContextOccupancy | undefined;
   busy: boolean;
   pendingInputs: readonly { readonly id: number; readonly kind: 'followup' | 'steer'; readonly text: string }[];
   error: string | undefined;
@@ -100,7 +110,6 @@ interface UiState extends OrphanedSlice, CardsSlice {
   readonly openSession: (id: SessionId) => Promise<void>;
   /** 回到 Home；保留 tabs 打开集合与 currentId，只切主区 */
   readonly goHome: () => void;
-  readonly openSecurity: () => void;
   /**
    * 关闭一个 tab（移出打开集合）。**不删除**会话数据。
    * 若关掉的是焦点，则聚焦剩余最后一个 tab，否则回 Home。
@@ -150,8 +159,10 @@ export const useUi = create<UiState>((set, get) => {
   return {
     // 崩溃恢复那一组（`orphanedSessions` 与三个动作）见 `orphaned-sessions.ts`
     ...createOrphanedSlice(set, get, applyIpcError),
-    // 工具卡片那一组见 `cards-slice.ts`——它是投影，不是会话状态
+    // 工具卡片与右栏详情投影见各自 slice——都不是会话状态
     ...createCardsSlice(set, get, applyIpcError),
+    ...createDetailsSlice(set),
+    ...createSettingsSlice((partial) => { set(partial); }, () => get().refreshStatus()),
 
     sessions: [],
     openIds: [],
@@ -160,6 +171,7 @@ export const useUi = create<UiState>((set, get) => {
     session: undefined,
     extRecords: [],
     live: EMPTY_LIVE,
+    occupancy: undefined,
     busy: false,
     pendingInputs: [],
     error: undefined,
@@ -214,15 +226,19 @@ export const useUi = create<UiState>((set, get) => {
         pendingInputs: [],
         error: undefined,
         sessionConflict: undefined,
+        ...emptyDetailsOnSwitch(),
+        ...emptyOccupancyOnSwitch(),
       });
       try {
-        const { cards, extRecords, ...serialized } = await api.readSession(id);
+        const { cards, extRecords, dispatches, occupancy, ...serialized } = await api.readSession(id);
         // 会话可能在这次 await 期间又被切走——不要用一个旧会话的状态覆盖当前会话
         if (get().currentId === id) {
           set({
             session: deserializeSessionState(serialized),
             cards: new Map(cards),
             extRecords,
+            dispatches: new Map(dispatches),
+            occupancy,
           });
         }
       } catch (e) {
@@ -232,11 +248,6 @@ export const useUi = create<UiState>((set, get) => {
 
     goHome: () => {
       set({ shellView: 'home', error: undefined, sessionConflict: undefined });
-    },
-
-    openSecurity: () => {
-      set({ shellView: 'security', error: undefined, sessionConflict: undefined });
-      void get().refreshStatus();
     },
 
     closeTab: async (id) => {
@@ -256,6 +267,8 @@ export const useUi = create<UiState>((set, get) => {
           shellView: 'home',
           error: undefined,
           sessionConflict: undefined,
+          ...emptyDetailsOnSwitch(),
+          ...emptyOccupancyOnSwitch(),
         });
         return;
       }
@@ -378,6 +391,8 @@ export const useUi = create<UiState>((set, get) => {
         session: reduce(session, e),
         live: applyLive(get().live, e),
         cards: mergeCard(get().cards, e, pushed.card),
+        dispatches: mergeDispatch(get().dispatches, e),
+        occupancy: mergeOccupancy(get().occupancy, pushed.occupancy),
       });
     },
   };

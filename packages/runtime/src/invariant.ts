@@ -1,4 +1,6 @@
+import { ALL_EVENT_TYPES } from '@xm/contracts';
 import type { InvariantEvent, InvariantInstaller } from '@xm/kernel';
+import { payloadLooksLikeOccupancy } from './context-occupancy.js';
 
 const countBlocks = (state: InvariantEvent['before']): number =>
   state.messages.reduce((total, message) => total + message.blocks.length, 0);
@@ -32,6 +34,20 @@ export const runtimeInvariants: InvariantInstaller = (api) => {
       ? undefined
       : `打开的是回合 ${before.activeTurn.turnId}，收尾的却是 ${event.payload.turnId}。`;
   });
+
+  /*
+   * 占用投影不得进事件流（M3.5-f）。
+   *
+   * 它是随事件同行的 sidecar，和卡片一样。写进 payload 就会被 reduce 忽略、
+   * 被 loose schema 留下，重开会话对不上——而且那种错是静默的。
+   * 盯全部已知类型：未知类型进不了 `record()`，这条断言的职责是挡住
+   * "塞进已有事件"那条路。
+   */
+  api.on([...ALL_EVENT_TYPES], '占用投影不得进事件流', ({ event }) =>
+    payloadLooksLikeOccupancy(event.payload)
+      ? `事件 ${event.type} 的 payload 携带了占用投影字段（systemTokens / toolsTokens / conversationTokens / capacityTokens）。占用投影不落库、不参与 reduce、不进模型请求。`
+      : undefined,
+  );
 
   /*
    * 注入必须落库（ADR-0056 / 不变量八点五：模型可见 ⟺ 已落库）。

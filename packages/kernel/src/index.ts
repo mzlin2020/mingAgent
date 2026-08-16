@@ -15,6 +15,7 @@ export * from './state/snapshot.js';
 
 export * from './policy/engine.js';
 export * from './policy/defaults.js';
+export * from './policy/redline-projection.js';
 export * from './policy/layers.js';
 export * from './policy/target.js';
 export * from './policy/host-target.js';

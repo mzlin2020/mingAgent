@@ -121,9 +121,9 @@ export function SetupBanner(): ReactNode {
  * `lastError` 在下一轮 `turn.start` 时会被清掉（reduce.ts），所以这里不需要
  * 自己的关闭按钮——新一轮的用户输入本身就是"要重试"的信号。
  *
- * **挂载位置是这条横幅的一半**：它必须在滚动区之外、输入框正上方。放进消息流顶部
- * 等于钉在一个 stick-to-bottom 容器的最上方，会话一超过一屏就再也看不见——
- * 那正是上面说的缺口的第二形态。理由写在 `App.tsx` 的挂载点上。
+ * **挂载位置是这条横幅的一半**：它必须贴着输入卡（现在跟输入卡一起 sticky）。
+ * 放进消息流顶部等于钉在一个 stick-to-bottom 容器的最上方，会话一超过一屏
+ * 就再也看不见——那正是上面说的缺口的第二形态。
  */
 export function TurnErrorBanner(): ReactNode {
   const session = useUi((s) => s.session);

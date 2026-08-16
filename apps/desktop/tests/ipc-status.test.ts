@@ -55,19 +55,41 @@ describe('desktop status IPC', () => {
 });
 
 describe('settings IPC', () => {
+  const settings = {
+    workspace: { mode: 'choose' as const },
+    presentation: 'native' as const,
+    tools: [{ name: 'fs.read', description: 'read', enabled: true, available: true }],
+    model: { main: 'openai/gpt' },
+    providers: [],
+    prices: {},
+    permissionDenies: [],
+    redLines: [{ target: '/', capabilities: ['fs.delete'], why: '根目录' }],
+    storage: {
+      dataDirectory: 'C:/data',
+      configDirectory: 'C:/config',
+      cacheDirectory: 'C:/cache',
+      logsDirectory: 'C:/logs',
+      items: [{ id: 'search-index' as const, bytes: 12, clearable: true }],
+      index: { roots: [] },
+    },
+    meta: {
+      version: '0.0.0',
+      secretBackend: 'keychain' as const,
+      configProblems: [],
+      userAllowRuleCount: 0,
+    },
+  };
+  const validUpdate = {
+    workspace: { mode: 'home' as const },
+    disabledTools: ['shell.exec'],
+    presentation: 'native' as const,
+    model: { main: 'openai/gpt' },
+    providers: [],
+    prices: {},
+    permissionDenies: [],
+  };
+
   it('returns settings and validates updates before passing them to services', async () => {
-    const settings = {
-      workspace: { mode: 'choose' as const },
-      tools: [{ name: 'fs.read', description: 'read', enabled: true, available: true }],
-      storage: {
-        dataDirectory: 'C:/data',
-        configDirectory: 'C:/config',
-        cacheDirectory: 'C:/cache',
-        logsDirectory: 'C:/logs',
-        items: [{ id: 'search-index' as const, bytes: 12, clearable: true }],
-        index: { roots: [] },
-      },
-    };
     const updateSettings = vi.fn(() => Promise.resolve(settings));
     const services = {
       settings: vi.fn(() => Promise.resolve(settings)),
@@ -82,12 +104,84 @@ describe('settings IPC', () => {
     expect(readEnvelope.ok).toBe(true);
     if (readEnvelope.ok) expect(SettingsResult.parse(readEnvelope.data)).toEqual(settings);
 
-    const request = { workspace: { mode: 'home' }, disabledTools: ['shell.exec'] };
     const updateEnvelope = IpcEnvelope.parse(
-      await mockedElectron.handlers.get(CH.updateSettings)?.({}, request),
+      await mockedElectron.handlers.get(CH.updateSettings)?.({}, validUpdate),
     );
     expect(updateEnvelope.ok).toBe(true);
-    expect(updateSettings).toHaveBeenCalledWith(request);
+    expect(updateSettings).toHaveBeenCalledWith(validUpdate);
+  });
+
+  it('🔴 提交 allow 规则被主进程拒绝，services 不会被叫到', async () => {
+    const updateSettings = vi.fn(() => Promise.resolve(settings));
+    registerIpc({ updateSettings, bus: { subscribe: vi.fn() } } as unknown as Services, () => []);
+    const envelope = IpcEnvelope.parse(
+      await mockedElectron.handlers.get(CH.updateSettings)?.({}, {
+        ...validUpdate,
+        permissionDenies: [{
+          id: 'sneak.allow',
+          effect: 'allow',
+          capability: 'fs.write',
+          reason: '放行',
+        }],
+      }),
+    );
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'invalid_input',
+      message: 'IPC 入参不合法：Invalid input: expected "deny"',
+    });
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('🔴 把 API key 塞进 UpdateSettingsRequest 被主进程拒绝', async () => {
+    const updateSettings = vi.fn(() => Promise.resolve(settings));
+    registerIpc({ updateSettings, bus: { subscribe: vi.fn() } } as unknown as Services, () => []);
+    const envelope = IpcEnvelope.parse(
+      await mockedElectron.handlers.get(CH.updateSettings)?.({}, {
+        ...validUpdate,
+        apiKey: 'sk-secret',
+      }),
+    );
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'invalid_input',
+      message: 'IPC 入参不合法：Unrecognized key: "apiKey"',
+    });
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('🔴 嵌套 apiKey 同样拒绝', async () => {
+    const updateSettings = vi.fn(() => Promise.resolve(settings));
+    registerIpc({ updateSettings, bus: { subscribe: vi.fn() } } as unknown as Services, () => []);
+    const envelope = IpcEnvelope.parse(
+      await mockedElectron.handlers.get(CH.updateSettings)?.({}, {
+        ...validUpdate,
+        providers: [{ id: 'openai', kind: 'openai-compatible', models: [], apiKey: 'sk-secret' }],
+      }),
+    );
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'invalid_input',
+      message: 'IPC 入参不合法：Unrecognized key: "apiKey"',
+    });
+    expect(updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('🔴 workspace.mode 不合法时两侧都拒绝且有可读错误', async () => {
+    const updateSettings = vi.fn(() => Promise.resolve(settings));
+    registerIpc({ updateSettings, bus: { subscribe: vi.fn() } } as unknown as Services, () => []);
+    const envelope = IpcEnvelope.parse(
+      await mockedElectron.handlers.get(CH.updateSettings)?.({}, {
+        ...validUpdate,
+        workspace: { mode: 'nope' },
+      }),
+    );
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'invalid_input',
+      message: 'IPC 入参不合法：Invalid option: expected one of "choose"|"fixed"|"home"',
+    });
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 });
 

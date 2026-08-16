@@ -2,6 +2,12 @@ import type { Message, ModelRequest, TurnId } from '@xm/contracts';
 import type { Compaction, ModelProvider, SessionState } from '@xm/kernel';
 import { costOf, emptySessionState, lookupPrice, readBlob, reduce } from '@xm/kernel';
 import { codeModeGuidance, generateToolSdk } from './code-sdk.js';
+import {
+  estimateMessagesTokens,
+  estimateRequestTokens,
+  estimateTextTokens,
+  projectContextOccupancy,
+} from './context-occupancy.js';
 import type { SessionRuntime } from './session-runtime.js';
 import { codeBindingNames } from './turn-code.js';
 import {
@@ -84,6 +90,7 @@ export class ContextBuilder {
         if (inputTokens > budget.hardInputTokens) {
           throw new ContextWindowExceededError(inputTokens, budget.hardInputTokens);
         }
+        this.#noteOccupancy(request, budget.maxContextTokens, inputTokens);
         return request;
       }
 
@@ -92,11 +99,16 @@ export class ContextBuilder {
         if (inputTokens > budget.hardInputTokens) {
           throw new ContextWindowExceededError(inputTokens, budget.hardInputTokens);
         }
+        this.#noteOccupancy(request, budget.maxContextTokens, inputTokens);
         return request;
       }
     }
 
     throw new Error('单次上下文构建需要超过 32 个压缩区间，已停止以避免异常循环。');
+  }
+
+  #noteOccupancy(request: ModelRequest, capacityTokens: number, countedTotal: number): void {
+    this.#deps.runtime.noteOccupancy(projectContextOccupancy(request, capacityTokens, countedTotal));
   }
 
   async #compactOldestRange(
@@ -375,19 +387,6 @@ async function generateSummary(
 async function countRequestTokens(provider: ModelProvider, request: ModelRequest): Promise<number> {
   if (provider.countTokens !== undefined) return Math.ceil(await provider.countTokens(request));
   return estimateRequestTokens(request);
-}
-
-export function estimateRequestTokens(request: ModelRequest): number {
-  return estimateTextTokens(JSON.stringify(request)) + 32;
-}
-
-function estimateMessagesTokens(messages: readonly Message[]): number {
-  return estimateTextTokens(JSON.stringify(messages)) + messages.length * 8;
-}
-
-function estimateTextTokens(text: string): number {
-  // UTF-8 / 3 对中文约为一字一 token，对英文比常见的 /4 更保守。
-  return Math.max(1, Math.ceil(encoder.encode(text).byteLength / 3));
 }
 
 const NEVER_ABORTS = {

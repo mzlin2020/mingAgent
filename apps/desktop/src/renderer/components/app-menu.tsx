@@ -7,10 +7,10 @@ import { useUi } from '../store.js';
 /**
  * 汉堡菜单（ADR-0037）：设置 / 帮助入口。
  * 新建会话等与 Home 页按钮重复的项不放这里。
- * 设置实体页仍归 M3，这里只占位。
+ * 设置是模态，不离开当前会话（ADR-0075）。
  */
 export function AppMenu(): ReactNode {
-  const openSecurity = useUi((state) => state.openSecurity);
+  const openSettings = useUi((state) => state.openSettings);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
@@ -59,10 +59,10 @@ export function AppMenu(): ReactNode {
           )}
         >
           <MenuItem
-            label="设置与安全"
+            label="设置"
             onClick={() => {
               close();
-              openSecurity();
+              openSettings();
             }}
           />
           <MenuItem label="帮助" muted onClick={close} />

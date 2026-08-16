@@ -1,4 +1,5 @@
 import type {
+  ContextOccupancy,
   EventOf,
   PersistedEvent,
   SessionId,
@@ -66,6 +67,12 @@ export class SessionRuntime {
   readonly #invariants: InvariantRegistry | undefined;
 
   #state: SessionState;
+  /**
+   * 最近一次 ContextBuilder 组装完请求后的占用投影。
+   * **不是** `#state` 的字段：不进快照、不进 reduce、进程退出即丢，
+   * 下次组装再算一遍。渲染层经 IPC sidecar 拿到它，与卡片同一条路。
+   */
+  #occupancy: ContextOccupancy | undefined = undefined;
   #closed = false;
   /** 上一份快照对应的 `lastSeq`；开会话时没有快照就是 0（等同于"从没存过"）。 */
   #lastSnapshotSeq: number;
@@ -141,6 +148,15 @@ export class SessionRuntime {
 
   get lastSeq(): number {
     return this.#state.lastSeq;
+  }
+
+  get occupancy(): ContextOccupancy | undefined {
+    return this.#occupancy;
+  }
+
+  /** ContextBuilder 组装完请求后写入；不是事件，不落库。 */
+  noteOccupancy(value: ContextOccupancy): void {
+    this.#occupancy = value;
   }
 
   /**

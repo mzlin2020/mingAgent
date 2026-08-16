@@ -209,6 +209,36 @@ describe('M2-h ContextBuilder', () => {
     await blobs.close();
   });
 
+  it('组装完请求后把占用投影写到 runtime sidecar，不落事件', async () => {
+    const store = new MemoryEventStore();
+    const runtime = await SessionRuntime.open({
+      sessionId: newSessionId(),
+      store,
+      bus: new EventBus(),
+    });
+    await runtime.record({
+      type: 'session.created',
+      payload: { cwd: '/workspace', modelRef: 'scripted/scripted-1' },
+    });
+    const lastSeq = runtime.lastSeq;
+    const request = await new ContextBuilder({
+      runtime,
+      executor: localExecutionWorld,
+      provider: new ScriptedProvider({
+        capabilities: { maxContext: 200_000, maxOutput: 1_000 },
+        turns: [],
+      }),
+      tools: new ToolRegistry(),
+      layers: [],
+      model: 'scripted-1',
+      hostOs: 'linux' as const,
+    }).build(newTurnId());
+    expect(runtime.occupancy?.capacityTokens).toBe(200_000);
+    expect(runtime.occupancy?.totalTokens).toBe(estimateRequestTokens(request));
+    expect(runtime.lastSeq).toBe(lastSeq);
+    await runtime.close();
+  });
+
   it('近期原文本身超过硬预算时失败关闭，不向 Provider 发送超限请求', async () => {
     const store = new MemoryEventStore();
     const runtime = await SessionRuntime.open({

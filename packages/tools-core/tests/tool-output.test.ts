@@ -136,7 +136,7 @@ describe('fs 工具的规范输出值', () => {
 
 describe('shell.exec 的规范输出值', () => {
   it('结局是闭集的 kind，退出码与两条流原样给出', async () => {
-    const output = await outputOf(shellExecTool({ os: 'linux', env: {} }), {
+    const output = await outputOf(shellExecTool({ os: 'linux' }), {
       argv: ['node', '-e', 'process.stdout.write("out");process.exit(3)'],
       cwd: dir,
     });

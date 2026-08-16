@@ -1,9 +1,7 @@
-import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Disclosure } from './disclosure.js';
 import { ASSISTANT_BODY, RoleLabel } from './message-stream.js';
 import { useUi } from '../store.js';
-import { liveWaitingText } from '../live-status.js';
 
 /**
  * 在途消息（ADR-0021）—— 模型正在打字的那一条。
@@ -17,35 +15,18 @@ import { liveWaitingText } from '../live-status.js';
  */
 export function LiveMessage(): ReactNode {
   const message = useUi((s) => s.live.message);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-
-  useEffect(() => {
-    setElapsedSeconds(0);
-    if (message === undefined) return undefined;
-    const timer = setInterval(() => {
-      setElapsedSeconds((seconds) => seconds + 1);
-    }, 1000);
-    return () => {
-      clearInterval(timer);
-    };
-  }, [message?.messageId]);
-
   if (message === undefined) return null;
-  const waitingText = liveWaitingText(message, elapsedSeconds);
-
   /*
     容器样式必须和 `MessageView` 的助手分支**逐字一致**（共用 `ASSISTANT_BODY` / `RoleLabel`）。
     在途时套卡片、落库后变成无框正文的话，`message.end` 那一刻同一段文字会当着用户的面跳一下。
+    等待文案改由 `TurnStatus` 的 shimmer 承担，这里只画已经冒出来的思考/正文。
   */
+  if (message.thinking === '' && message.text === '') return null;
+
   return (
     <div>
       <RoleLabel>小明</RoleLabel>
       <div className={ASSISTANT_BODY}>
-        {waitingText !== undefined && (
-          <p className="animate-pulse text-meta text-muted" role="status">
-            {waitingText}
-          </p>
-        )}
         {message.thinking !== '' && (
           <Disclosure label="思考中…" defaultOpen summaryClassName="text-meta">
             <p className="mt-1.5 whitespace-pre-wrap border-l-2 border-border pl-3 text-meta text-muted">

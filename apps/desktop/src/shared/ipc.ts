@@ -5,6 +5,7 @@ import {
   CARD_ACTION_PAYLOAD,
   CheckpointId,
   CheckpointManifestV2,
+  ContextOccupancy,
   EventEnvelope,
   SessionId,
   ToolCardPair,
@@ -148,6 +149,7 @@ export const CardActionResult = z.object({ dispatched: z.boolean() });
  * 导入，感觉不到这条分界线。
  */
 export * from './ipc-session-state.js';
+export * from './ipc-settings.js';
 
 /**
  * 解除本会话的不可信标记（ADR-0019）。
@@ -238,47 +240,6 @@ export const StatusResult = z.object({
   }),
 });
 
-const WorkspaceSettings = z.strictObject({
-  mode: z.enum(['choose', 'fixed', 'home']),
-  defaultPath: z.string().max(4096).optional(),
-});
-
-export const SettingsResult = z.object({
-  workspace: WorkspaceSettings,
-  tools: z.array(z.object({
-    name: z.string(),
-    description: z.string(),
-    enabled: z.boolean(),
-    available: z.boolean(),
-  })),
-  storage: z.object({
-    dataDirectory: z.string(),
-    configDirectory: z.string(),
-    cacheDirectory: z.string(),
-    logsDirectory: z.string(),
-    items: z.array(z.object({
-      id: z.enum(['search-index', 'sessions', 'recovery', 'logs', 'config']),
-      bytes: z.number().int().nonnegative(),
-      clearable: z.boolean(),
-    })),
-    index: z.object({
-      roots: z.array(z.object({
-        root: z.string(),
-        state: z.enum(['cold', 'building', 'ready', 'stale', 'failed']),
-        fileCount: z.number().int().nonnegative(),
-        sourceBytes: z.number().int().nonnegative(),
-        updatedAt: z.number().int().nonnegative(),
-      })),
-    }),
-  }),
-});
-export type SettingsResult = z.infer<typeof SettingsResult>;
-
-export const UpdateSettingsRequest = z.strictObject({
-  workspace: WorkspaceSettings,
-  disabledTools: z.array(z.string()).max(200),
-});
-
 /**
  * 录入 API key。
  *
@@ -295,11 +256,15 @@ export const SetApiKeyResult = z.object({ ok: z.literal(true) });
 /**
  * 主进程 → 渲染层的事件推送。
  *
- * `card` 是**随事件同行的纯函数投影**，不是事件的一部分：它不落库、不参与
- * `reduce()`、不进模型请求。投影跑在主进程是因为投影函数含在工具定义里、跨不了进程
- * （见 `kernel/tool/present.ts` 的说明）。
+ * `card` / `occupancy` 都是**随事件同行的纯函数投影**，不是事件的一部分：
+ * 不落库、不参与 `reduce()`、不进模型请求。卡片投影跑在主进程是因为投影函数
+ * 含在工具定义里、跨不了进程；占用投影跑在主进程是因为 `ContextBuilder`
+ * 在组装完请求之后才知道三段各占多少。
  */
-export const PushedEvent = EventEnvelope.extend({ card: ToolCardPair.optional() });
+export const PushedEvent = EventEnvelope.extend({
+  card: ToolCardPair.optional(),
+  occupancy: ContextOccupancy.optional(),
+});
 export type PushedEvent = z.infer<typeof PushedEvent>;
 
 /**

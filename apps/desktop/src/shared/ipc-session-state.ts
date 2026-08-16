@@ -16,7 +16,9 @@ import {
   TurnId,
   Usage,
   XmError,
+  ContextOccupancy,
 } from '@xm/contracts';
+import { CodeDispatchView } from './code-dispatch.js';
 
 /**
  * 会话状态的可过 IPC 镜像（ADR-0032，修 G4/G5）。
@@ -192,4 +194,16 @@ export const ExtRecordSummarySchema = z.strictObject({
 export const ReadSessionResult = SerializedSessionStateResult.extend({
   cards: z.array(z.tuple([CallId, ToolCardPair])),
   extRecords: z.array(ExtRecordSummarySchema),
+  /**
+   * Code Mode 子调用投影。与 `extRecords` 同一姿势：按类型过滤读事件流，
+   * 不进 `SessionState`（ADR-0072：`reduce()` 对 dispatch 只推进 lastSeq）。
+   */
+  dispatches: z.array(z.tuple([CallId, CodeDispatchView])),
+  /**
+   * 最近一次组装完的上下文占用。与卡片同一姿势：不进 `SessionState`。
+   * 本进程还没组装过请求时为 `undefined`。
+   */
+  occupancy: ContextOccupancy.or(z.undefined()),
 });
+
+export { toDispatchView } from './code-dispatch.js';

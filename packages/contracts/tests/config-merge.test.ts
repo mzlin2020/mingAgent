@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Config, SecretRef, isSecretRef, mergeConfig, mergeConfigLayers } from '@xm/contracts';
+import { Config, SecretRef, isSecretRef, mergeConfig, mergeConfigLayers, stripRetiredConfigKeys } from '@xm/contracts';
 
 /**
  * 配置合并语义 —— docs/10 §8。
@@ -60,11 +60,11 @@ describe('配置树与 SecretRef', () => {
       model: { main: 'anthropic/claude-opus-5' },
       permission: {},
       tools: {},
-      logging: {},
     });
     expect(cfg.permission.rules).toEqual([]);
-    expect(cfg.logging.redact).toBe(true);
+    expect(cfg.tools.presentation).toBe('native');
     expect(cfg.providers).toEqual({});
+    expect(cfg).not.toHaveProperty('logging');
   });
 
   it('apiKey 只接受 SecretRef，明文字符串被拒', () => {
@@ -72,7 +72,6 @@ describe('配置树与 SecretRef', () => {
       model: { main: 'm' },
       permission: {},
       tools: {},
-      logging: {},
       providers: { anthropic: { kind: 'anthropic', apiKey: 'sk-ant-plaintext' } },
     };
     expect(() => Config.parse(withPlaintext)).toThrow();
@@ -83,7 +82,6 @@ describe('配置树与 SecretRef', () => {
       model: { main: 'm' },
       permission: {},
       tools: {},
-      logging: {},
       providers: { anthropic: { kind: 'anthropic', apiKey: { $secret: 'anthropic.apiKey' } } },
     });
     expect(cfg.providers.anthropic?.apiKey).toEqual({ $secret: 'anthropic.apiKey' });
@@ -94,5 +92,20 @@ describe('配置树与 SecretRef', () => {
     expect(isSecretRef({ $secret: 'a', extra: 1 })).toBe(false);
     expect(isSecretRef('sk-ant-xxx')).toBe(false);
     expect(SecretRef.safeParse({ $secret: '' }).success).toBe(false);
+  });
+});
+
+describe('stripRetiredConfigKeys（ADR-0076）', () => {
+  it('剥掉顶层 logging，其它键不动', () => {
+    expect(stripRetiredConfigKeys({
+      logging: { level: 'debug', redact: false },
+      model: { main: 'x/y' },
+    })).toEqual({ model: { main: 'x/y' } });
+  });
+
+  it('没有 logging 时是空操作', () => {
+    expect(stripRetiredConfigKeys({ tools: { presentation: 'code' } })).toEqual({
+      tools: { presentation: 'code' },
+    });
   });
 });

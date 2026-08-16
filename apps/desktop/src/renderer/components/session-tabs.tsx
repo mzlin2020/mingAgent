@@ -8,14 +8,8 @@ import { useUi } from '../store.js';
  * 顶栏会话 tabs + Home（ADR-0037）。
  * tabs = 打开集合；焦点仍是单一 `currentId`。新建在 Home，顶栏不放 `+`。
  *
- * ── 选中态为什么改成"浮在底色上的一片 surface" ──
- *
- * 上一版顶栏自己是 `--xm-surface`，而选中 tab 的底色**也是** `--xm-surface`——选中态只剩
- * 一圈边框，几乎看不见。更糟的是未选中 tab 的 hover 底色是对比度更强的 `--xm-surface-2`，
- * 于是鼠标扫过的那个看起来比真正选中的那个更"亮"，指示是反的。
- *
- * 现在顶栏落到页面底色（canvas）上，选中的 tab 是唯一一片 surface —— 就是浏览器标签页的
- * 那个隐喻：选中的那张纸抬起来贴住内容区。
+ * 选中态是底部 2px 强调色指示条（ADR-0074），不是填充。填充选中态要求顶栏与 tab
+ * 不同色；指示条没有这个约束，顶栏可以坐在页面底色上。
  */
 export function SessionTabs(): ReactNode {
   const sessions = useUi((s) => s.sessions);
@@ -60,18 +54,16 @@ export function SessionTabs(): ReactNode {
             <div
               key={id}
               className={cn(
-                'group flex h-8 max-w-[12rem] shrink-0 items-center rounded-control',
-                'border transition-colors',
-                active
-                  ? 'border-border bg-surface'
-                  : 'border-transparent hover:bg-surface-2',
+                'session-tab group relative -mb-px flex h-11 max-w-[12rem] shrink-0 items-center',
+                'border-b-2',
+                active ? 'border-accent' : 'border-transparent',
               )}
             >
               <button
                 type="button"
                 className={cn(
-                  'min-w-0 flex-1 truncate py-1 pl-2.5 text-left text-meta transition-colors',
-                  active ? 'font-medium text-fg' : 'text-muted',
+                  'min-w-0 flex-1 truncate py-1 pl-2.5 text-left transition-colors',
+                  active ? 'font-medium text-fg' : 'text-muted hover:text-fg',
                 )}
                 onClick={() => {
                   void openSession(id);

@@ -62,6 +62,11 @@ describe('事件注册表', () => {
    * 这条用例盯的就是这个差别：`ext.foo.bar` 不是合法类型，它跟 `future.event`
    * 走同一条"未知类型显式失败"的路。
    */
+  it('占用投影不是事件类型——登记进 EVENT_SPECS 这条测试必须红', () => {
+    expect(isKnownEventType('context.occupancy')).toBe(false);
+    expect(ALL_EVENT_TYPES.filter((t) => t.includes('occupancy'))).toEqual([]);
+  });
+
   it('插件事件只有两个信封类型，前缀不是通行证', () => {
     expect(isKnownEventType('ext.persisted')).toBe(true);
     expect(isKnownEventType('ext.transient')).toBe(true);

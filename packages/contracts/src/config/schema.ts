@@ -73,11 +73,6 @@ export const Config = z.object({
       defaultPath: z.string().max(4096).optional(),
     })
     .default({ mode: 'choose' }),
-  logging: z.object({
-    level: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
-    /** 关掉需要显式操作，且会在 UI 上常驻警告 */
-    redact: z.boolean().default(true),
-  }),
 });
 export type Config = z.infer<typeof Config>;
 
@@ -88,6 +83,23 @@ export type Config = z.infer<typeof Config>;
  */
 export const ConfigPatch = z.record(z.string(), z.unknown());
 export type ConfigPatch = z.infer<typeof ConfigPatch>;
+
+/**
+ * 已从 schema 删除、加载/写入时必须剥掉的顶层键（ADR-0076）。
+ *
+ * 只列顶层：嵌套退役字段若出现，会走 `z.object()` 的未知键剥离，不在这里。
+ */
+export const RETIRED_CONFIG_KEYS = ['logging'] as const;
+
+/** 剥掉已退役键。加载校验前与落盘前都走一遍，避免死字段继续写回去。 */
+export function stripRetiredConfigKeys(patch: ConfigPatch): ConfigPatch {
+  const out: Record<string, unknown> = { ...patch };
+  for (const key of RETIRED_CONFIG_KEYS) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+    delete out[key];
+  }
+  return out;
+}
 
 /**
  * 配置合并语义 —— **写死并测试**（docs/10 §8）：

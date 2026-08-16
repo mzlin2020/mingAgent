@@ -185,3 +185,24 @@ describe('判定路径的不变量（ADR-0060 立身之本）', () => {
     await runtime.close();
   });
 });
+
+describe('占用投影不得进事件流（M3.5-f）', () => {
+  it('🔴 把占用字段塞进已有事件 payload → record() 抛不变量', async () => {
+    const { runtime } = await openSession({ withInvariants: true });
+    await expect(
+      runtime.record({
+        type: 'notice.posted',
+        payload: {
+          level: 'info',
+          code: 'occupancy.probe',
+          message: '不应落库',
+          systemTokens: 10,
+          toolsTokens: 20,
+          conversationTokens: 30,
+          capacityTokens: 8_000,
+        },
+      }),
+    ).rejects.toThrow(/占用投影不得进事件流/);
+    await runtime.close();
+  });
+});
