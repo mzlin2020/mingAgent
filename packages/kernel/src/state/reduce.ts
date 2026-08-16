@@ -1,6 +1,7 @@
 import type { ContentBlock, MessageId, XmEvent } from '@xm/contracts';
 import { addUsage, mergeConfig, restrictSessionPatch } from '@xm/contracts';
 import type { SessionState } from './session-state.js';
+import { appendEditProposal, recordPresentation } from './bounded-index.js';
 import { applyRestorePatch } from './checkpoint-state.js';
 import { compactionOf } from './context-compaction.js';
 import { taintOf } from './taint.js';
@@ -161,7 +162,13 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
         runningCalls: running,
         ...(presentation === undefined
           ? {}
-          : { presentations: new Map(state.presentations).set(e.payload.callId, presentation) }),
+          : {
+              presentations: recordPresentation(
+                state.presentations,
+                e.payload.callId,
+                presentation,
+              ),
+            }),
         messages: appendToolResult(state.messages, block, e.id as unknown as MessageId, e.ts),
         lastSeq: e.seq,
       };
@@ -302,17 +309,12 @@ export function reduce(state: SessionState, e: XmEvent): SessionState {
     case 'edit.proposed':
       return {
         ...state,
-        editProposals: [
-          ...state.editProposals.filter(
-            (item) => item.proposal.proposalId !== e.payload.proposal.proposalId,
-          ),
-          {
-            proposal: e.payload.proposal,
-            appliedAt: undefined,
-            reviewedAt: undefined,
-            selectedHunkIds: undefined,
-          },
-        ],
+        editProposals: appendEditProposal(state.editProposals, {
+          proposal: e.payload.proposal,
+          appliedAt: undefined,
+          reviewedAt: undefined,
+          selectedHunkIds: undefined,
+        }),
         lastSeq: e.seq,
       };
 

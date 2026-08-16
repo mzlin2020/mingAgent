@@ -42,11 +42,15 @@
 下一阶段是 **M3「微内核化重构」**（2026-08-14 新增，原 M3–M6 顺延为 M4–M7）：插件容器、
 回合扩展点、Agent Inbox、能力接缝、渲染意图、Code Mode。规划见
 [11-微内核与插件容器](./11-微内核与插件容器.md) 与 [M3 阶段划分](./M3-阶段划分.md)，
-决策见 [ADR-0052 ~ 0068](./adr/README.md)。
-**M3-a～M3-e 已完成**：容器、确定性服务、四份内建 profile、`@xm/tool-runtime`、
+决策见 [ADR-0052 ~ 0070](./adr/README.md)。
+**M3-a～M3-g 已完成**：容器、确定性服务、四份内建 profile、`@xm/tool-runtime`、
 Turn 命名扩展点、Agent Inbox 与 `ctx.executor` 已存在；desktop/headless 走同一装配器，
 业务工具只经执行世界访问 fs/process/pty。物理删除 `tools-core` 后，typecheck 与空工具 headless
-冒烟仍通过。渲染器注册表尚不存在，不能从 profile 推断 M3-f 已完成。
+冒烟仍通过。渲染层只认识四种卡片种类、不再认识任何工具（M3-f）；
+`ext.persisted`/`ext.transient` 通道、运行时不变量注册表与五张生成表已进 `pnpm verify`（M3-g）。
+**只剩 M3-h（Code Mode）**：隔离机制已于 2026-08-15 定案
+（[ADR-0069](./adr/0069-CodeMode的隔离机制.md)：QuickJS-WASM 客体域 + worker），
+剩下的前置是工具的规范 JSON 输出值。
 插件宿主、MCP、Skill 加载器与正式 CLI 更靠后（M4）。
 
 权限模型已在 2026-08-11 收敛为「红线 + 拒绝清单」：没有审批 UI、权限档位、会话授权或

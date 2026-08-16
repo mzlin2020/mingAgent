@@ -25,11 +25,18 @@ M3-g 已落地 `ext.persisted` / `ext.transient` 两个信封（未声明即拒�
 运行时不变量注册表（各包 `src/invariant.ts` 伴生模块 + `check:invariants`）与
 四张生成表进 `pnpm verify`。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
-M3-a～M3-g 证据见 `docs/experience/m3/`；下一段是 M3-h（Code Mode），
-但它**卡在 `docs/09` 的 H2 隔离机制定案上**——H2 没定就不开工。
+M3-a～M3-g 证据见 `docs/experience/m3/`；下一段是 M3-h（Code Mode）。
 
-**ADR-0061（Code Mode）是 🟡 Proposed，不是 Accepted**——它承诺的隔离属性普通 Node worker
-给不了，机制待 `docs/09` 的 H2 定案。别照着它开工。
+**H2（Code Mode 的隔离机制）已于 2026-08-15 定案 → ADR-0069：QuickJS-WASM 客体域 + worker。**
+`docs/09` 里写的旧倾向（独立子进程 + Node permission model）**被实测否掉**——
+`node --permission` 挡得住 `fs` 与 `child_process`，却让 `fetch` 拿到 HTTP 200：
+Node 的权限模型没有网络这一档。别照那条倾向补代码。ADR-0061 随之恢复 🟢 Accepted，
+但它有三处被实测修正（SDK 生成**同步签名**、必须另设宿主侧墙钟、客体域自带
+`Date`/`Math.random` 要显式覆盖），实施以 ADR-0069 §三 为准。
+机制侧的断言在 `evals/spikes/h2-code-runtime-isolation.test.ts`，证据见
+`docs/experience/m3/H2-隔离机制验证记录.md`。
+**M3-h 的前置二仍未满足**：工具的规范 JSON 输出值（`docs/10 §9.5.4`）是一次覆盖
+二十多个工具的契约迁移，可先于 Code Mode 独立交付。
 
 ## 常用命令
 
@@ -75,6 +82,9 @@ M3-b 已迁移到 `ctx.clock` / `ctx.ids`，清单为零。profile 接缝图用 
 另外四张自省表（事件生产消费、扩展点挂载、工具目录、配置目录）用 `pnpm generate:docs` 更新；
 `pnpm verify` 会检查它们是否漂移。M3-g 起还有 `pnpm check:invariants`：
 拒收缺伴生模块、无理由的空 installer、以及断言"某某存在"的伪不变量。
+
+`pnpm scan:invariants`（**诊断，不在 `verify` 里**）离线扫已有会话库：不变量只跑在写入
+路径上，历史库里已经存在的违例要靠它查。加 `--data <目录>` / `--session <id>` 缩范围。
 
 ## 架构：依赖方向是唯一的硬约束
 

@@ -26,6 +26,7 @@ export * from './card-action.js';
 export * from './ext-recorder.js';
 export * from './invariant.js';
 export * from './invariant-install.js';
+export * from './scan-invariants.js';
 export * from './provider/scripted.js';
 export * from './tools/demo.js';
 export * from './tools/todo.js';

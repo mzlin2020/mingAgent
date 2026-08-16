@@ -74,8 +74,8 @@
 | [0057](./0057-扩展事件通道与未知事件语义.md) | 扩展事件通道：两个静态信封 `ext.persisted` / `ext.transient` 保住闭集与静态 durability；未声明即拒绝写入；`reduce()` 对 `ext.*` 恒等，插件自建投影；`pluginId` 由运行时按身份填，插件拿到的是窄写入口 | 🟢 Accepted | 2026-08-14 |
 | [0058](./0058-工具渲染意图与结果投影.md) | 工具渲染意图：`DisplayHint`（零生产者零消费者）升级为 `presentCall`/`presentResult` 纯函数 + 落库的 `presentationMeta`；四种卡片；投影禁 I/O 禁读状态（实时与回放必须同结果）；畸形参数降级不许崩回放；`edit-review` 专用通道退役 | 🟢 Accepted | 2026-08-14 |
 | [0059](./0059-组合配置profile与patch层.md) | 组合配置：内建 profile（有序插件行）+ 用户 patch 两层，desktop/headless/cli 共用一条装配路径；**项目目录不参与装配**（安全边界）；基线层不可 patch；新增 `@xm/compose`（包数 8→9）；不做可分发 bundle、不做配置内表达式求值 | 🟢 Accepted | 2026-08-14 |
-| [0060](./0060-运行时不变量注册表与文档图谱生成.md) | 运行时不变量注册表 + 文档图谱生成：把「规则存在但从未生效」（已栽八次）从靠人演练变成持续断言；只许断言自己拥有的事件流/可变数据关系，禁止断言「服务存在」；五张生成表进 `pnpm verify` | 🟢 Accepted | 2026-08-14 |
-| [0061](./0061-CodeMode与工具SDK生成.md) | Code Mode：`run_code` 把工具暴露成 TS API，多步任务一次往返完成；**worker 隔离是稳定性手段不是安全边界**——子调用重入 ADR-0055 完整十二步链、不复用父判定、落 `tool.code.dispatch`；默认仍是 `native`，Code Mode 为 opt-in。**2026-08-14 降级为 Proposed**：§一 承诺的"程序拿不到 fs/net/进程"普通 Node worker 给不了，隔离机制待 H2 定案 | 🟡 Proposed | 2026-08-14 |
+| [0060](./0060-运行时不变量注册表与文档图谱生成.md) | 运行时不变量注册表 + 文档图谱生成：把「规则存在但从未生效」（已栽八次）从靠人演练变成持续断言；只许断言自己拥有的事件流/可变数据关系，禁止断言「服务存在」；五张生成表进 `pnpm verify`。**2026-08-15 补记**：离线扫描器（`pnpm scan:invariants`）补上"历史库里已有的违例"那一格，诊断而非闸门 | 🟢 Accepted | 2026-08-14 |
+| [0061](./0061-CodeMode与工具SDK生成.md) | Code Mode：`run_code` 把工具暴露成 TS API，多步任务一次往返完成；**worker 隔离是稳定性手段不是安全边界**——子调用重入 ADR-0055 完整十二步链、不复用父判定、落 `tool.code.dispatch`；默认仍是 `native`，Code Mode 为 opt-in。2026-08-14 曾因"§一 承诺的隔离普通 Node worker 给不了"降级为 Proposed，**2026-08-15 随 [ADR-0069](./0069-CodeMode的隔离机制.md) 恢复 Accepted** | 🟢 Accepted | 2026-08-14 |
 | [0062](./0062-扩展点的异步契约与执行收据.md) | 扩展点的异步契约与执行收据：修正 ADR-0052 把 `waterfall` 写成"不 await"的自相矛盾；补齐错误即中止不吞、`AbortSignal` 显式传递、重入按独立派发三条规则；**⑨ 真实执行签发插件构造不出来的 `ExecutionReceipt`，⑫ 无收据即判为未执行**——把 ADR-0055 那条"或在结构上做不到"从待办变成机制 | 🟢 Accepted | 2026-08-14 |
 | [0063](./0063-安全底座与工具实现的包边界.md) | 安全底座与工具实现的包边界：网关 / checkpoint / local 执行世界迁出 `@xm/tools-core`，新增 `@xm/tool-runtime`（包数 8→10）。**起因是原则二的验收被悄悄降级**——基线行指向 tools-core 导致"删掉该包仍能启动"不可能成立，DoD 于是被写成更弱的"删掉业务插件行"；顺带把"工具不得碰 `node:*`"从包内文件名单升级为包边界规则 | 🟢 Accepted | 2026-08-14 |
 | [0064](./0064-Inbox的持久化边界与steer生效时点.md) | Inbox 的持久化边界：`context.injected` **参与 `reduce()`** 按 seq 折进历史，消费因此隐式且天然幂等（**不加 `context.claimed`**）；未认领的 `followup`/`steer` 不落库、崩溃即丢失（at-most-once）；**`steer` 不取消在飞的工具调用**，下一个认领点生效 | 🟢 Accepted | 2026-08-14 |
@@ -83,6 +83,8 @@
 | [0066](./0066-时钟与ID的注入.md) | 时钟与 ID 的注入：`ctx.clock` / `ctx.ids` 随容器落地，生产用 local、测试用确定性提供者。**起因是 M3-b「事件流逐条一致」照现有代码根本跑不出稳定结果**（`newTurnId()` 随机、两处 `Date.now()`）；选注入而非规范化抹除，否则时间与 id 相关的回归永远测不到 | 🟢 Accepted | 2026-08-14 |
 | [0067](./0067-子Agent作用域的两级扁平语义.md) | 子 Agent 作用域采用**两级扁平解析 + 独立生命周期树**：fork 只看根层与本层，不继承父 fork 的局部注册；但所有权仍级联卸载，血缘继续由持久数据表达 | 🟢 Accepted | 2026-08-14 |
 | [0068](./0068-插件服务声明与装配收敛.md) | 插件新增显式 `provide` 声明；容器以它构造装配图、校验真实注册，并在收敛时区分缺少提供者、等待链、依赖环与同层冲突 | 🟢 Accepted | 2026-08-14 |
+| [0069](./0069-CodeMode的隔离机制.md) | Code Mode 的隔离定为 **QuickJS-WASM 客体域 + worker 线程**（H2 定案）。否掉原倾向的理由是实测：`node --permission` 挡得住 fs/child_process，**却让 `fetch` 拿到 HTTP 200**——Node 的权限模型没有网络这一档。客体域是 deny-by-default 的结构性隔离，全局面逐名钉死；隔离**仍不是**安全边界 | 🟢 Accepted | 2026-08-15 |
+| [0070](./0070-会话状态副表的有界化.md) | `presentations` / `editProposals` 从只增不删改为有界：前者留最近 256 条并走 ADR-0058 既有的通用卡片降级，后者留 64 条且优先淘汰终态、被淘汰后复用 `edit.apply` 已有的"找不到提案"分支。事件流仍是唯一真相，丢的只是投影里的驻留副本 | 🟢 Accepted | 2026-08-15 |
 
 ## 什么时候要写 ADR
 

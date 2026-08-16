@@ -53,6 +53,12 @@ export interface SessionState {
   readonly untrustedContext: UntrustedContext | undefined;
 
   readonly todos: readonly Todo[];
+  /**
+   * 编辑提案，**有界**：最多 `EDIT_PROPOSAL_LIMIT` 条，超出时优先淘汰终态（ADR-0070）。
+   *
+   * 被淘汰的提案再被 `edit.apply` 引用会命中"找不到当前会话中的编辑提案"，
+   * 与模型编了一个不存在的 id 是同一条路径。事件流里那条 `edit.proposed` 没有丢。
+   */
   readonly editProposals: readonly EditProposalState[];
   /**
    * 每次工具调用落库的**展示事实**（ADR-0058），键是 `callId`。
@@ -63,6 +69,9 @@ export interface SessionState {
    *
    * 只有声明了 `presentationSchema` 且真的 yield 了 `presentation` 的工具才在这里有条目，
    * 所以它的规模跟"有富展示的调用次数"走，不跟总调用次数走。
+   *
+   * **有界**：最多 `PRESENTATION_LIMIT` 条，按插入顺序淘汰最旧（ADR-0070）。
+   * 淘汰之后老卡片退成通用卡片，走的是 ADR-0058 本来就有的降级路径。
    */
   readonly presentations: ReadonlyMap<CallId, unknown>;
   readonly runningCalls: ReadonlyMap<CallId, RunningCall>;
