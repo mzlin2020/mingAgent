@@ -48,7 +48,7 @@ const APP_ROOT = '/opt/xiaoming';
 describe('headless 冒烟：一轮完整对话', () => {
   it('模型流式输出 → 工具调用过闸门 → 落库 → 重开库回放出同一个状态', async () => {
     const dataDir = join(ROOT, 'run1');
-    const platform = nodePlatform({ appRoot: APP_ROOT, dataDir });
+    const platform = nodePlatform({ appPath: APP_ROOT, dataDir });
     const paths = platform.paths();
     const stores = await openStores(paths);
     const layers = builtinLayers(policyEnvFromPaths(paths));
@@ -200,7 +200,7 @@ describe('headless 冒烟：一轮完整对话', () => {
    * 而红线在第 1 步、跨层最先判，与有没有人在旁边看着完全无关。
    */
   it('没有任何人在旁边看着，红线照样拦得住 —— 闸门是规则，不是确认框', async () => {
-    const platform = nodePlatform({ appRoot: APP_ROOT, dataDir: join(ROOT, 'run2') });
+    const platform = nodePlatform({ appPath: APP_ROOT, dataDir: join(ROOT, 'run2') });
     const paths = platform.paths();
     const stores = await openStores(paths);
     const layers = builtinLayers(policyEnvFromPaths(paths));

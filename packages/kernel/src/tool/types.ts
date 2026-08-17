@@ -33,8 +33,13 @@ export interface CodeModeSeam {
    * 它自己给这次调用编号、分配 `callId`、落一条 `tool.code.dispatch`。
    * 被拒绝时返回 `{ ok: false, message }` 而不是抛——那个 message 会成为客体域里的
    * 异常消息，与直接调用时模型看到的拒绝理由一字不差。
+   *
+   * `signal` 是**这一次 `run_code` 的运行域**（地基复审四 C2）：程序被墙钟掐掉、
+   * 被 CPU 预算中断、或者这一轮被用户停掉时它会 abort，在途的子调用必须跟着停。
+   * 没有它的话，一次"已终止"的程序仍然会有一个 `shell.exec` 在宿主上不紧不慢地跑完，
+   * 把文件写完、把事件落在 `tool.end` 之后——而模型早已经被告知那段程序失败了。
    */
-  dispatch(call: CodeBindingCall): Promise<CodeBindingResult>;
+  dispatch(call: CodeBindingCall, signal: AbortLike): Promise<CodeBindingResult>;
   /** 这次能装进客体域的绑定名（可用工具减去 `run_code` 自己，不做嵌套） */
   bindings(): readonly string[];
   /**
@@ -84,8 +89,12 @@ export interface ToolContext {
   readonly codeMode?: CodeModeSeam;
   /**
    * 网关在判权阶段解析出、且已经通过策略判定的主机地址（M1-d，web.fetch 的
-   * IP 级 SSRF 判定）。键是 `hostInputs` 字段里那个 URL 归一后的裸主机名
-   * （不含端口），值是网关那一次 DNS 查询解析出的地址。
+   * IP 级 SSRF 判定）。值是网关那一次 DNS 查询解析出的地址。
+   *
+   * ⚠️ **键必须用 `pinnedHostKey(url)` 算**，两侧都是（地基复审四 B2）。它是
+   * `normalizeHostTarget` 归一后去掉端口的那一段：IPv6 带方括号（`[::1]`）、
+   * FQDN 去掉尾点。工具自己按 `new URL(url).hostname` 算一份，这两类 URL 就会
+   * 永远查不到——表现是一句"内部错误"，而不是"判定不通过"。
    *
    * ⚠️ **工具只能用这张表里的地址建连，绝不能自己再调一次 DNS。** 判定与执行必须
    * 共用同一个已解析的地址——工具自己重新解析一次，等于在"判权那一刻"与"真正建立

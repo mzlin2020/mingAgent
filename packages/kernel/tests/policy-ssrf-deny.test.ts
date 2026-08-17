@@ -14,7 +14,7 @@ import { FALLBACK_ALLOW_RULE_ID, builtinRules, evaluate } from '@xm/kernel';
 
 const ENV: PolicyEnv = {
   home: '/home/ming',
-  appRoot: '/repo',
+  sourceRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
   configDir: '/home/ming/.config/xiaoming',
 };

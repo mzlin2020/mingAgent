@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PersistedEvent } from '@xm/contracts';
 import { newCallId, newSessionId } from '@xm/contracts';
-import type { PolicyEnv } from '@xm/kernel';
+import type { CodeRuntime, PolicyEnv } from '@xm/kernel';
 import { MemoryEventStore, ToolRegistry, builtinLayers, deriveTraces } from '@xm/kernel';
 import { createQuickJsCodeRuntime } from '@xm/code-runtime';
 import { localExecutionWorld, nodeToolGateway } from '@xm/tool-runtime';
@@ -47,7 +47,7 @@ beforeEach(async () => {
   dir = await realNative(await mkdtemp(join(tmpdir(), 'xm-code-')));
   env = {
     home: dir,
-    appRoot: '/repo',
+    sourceRoot: '/repo',
     dataDir: join(dir, '.xiaoming'),
     configDir: join(dir, '.config'),
   };
@@ -79,7 +79,11 @@ const callTurn = (name: string, args: unknown) => {
 /** 跑一个回合，模型只发一次工具调用，然后结束 */
 async function once(
   turns: readonly { readonly chunks: unknown }[],
-  options: { readonly withCodeRuntime?: boolean } = {},
+  options: {
+    readonly withCodeRuntime?: boolean;
+    /** 换一个预算更紧的运行时（超时那条用例要用） */
+    readonly codeRuntime?: CodeRuntime;
+  } = {},
 ): Promise<{ events: PersistedEvent[]; provider: ScriptedProvider }> {
   const store = new MemoryEventStore();
   const sessionId = newSessionId();
@@ -104,7 +108,7 @@ async function once(
       gateway: nodeToolGateway(),
       provider,
       toolPresentation: 'both',
-      ...(options.withCodeRuntime === false ? {} : { codeRuntime: runtime }),
+      ...(options.withCodeRuntime === false ? {} : { codeRuntime: options.codeRuntime ?? runtime }),
     },
     textInput('干活'),
   );
@@ -320,5 +324,49 @@ describe('Code Mode 的边界', () => {
     ]);
     // 子调用有自己的 callId，不是父的
     expect(dispatches(events)[0]?.callId).not.toBe(parentCallId);
+  });
+});
+
+/**
+ * 🔴 程序被终止 ⇒ 在途的子调用也停（地基复审四 C2）。
+ *
+ * `terminate()` 杀得掉客体域，杀不掉宿主这一侧已经派发出去的那个 `shell.exec`。
+ * 修复前：墙钟在 800ms 判这段程序 `timeout`、`run_code` 收尾、模型被告知失败，
+ * 而那条 `sleep 10` **一直跑到自己结束**，副作用照做；它的
+ * `tool.code.dispatch` 落在 `tool.end` 之后（会话往往已经关了，于是那条审计干脆丢了）。
+ *
+ * "模型看到的"与"机器上发生的"就此分叉，且完全静默。
+ */
+describe('🔴 Code Mode 超时：在途子调用必须跟着停', () => {
+  it('墙钟掐掉程序时，sleep 被取消，审计落在 tool.end 之前', async () => {
+    const short = createQuickJsCodeRuntime({ budget: { wallClockMs: 800, cpuMs: 60_000 } });
+    const startedAt = Date.now();
+    try {
+      const { events } = await once(
+        [program(`xm.shell.exec({ argv: ['sleep', '10'] }); return 'unreachable';`), END],
+        { codeRuntime: short },
+      );
+
+      // ① 程序按超时收场
+      expect(toolEnds(events)[0]?.ok).toBe(true); // run_code 自己没崩，是程序失败
+      expect(modelText(events)).toContain('timeout');
+
+      // ② 子调用有审计，且它是**失败**的——被取消，不是"跑完了"
+      const sub = dispatches(events);
+      expect(sub).toHaveLength(1);
+      expect(sub[0]?.name).toBe('shell.exec');
+      expect(sub[0]?.ok).toBe(false);
+
+      // ③ 顺序：审计在 run_code 收尾之前。修复前它落在之后，或者根本落不下来
+      const dispatchAt = events.findIndex((e) => e.type === 'tool.code.dispatch');
+      const endAt = events.findIndex((e) => e.type === 'tool.end');
+      expect(dispatchAt).toBeGreaterThanOrEqual(0);
+      expect(dispatchAt).toBeLessThan(endAt);
+
+      // ④ 真的没等那 10 秒——取消是真取消，不是"等它自己跑完再报失败"
+      expect(Date.now() - startedAt).toBeLessThan(6_000);
+    } finally {
+      await short.dispose();
+    }
   });
 });

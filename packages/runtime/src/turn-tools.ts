@@ -16,6 +16,7 @@ import { isExecutionReceipt, issueExecutionReceipt } from './turn-receipt.js';
 import { isModelVisible, presentationOf, turnAvailabilityContext } from './turn-request.js';
 import type { CallSink } from './turn-sink.js';
 import { modelCallSink } from './turn-sink.js';
+import { parseToolArgs } from './turn-args.js';
 import type { PendingCall, TurnDeps } from './turn-types.js';
 
 /** 模型发起的一次调用。记录面是 `tool.start` / `tool.end` */
@@ -110,9 +111,20 @@ async function prepareCall(
     return undefined;
   }
 
+  /*
+   * ② 入参解码 + 校验。解不开的 JSON **不当成空入参**（地基复审四 C1）：
+   * 那会让入参全可选的工具带着一整套默认值照常执行，而模型与审计都看不出
+   * 参数曾经坏过。理由与形状见 `turn-args.ts`。
+   */
+  const args = parseToolArgs(call.argsJson);
+  if (!args.ok) {
+    await sink.fail(xmError('invalid_input', args.message));
+    return undefined;
+  }
+
   let input: unknown;
   try {
-    input = tool.parseInput(parseArgs(call.argsJson));
+    input = tool.parseInput(args.value);
   } catch (error) {
     await sink.fail(
       error instanceof ToolInputError
@@ -262,15 +274,6 @@ export async function failCall(
 ): Promise<void> {
   await modelCallSink(deps, turnId, call).fail(error);
 }
-
-const parseArgs = (argsJson: string): unknown => {
-  if (argsJson.trim() === '') return {};
-  try {
-    return JSON.parse(argsJson) as unknown;
-  } catch {
-    return {};
-  }
-};
 
 const asInternal = (error: unknown): ReturnType<typeof xmError> =>
   xmError('internal', error instanceof Error ? error.message : String(error));

@@ -3,7 +3,7 @@ import type { CommandSegment } from './command-target.js';
 import { canonicalizeArgv, commandBasename, parseShellSource } from './command-target.js';
 
 /**
- * 一条命令 → 一组「能力 + 目标」主张（ADR-0026）。
+ * 一条命令 → 一组「能力 + 目标」主张（ADR-0026、ADR-0079）。
  *
  * ── 为什么必须有这一层 ──
  *
@@ -25,14 +25,24 @@ import { canonicalizeArgv, commandBasename, parseShellSource } from './command-t
  *   · `curl` 产出 `net.fetch` 主张，于是 `tool.start.capabilities` 里有了它，
  *     `untrustedContext` 自动置上 —— 否则"用 shell 跑 curl"就是整套注入降级的绕过口。
  *
- * ── 这张表**只能加主张，不能减** ──
+ * ── 这张表**只能加主张，不能减**，但"漏一条"的后果变过一次 ──
  *
- * 表里没有的 bin，产出的主张就只有 `shell.exec` 一条，落回 `def.shell-exec` 的 ask。
- * 所以"漏了一条表项"的后果是**退回到今天的行为**，不是放行。这条性质必须一直成立，
- * 它是这张表可以慢慢长、而不必先证明自己完备的全部依据。有一条用例钉着它。
+ * 表里没有的 bin，产出的主张就只有 `shell.exec` 一条。ADR-0026 落地时那条主张会命中
+ * `def.shell-exec` 的 **ask**，所以当时这里写着"漏一条表项的后果是退回到今天的行为，
+ * 不是放行"。**ADR-0039 把 `ask` 连同 `def.shell-exec` 一起删掉之后，这句话的结论翻了**：
+ * 无规则匹配 → 默认放行。于是 `python3 -c "open('…/policy/defaults.ts','w')"`、
+ * `node -e "fs.rmSync(…)"`、`sed -i … defaults.ts` 全部 `allow`，
+ * 27 条自改红线与全部路径红线被整体绕过，且没有还原点（checkpoint 只认
+ * `fs.write`/`fs.delete` 主张）。地基复审四 A3 实测，处置见 ADR-0079。
  *
- * 反过来说，这张表**不是**一道防线：它拦不住一个改了名的 `rm`。真正的防线是
- * 那些按路径写的规则，这张表只是把命令翻译成它们看得懂的话。
+ * 现在的处置：**拆不开、又几乎必然会写文件的那一类 bin 进 `deny` 画像**
+ * （解释器 + 原地编辑/解包/同步），产出一条带目标的 `shell.exec` 主张，
+ * 由 `defaults.ts` 的普通 deny 规则接住，用户可以在配置里逐条放开。
+ *
+ * ⚠️ **它仍然不是一道防线，而且现在必须把这句话说得更重**：`deny` 画像是一张
+ * 黑名单，`cp /usr/bin/python3 ./py && ./py -c …` 就绕过去了。它挡的是"最常见的那条路"，
+ * 不是"所有路"。真正的防线仍然是按路径写的规则 + 这张表把命令翻译成它们看得懂的话；
+ * 命令这条路上真正的隔离要等 docs/09 C2（受限执行器 / OS 沙箱）。
  */
 
 /** 一条主张的目标。`path` 还需要网关去展开与 realpath，`literal` 是终态 */
@@ -153,6 +163,54 @@ const PROFILES: Readonly<Record<string, CommandProfile>> = {
   doas: { kind: 'deny' },
   xargs: { kind: 'deny' },
   dd: { kind: 'deny' },
+
+  /*
+   * ── 解释器（ADR-0079）──
+   *
+   * 它们跑的是**代码**，而代码要动什么只有跑起来才知道：`-c` / `-e` 后面那个字符串、
+   * 或者一个脚本文件里的任意一行，都可以写任意路径。按操作数拆是拆不出来的——
+   * 这与 `xargs` 的"参数来自 stdin"是同一类结构性判不了，只是载体换成了源码。
+   *
+   * 不区分 `-c` / 脚本 / REPL：`python3 build.py` 与 `python3 -c "…"` 在"能动什么"
+   * 这件事上没有区别，只按前者放行等于给出一条一行脚本就能走的路。
+   */
+  python: { kind: 'deny' },
+  python3: { kind: 'deny' },
+  node: { kind: 'deny' },
+  deno: { kind: 'deny' },
+  bun: { kind: 'deny' },
+  perl: { kind: 'deny' },
+  ruby: { kind: 'deny' },
+  php: { kind: 'deny' },
+  /*
+   * 与上面同一类，只是这三个是"另一种 shell / 另一种脚本宿主"：
+   * PowerShell 不是 `sh` 家族，`parseShellSource` 的词法器解不了它；
+   * `osascript` 在 macOS 上还能直接驱动 GUI，比写文件更进一步。
+   */
+  pwsh: { kind: 'deny' },
+  powershell: { kind: 'deny' },
+  osascript: { kind: 'deny' },
+
+  /*
+   * ── 原地编辑 / 解包 / 同步（ADR-0079）──
+   *
+   * 这几个的共同点是：**真正被写的那个东西不在操作数的位置上**，
+   * 或者根本不出现在命令行里。
+   *   · `sed -i` 写的是输入文件自己（`-i` 还能与别的短选项黏在一起，如 `-ni.bak`）
+   *   · `awk` 的 `print > "file"` 藏在程序文本里
+   *   · `tar -x` / `unzip` 写的是**归档里记着的那些路径**，命令行上只看得见归档名
+   *   · `rsync` / `install` / `truncate` 会按自己的语义决定落点
+   *
+   * 按操作数拆出来的主张会是错的，而"错的主张"比"没有主张"更糟——它让审计看起来完整。
+   */
+  sed: { kind: 'deny' },
+  awk: { kind: 'deny' },
+  gawk: { kind: 'deny' },
+  tar: { kind: 'deny' },
+  unzip: { kind: 'deny' },
+  rsync: { kind: 'deny' },
+  install: { kind: 'deny' },
+  truncate: { kind: 'deny' },
 };
 
 /** 被 `deny` 画像点名的 bin。`defaults.ts` 据此生成规则，两边不会分叉 */

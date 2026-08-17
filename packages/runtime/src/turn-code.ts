@@ -1,11 +1,14 @@
 import type { CallId, TurnId, XmError } from '@xm/contracts';
 import type {
+  AbortLike,
   CodeBindingCall,
   CodeBindingResult,
   CodeDispatchRecord,
   CodeModeSeam,
 } from '@xm/kernel';
 import { RUN_CODE } from './code-sdk.js';
+import { linkAbort } from './turn-abort.js';
+import { parseToolArgs } from './turn-args.js';
 import type { PreparedCall, ToolExecutionResult } from './turn-events.js';
 import type { TurnExtensionHost } from './turn-extension-host.js';
 import type { CallSink } from './turn-sink.js';
@@ -50,7 +53,7 @@ export function createCodeModeSeam(input: CodeModeSeamInput): CodeModeSeam | und
      * 于是程序里的随机序列也可预测——快照验收要的正是这个性质（ADR-0066）。
      */
     randomSeed: () => input.parentCall.callId,
-    dispatch: (call) => dispatchCodeCall(input, log, call),
+    dispatch: (call, signal) => dispatchCodeCall(input, log, call, signal),
   };
 }
 
@@ -66,6 +69,8 @@ async function dispatchCodeCall(
   input: CodeModeSeamInput,
   log: CodeDispatchRecord[],
   call: CodeBindingCall,
+  /** 这一次 `run_code` 的运行域。程序被终止时它 abort（C2） */
+  runSignal: AbortLike,
 ): Promise<CodeBindingResult> {
   const index = log.length;
   const sub: PendingCall = {
@@ -74,10 +79,35 @@ async function dispatchCodeCall(
     argsJson: encodeArgs(call.input),
   };
   const sink = codeDispatchSink(input, index, sub);
-  // codeMode 不往下传：程序里再调一次 run_code 拿不到运行时（ADR-0061 §六）
-  await dispatchCallWith(
-    input.deps, input.extensions, input.turnId, sub, sink.sink, undefined, 'program',
-  );
+
+  /*
+   * 已经终止了就**不派发**（地基复审四 C2）。
+   *
+   * 与"派发之后再取消"不是一回事：这条挡的是 abort 与 postMessage 之间那个窗口里
+   * 送进来的调用。那时程序已经被判定失败，再起一个 `shell.exec` 纯属白做。
+   */
+  if (runSignal.aborted) {
+    const message = '这一次 run_code 已经结束（超时或被取消），子调用没有派发。';
+    log.push({ index, name: call.name, ok: false, message });
+    return { ok: false, message, code: 'aborted' };
+  }
+
+  /*
+   * 子调用的取消信号是**两条的并集**：这一轮被停（`deps.signal`）要停，
+   * 这段程序被终止（`runSignal`）也要停。只接前者的话，一个墙钟超时的程序
+   * 派发出去的工具会一直跑到自己结束——十二步链一步不少地跑完，
+   * 而模型早已被告知这段程序失败了。
+   */
+  const linked = linkAbort(input.deps.signal, runSignal);
+  try {
+    // codeMode 不往下传：程序里再调一次 run_code 拿不到运行时（ADR-0061 §六）
+    await dispatchCallWith(
+      { ...input.deps, signal: linked.signal },
+      input.extensions, input.turnId, sub, sink.sink, undefined, 'program',
+    );
+  } finally {
+    linked.dispose();
+  }
   const outcome = sink.outcome();
   log.push({
     index,
@@ -174,21 +204,28 @@ function codeDispatchSink(
   };
 }
 
+/**
+ * 程序给的入参 → `argsJson`。
+ *
+ * 序列化不了时**不退回 `{}`**（同 C1 的理由）：那会让一次"参数根本没送到"的子调用
+ * 变成一次"没带参数"的子调用照常执行。返回一段故意不合法的 JSON，让它在
+ * `prepareCall` 的入参解码那一步就被拒，理由一路传回程序里那个 catch。
+ */
+const UNSERIALIZABLE_ARGS = '<入参无法序列化>';
+
 const encodeArgs = (input: unknown): string => {
   try {
     const json = JSON.stringify(input ?? {});
-    return typeof json === 'string' ? json : '{}';
+    return typeof json === 'string' ? json : UNSERIALIZABLE_ARGS;
   } catch {
-    return '{}';
+    return UNSERIALIZABLE_ARGS;
   }
 };
 
+/** 审计事件里那份入参。走到这里说明网关没接手，记程序原样给的——解不开就记原文 */
 const decodeArgs = (argsJson: string): unknown => {
-  try {
-    return JSON.parse(argsJson) as unknown;
-  } catch {
-    return {};
-  }
+  const parsed = parseToolArgs(argsJson);
+  return parsed.ok ? parsed.value : argsJson;
 };
 
 export type { CallId };

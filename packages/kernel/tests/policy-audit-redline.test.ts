@@ -31,7 +31,7 @@ const judge = (
  */
 
 const DATA = '/home/ming/.local/share/xiaoming';
-const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: DATA, configDir: '/home/ming/.config/xiaoming' };
+const ENV: PolicyEnv = { home: '/home/ming', sourceRoot: '/repo', dataDir: DATA, configDir: '/home/ming/.config/xiaoming' };
 const RULES = builtinRules(ENV);
 
 const req = (capability: Capability, target: string): PermissionRequest => ({
@@ -117,7 +117,7 @@ describe('paths → PolicyEnv 只有一条通路', () => {
   it('policyEnvFromPaths 整份转换，不给"手写一半"留缝', () => {
     const paths: XmPaths = {
       home: '/home/ming',
-      appRoot: '/repo',
+      sourceRoot: '/repo',
       data: DATA,
       config: '/home/ming/.config/xiaoming',
       cache: '/home/ming/.cache/xiaoming',
@@ -139,7 +139,7 @@ describe('paths → PolicyEnv 只有一条通路', () => {
     const winData = 'C:\\Users\\ming\\AppData\\Roaming\\xiaoming';
     const rules = builtinRules({
       home: 'C:/Users/ming',
-      appRoot: 'C:/repo',
+      sourceRoot: 'C:/repo',
       dataDir: winData,
       configDir: 'C:/Users/ming/AppData/Roaming/xiaoming/config',
     });

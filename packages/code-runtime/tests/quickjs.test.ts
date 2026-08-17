@@ -194,6 +194,41 @@ describe('QuickJS 提供者 · 预算', () => {
     }
   });
 
+  /**
+   * 🔴 **宿主侧的活也得停**（地基复审四 C2）。
+   *
+   * `terminate()` 只杀客体域。已经派发出去的绑定调用是宿主上的普通 Promise——
+   * 没有这个信号，一次被墙钟掐掉的程序留下的 `shell.exec` 会一直跑到自己结束，
+   * 而调用方早就拿到 `timeout` 了。
+   */
+  it('🔴 超时/取消时，宿主侧那次绑定调用收到取消信号', async () => {
+    const short = createQuickJsCodeRuntime({ budget: { wallClockMs: 500, cpuMs: 60_000 } });
+    let seen: CodeRuntimeInput['signal'] | undefined;
+    let abortedDuringCall = false;
+    try {
+      const result = await short.run({
+        source: `xm.hang.forever({}); return 'unreachable';`,
+        bindings: ['hang.forever'],
+        call: (_request, signal) => {
+          seen = signal;
+          signal.addEventListener('abort', () => {
+            abortedDuringCall = true;
+          });
+          return new Promise<never>(() => undefined);
+        },
+        nowMs: 1,
+        randomSeed: 's',
+        signal: NEVER_ABORTS,
+      });
+      expect(result.error?.kind).toBe('timeout');
+      expect(seen?.aborted).toBe(true);
+      // 不只是"事后看它是 aborted"——监听器真的被触发过，工具因此能当场收手
+      expect(abortedDuringCall).toBe(true);
+    } finally {
+      await short.dispose();
+    }
+  });
+
   it('这一轮被中断：程序当场停下，分类是 aborted', async () => {
     const listeners: (() => void)[] = [];
     const signal = {

@@ -23,7 +23,7 @@ describe('Checkpoint v2 重启集成', () => {
     await mkdir(join(root, 'workspace'));
     await writeFile(target, Buffer.from([0, 1, 2, 0xfe, 0xff]));
     const dataDir = join(root, 'data');
-    const paths = nodePlatform({ appRoot: root, dataDir }).paths();
+    const paths = nodePlatform({ appPath: root, dataDir }).paths();
     const sessionId = newSessionId();
     const checkpointId = newCheckpointId();
 

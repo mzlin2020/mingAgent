@@ -50,13 +50,24 @@ export interface PlatformCapabilities {
 /**
  * 小明用到的全部目录。**绝对路径，且已规范化**。
  *
- * `home` 与 `appRoot` 直接喂给 `builtinRules()`——两者必须与 `data` 出自同一次解析，
+ * `home` 与 `sourceRoot` 直接喂给 `builtinRules()`——两者必须与 `data` 出自同一次解析，
  * 否则就会重演 ADR-0012 ①：红线里写的是一个坐标系的路径，请求里传的是另一个坐标系的。
  */
 export interface XmPaths {
   readonly home: string;
-  /** 小明自身仓库/安装目录。L4 自我修改的红线全部相对它计算 */
-  readonly appRoot: string;
+  /**
+   * 小明**源码树**的根（有 `packages/` 与 `apps/` 的那一棵），由平台层从入口位置
+   * 向上找标记文件推导。找不到就等于入口目录本身——那时真正起作用的是 `installRoot`。
+   *
+   * 这个字段以前叫 `appRoot`，含义在"仓库"与"安装目录"之间摇摆，于是桌面端喂了
+   * `app.getAppPath()`，整族自改红线锚在一个不存在的目录上（ADR-0078）。
+   */
+  readonly sourceRoot: string;
+  /**
+   * 打包安装目录。**只有打包运行时才有**（开发时跑的是源码树，没有这个概念）。
+   * 整棵树禁写禁删：asar 里没有源码，能改的只有可执行文件、原生模块与 asar 本身。
+   */
+  readonly installRoot?: string;
   /** 事件库、审计库、blob 都在这下面 */
   readonly data: string;
   readonly config: string;

@@ -180,7 +180,7 @@ describe('controlled PTY tools', () => {
   });
 
   it('Windows local provider 能解析裸 node 可执行名', async () => {
-    if (nodePlatform({ appRoot: process.cwd() }).os !== 'windows') return;
+    if (nodePlatform({ appPath: process.cwd() }).os !== 'windows') return;
     const sessionId = newSessionId();
     const real = new PtySessionManager({ os: 'windows', emit: () => undefined });
     const id = real.open({ xmSessionId: sessionId, cwd: process.cwd(), cols: 80, rows: 24 });

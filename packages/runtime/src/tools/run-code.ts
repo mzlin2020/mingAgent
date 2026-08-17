@@ -110,7 +110,8 @@ export const runCodeTool = (): RegisteredTool =>
       const outcome = await seam.runtime.run({
         source: input.source,
         bindings: seam.bindings(),
-        call: (request) => seam.dispatch(request),
+        // 运行域由提供者给：程序被终止时它 abort，在途子调用跟着停（C2）
+        call: (request, runSignal) => seam.dispatch(request, runSignal),
         nowMs: seam.now(),
         randomSeed: seam.randomSeed(),
         signal: ctx.signal,

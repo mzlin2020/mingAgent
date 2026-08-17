@@ -89,7 +89,7 @@ const realNative = promisify(realpathCb.native);
 beforeEach(async () => {
   dir = await realNative(await mkdtemp(join(tmpdir(), 'xm-sensitive-')));
   // 把临时目录当成用户的家目录：敏感路径的规则全部相对它计算
-  ENV = { home: dir, appRoot: '/repo', dataDir: join(dir, '.xiaoming'), configDir: join(dir, '.config') };
+  ENV = { home: dir, sourceRoot: '/repo', dataDir: join(dir, '.xiaoming'), configDir: join(dir, '.config') };
   await mkdir(join(dir, '.ssh'), { recursive: true });
   await writeFile(join(dir, '.ssh', 'id_rsa'), SECRET);
   await writeFile(join(dir, '.env'), `API_KEY=${SECRET}`);

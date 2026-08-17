@@ -12,7 +12,7 @@ import {
   synthesizeInterruption,
 } from '@xm/runtime';
 
-const ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.local/share/xiaoming', configDir: '/home/ming/.config/xiaoming' };
+const ENV = { home: '/home/ming', sourceRoot: '/repo', dataDir: '/home/ming/.local/share/xiaoming', configDir: '/home/ming/.config/xiaoming' };
 
 /**
  * `scanForOrphanedSessions`/`abandonOrphanedTurn`/`resumeTurn` 端到端验证。

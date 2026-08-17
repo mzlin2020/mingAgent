@@ -13,6 +13,8 @@ import {
   analyzeArgv,
   claimsOfCapabilities,
   normalizeHostTarget,
+  pinnedHostKey,
+  splitNormalizedHostPort,
 } from '@xm/kernel';
 import { asInputRecord, canonicalPath, resolveDeepPath } from './gateway-path.js';
 import { resolvePathFields } from './gateway-path-inputs.js';
@@ -316,8 +318,21 @@ async function resolveHost(
       );
     }
 
-    // 判定与执行共用同一个地址——见本函数顶部注释
-    pinnedHosts.set(host, { address: first.address, family: first.family });
+    /*
+     * 判定与执行共用同一个地址——见本函数顶部注释。
+     *
+     * 键走 `pinnedHostKey()`，**因为工具那一侧查表用的是同一个函数**：这里若按自己
+     * 顺手算一份键（比如直接用 `host`），IPv6 字面量与带尾点的 FQDN 就会写进一个
+     * 工具永远查不到的键，表现是一句"内部错误：找不到已解析地址"（地基复审四 B2）。
+     */
+    const key = pinnedHostKey(raw);
+    if (key === undefined) {
+      throw new GatewayError(
+        `工具 ${name} 的入参 "${field}" 归一后算不出 pinnedHosts 的键。`,
+        { tool: name, field },
+      );
+    }
+    pinnedHosts.set(key, { address: first.address, family: first.family });
 
     const scheme = (/^(https?):\/\//i.exec(raw)?.[1] ?? 'http').toLowerCase();
     const ipLiteral = first.family === 6 ? `[${first.address}]` : first.address;
@@ -347,18 +362,6 @@ async function resolveHost(
   }
 
   return { input, claims: dedupeClaims(claims), pinnedHosts };
-}
-
-/** 把 `normalizeHostTarget` 归一后的 `host[:port]` 拆开——IPv6 是 `[::1]:8080` 这种形状 */
-function splitNormalizedHostPort(value: string): { host: string; port: string | undefined } {
-  if (value.startsWith('[')) {
-    const close = value.indexOf(']');
-    const host = value.slice(0, close + 1);
-    const rest = value.slice(close + 1);
-    return { host, port: rest.startsWith(':') ? rest.slice(1) : undefined };
-  }
-  const idx = value.lastIndexOf(':');
-  return idx === -1 ? { host: value, port: undefined } : { host: value.slice(0, idx), port: value.slice(idx + 1) };
 }
 
 async function defaultDnsLookup(

@@ -62,7 +62,7 @@ describe('M2-d 多文件事务真实链路', () => {
     }));
     const env: PolicyEnv = {
       home: root,
-      appRoot: join(root, 'app'),
+      sourceRoot: join(root, 'app'),
       dataDir: join(root, 'data'),
       configDir: join(root, 'config'),
     };

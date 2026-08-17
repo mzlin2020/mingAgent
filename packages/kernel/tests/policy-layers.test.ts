@@ -26,7 +26,7 @@ import {
 
 const ENV: PolicyEnv = {
   home: '/home/ming',
-  appRoot: '/repo',
+  sourceRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
   configDir: '/home/ming/.config/xiaoming',
 };
@@ -146,7 +146,7 @@ describe('🔴 红线不参与层序', () => {
       layers: [layer('builtin', builtinRules(ENV)), layer('user', allowAll)],
     });
     expect(v.effect).toBe('deny');
-    expect(v.ruleId).toMatch(/^red\.self-modify-/);
+    expect(v.ruleId).toMatch(/^red\.self-modify\./);
   });
 
   it('🔴 小明改不了自己的判权逻辑，哪怕用户层写了 allow-all', () => {
@@ -161,7 +161,7 @@ describe('🔴 红线不参与层序', () => {
         layers: [layer('builtin', builtinRules(ENV)), layer('user', allowAll)],
       });
       expect(v.effect, target).toBe('deny');
-      expect(v.ruleId, target).toMatch(/^red\.self-modify-/);
+      expect(v.ruleId, target).toMatch(/^red\.self-modify\./);
     }
   });
 

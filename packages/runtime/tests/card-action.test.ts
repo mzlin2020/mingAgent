@@ -67,7 +67,7 @@ const scenario = async () => {
   tools.register(editApplyTool(access));
   const env: PolicyEnv = {
     home: root,
-    appRoot: join(root, 'app'),
+    sourceRoot: join(root, 'app'),
     dataDir: join(root, 'data'),
     configDir: join(root, 'config'),
   };
@@ -215,7 +215,7 @@ describe('M3-f 卡片动作通道', () => {
     const denyLayers = composeRules({
       env: {
         home: root,
-        appRoot: join(root, 'app'),
+        sourceRoot: join(root, 'app'),
         dataDir: join(root, 'data'),
         configDir: join(root, 'config'),
       },

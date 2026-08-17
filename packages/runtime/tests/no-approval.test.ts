@@ -91,9 +91,9 @@ const END = { chunks: [{ kind: 'stop' as const, reason: 'end_turn' as const }] a
 async function harness() {
   const dir = await realNative(await mkdtemp(join(tmpdir(), 'xm-no-approval-')));
   /*
-   * `appRoot` 必须是一个**真实的绝对路径**，不能写字面量 `/repo`。
+   * `sourceRoot` 必须是一个**真实的绝对路径**，不能写字面量 `/repo`。
    *
-   * 自改红线的 glob 是拿 `appRoot` 拼出来的，而入参要先过网关（绝对化 + realpath.native）。
+   * 自改红线的 glob 是拿 `sourceRoot` 拼出来的，而入参要先过网关（绝对化 + realpath.native）。
    * POSIX 上这两条路碰巧对得上，Windows 上对不上：`\repo\...` 被 `path.resolve` 补成
    * `C:\repo\...`，规范化成 `C:/repo/...`，而规则那边按 `/repo/...` 拼 —— 差一个盘符前缀，
    * 27 条自改红线整体落空，判定放行、工具照跑。windows-latest 上真红过一次
@@ -102,8 +102,8 @@ async function harness() {
    * 放在 `dir` 里面而不是另开一个临时目录：`dir` 同时是会话 cwd，这样"改自己的代码"
    * 与"在工作区里写文件"是同一件事，用例断的就只有红线这一个变量。
    */
-  const appRoot = join(dir, 'repo');
-  const ENV: PolicyEnv = { home: '/home/ming', appRoot, dataDir: join(dir, '.xiaoming'), configDir: join(dir, '.config') };
+  const sourceRoot = join(dir, 'repo');
+  const ENV: PolicyEnv = { home: '/home/ming', sourceRoot, dataDir: join(dir, '.xiaoming'), configDir: join(dir, '.config') };
   const store = new MemoryEventStore();
   const sessionId = newSessionId();
   const runtime = await SessionRuntime.open({ sessionId, store, bus: new EventBus() });
@@ -147,7 +147,7 @@ async function harness() {
     return out;
   };
 
-  return { dir, appRoot, runtime, turn, events };
+  return { dir, sourceRoot, runtime, turn, events };
 }
 
 const typesOf = (events: readonly PersistedEvent[], type: AnyEvent['type']) =>
@@ -174,14 +174,37 @@ describe('🔴 干净上下文：写文件 + 执行命令，零确认框', () =>
 
   it('shell.exec 同样零确认框 —— 这是用户明确要求"连执行命令也放开"的那一条', async () => {
     const h = await harness();
-    await h.turn(
-      '跑一下',
-      callChunks('shell.exec', JSON.stringify({ argv: [process.execPath, '-e', "process.stdout.write('ok')"] })),
-    );
+    /*
+     * 这里曾经跑的是 `process.execPath -e "…"`（node）。ADR-0079 之后解释器进了
+     * deny 画像，所以换一条**同样普通、但拆得开**的命令：`git --version` 三平台都有，
+     * 也不会写任何东西。换命令不是为了绕开新规则，是因为原来那条已经不再是
+     * "一条普通命令"的代表——它恰恰变成了被拦的那一类，那一面由下面单独一条用例盯着。
+     */
+    await h.turn('跑一下', callChunks('shell.exec', JSON.stringify({ argv: ['git', '--version'] })));
 
     const events = await h.events();
     expect(toolOk(events)).toEqual([true]);
     expect(typesOf(events, 'permission.request')).toHaveLength(0);
+  });
+
+  it('🔴 解释器被拦下，且拦下的理由里有出路（ADR-0079）', async () => {
+    const h = await harness();
+    await h.turn(
+      '跑一下',
+      callChunks(
+        'shell.exec',
+        JSON.stringify({ argv: [process.execPath, '-e', "require('fs').writeFileSync('x','')"] }),
+      ),
+    );
+
+    const events = await h.events();
+    expect(toolOk(events)).toEqual([false]);
+    // 与其它 deny 一样：恰好一对审计记录，且 `by` 永远是 policy——没有人可以点"允许"
+    expect(typesOf(events, 'permission.request')).toHaveLength(1);
+    const decision = denials(events)[0];
+    expect(decision?.effect).toBe('deny');
+    expect(decision?.by).toBe('policy');
+    expect(decision?.ruleId).toMatch(/^def\.no-exec-/);
   });
 });
 
@@ -237,7 +260,7 @@ describe('🔴 被污染之后：日常操作照旧零确认框，严重项被�
 describe('🔴 红线在没有任何人看着的情况下仍然拦得住', () => {
   it('改判权逻辑：被自改红线拒绝，且拒绝的是 fs.write 这条普通能力', async () => {
     const h = await harness();
-    const target = join(h.appRoot, 'packages', 'kernel', 'src', 'policy', 'defaults.ts');
+    const target = join(h.sourceRoot, 'packages', 'kernel', 'src', 'policy', 'defaults.ts');
     await h.turn('改一下判权', callChunks('fs.write', JSON.stringify({ path: target, content: 'x' })));
 
     const events = await h.events();
@@ -245,13 +268,13 @@ describe('🔴 红线在没有任何人看着的情况下仍然拦得住', () =>
     const decisions = denials(events);
     expect(decisions).toHaveLength(1);
     expect(decisions[0]?.effect).toBe('deny');
-    expect(decisions[0]?.ruleId).toMatch(/^red\.self-modify-/);
+    expect(decisions[0]?.ruleId).toMatch(/^red\.self-modify\./);
   });
 
   it('改自己的业务代码：放行 —— 这正是"最终能改进自己"要的', async () => {
     const h = await harness();
-    // 同一个 appRoot 底下，只是不在那 9 条受保护路径里 —— 自改红线是按路径划的，不是"整个仓库免谈"
-    const file = join(h.appRoot, 'apps', 'desktop', 'src', 'renderer', 'App.tsx');
+    // 同一棵源码树底下，只是不在受保护清单里 —— 自改红线是按路径划的，不是"整个仓库免谈"
+    const file = join(h.sourceRoot, 'apps', 'desktop', 'src', 'renderer', 'App.tsx');
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, 'old');
     await h.turn('改一下界面', callChunks('fs.write', JSON.stringify({ path: file, content: 'new' })));

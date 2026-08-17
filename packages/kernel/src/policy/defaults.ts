@@ -4,6 +4,7 @@ import { DENIED_COMMAND_BINS } from './command-claims.js';
 import type { XmPaths } from '../port/platform.js';
 import { xmDataLayout } from '../port/platform.js';
 import type { RuleLayer } from './engine.js';
+import { selfModifyRedLines } from './self-code.js';
 import { normalizedOrThrow } from './target.js';
 
 /**
@@ -20,8 +21,24 @@ import { normalizedOrThrow } from './target.js';
 export interface PolicyEnv {
   /** 用户主目录的绝对路径，如 `/home/ming`、`C:\Users\ming` */
   readonly home: string;
-  /** 小明自身仓库/安装目录的绝对路径。L4 自我修改的红线全部相对它计算 */
-  readonly appRoot: string;
+  /**
+   * 小明**源码树**的根：有 `packages/` 与 `apps/` 的那一棵。
+   *
+   * 这个字段以前叫 `appRoot`，注释写的是"仓库/安装目录"——两义。桌面端于是喂了
+   * `app.getAppPath()`（入口所在目录：开发时 `apps/desktop`、打包后 `app.asar`），
+   * 整族自改红线因此锚在一个不存在的目录上，而用例喂的是合成的 `/repo` 所以全绿
+   * （地基复审四 A1，ADR-0078）。**一个字段两种含义，就是这么变成一条静默失效的红线的**，
+   * 所以现在三种锚点各有各的名字：这里只放源码树，安装目录是 `installRoot`，
+   * 会话工作区里那份检出是 `extraSourceRoots`。
+   */
+  readonly sourceRoot: string;
+  /**
+   * 额外的源码树。典型来源是**会话的工作目录恰好是另一份小明的检出**——
+   * 用打包版小明去改一份 clone，正是"改进自己"最真实的形态。见 `SelfCodeRoots`。
+   */
+  readonly extraSourceRoots?: readonly string[];
+  /** 打包安装目录（只有 `app.isPackaged` 时才有）。整棵树禁写禁删，见 `SelfCodeRoots`。 */
+  readonly installRoot?: string;
   /**
    * 数据目录（事件库 / 审计库 / blob 都在这下面）。
    *
@@ -30,7 +47,7 @@ export interface PolicyEnv {
    * 都没有**——因为 `PolicyEnv` 拿不到这个目录，写不出那条规则。文档里的一句承诺，
    * 就这样安静地当了一个里程碑的摆设（ADR-0014）。
    *
-   * 必须与 `home`/`appRoot` 出自同一次平台解析（`PlatformPort.paths()`），
+   * 必须与 `home`/`sourceRoot` 出自同一次平台解析（`PlatformPort.paths()`），
    * 否则又是 ADR-0012 ①：规则里的路径和请求里的路径来自两个坐标系。
    */
   readonly dataDir: string;
@@ -57,7 +74,6 @@ export interface PolicyEnv {
  */
 export const redLineRules = (env: PolicyEnv): readonly PolicyRule[] => {
   const home = normalizedOrThrow(env.home);
-  const appRoot = normalizedOrThrow(env.appRoot);
 
   return [
   {
@@ -133,8 +149,15 @@ export const redLineRules = (env: PolicyEnv): readonly PolicyRule[] => {
    *     （ADR-0011 ⑨ 已经演示过一次：includeOnly 一行就让两条核心规则失效且输出全绿）
    *
    * 红线要护的从来不是某个文件，是**"改了它就没人拦得住后续改动"的那一组文件**。
+   *
+   * 清单与锚点都搬去了 `self-code.ts`（ADR-0078）：清单会随重构腐烂、锚点会指错目录，
+   * 两者各需要一道自己的闸门，混在这个文件里谁也盯不住谁。
   */
-  ...selfModifyRedLines(appRoot),
+  ...selfModifyRedLines({
+    sourceRoot: env.sourceRoot,
+    ...(env.extraSourceRoots === undefined ? {} : { extraSourceRoots: env.extraSourceRoots }),
+    ...(env.installRoot === undefined ? {} : { installRoot: env.installRoot }),
+  }),
   ...privateRuntimeDataRedLines(env.dataDir, env.configDir),
   ...auditLogRedLines(env.dataDir),
   ];
@@ -205,69 +228,6 @@ const auditLogRedLines = (dataDir: string): PolicyRule[] => {
     },
   ];
 };
-
-/** 修改即等于卸掉后续一切防护的文件。改动只能由人手工进行。 */
-const SELF_MODIFY_PROTECTED: readonly { readonly glob: string; readonly why: string }[] = [
-  { glob: 'packages/kernel/src/policy/**', why: '权限判定逻辑与红线清单自身' },
-  { glob: 'packages/kernel/src/tool/registry.ts', why: '工具注册、可用性与空能力声明闸门' },
-  { glob: 'packages/kernel/src/tool/types.ts', why: '工具能力与执行上下文契约' },
-  { glob: 'packages/contracts/src/permission/**', why: '能力闭集与策略契约——删一个词条即让相关规则全部失效' },
-  { glob: 'packages/contracts/src/config/secret.ts', why: '密钥引用契约' },
-  { glob: 'packages/contracts/src/base/redact.ts', why: '日志与审计的统一脱敏出口' },
-  { glob: 'packages/runtime/src/turn.ts', why: '工具判权、还原点与执行的统一入口' },
-  { glob: 'packages/tools-core/src/gateway.ts', why: '路径、命令和网络目标的能力网关' },
-  { glob: 'packages/tools-core/src/checkpoint.ts', why: '破坏性操作的写前还原点' },
-  { glob: 'packages/platform/src/config.ts', why: '用户配置加载与权限规则分层' },
-  { glob: 'packages/platform/src/secret-file.ts', why: '密钥加密文件后端' },
-  { glob: 'apps/desktop/src/main/services.ts', why: '真实工具、策略和存储的生产装配入口' },
-  { glob: 'apps/desktop/src/main/secrets.ts', why: '系统钥匙串密钥后端' },
-  { glob: 'scripts/**', why: '工具链与密钥扫描等提交前护栏' },
-  { glob: '.dependency-cruiser.cjs', why: '架构依赖护栏' },
-  { glob: 'eslint.config.js', why: '静态检查护栏' },
-  { glob: '.githooks/**', why: '提交前钩子' },
-  { glob: '.github/workflows/**', why: 'CI 流水线——改了它，上面所有护栏都可以不跑' },
-];
-
-/**
- * 每条受保护路径要挂的能力。
- *
- * ⚠️ **只挂 `self.modify` 是不够的，而且不够的方式很具体。** M0-b 复审实测：
- *
- * ```
- * self.modify 改 <appRoot>/packages/kernel/src/policy/defaults.ts → DENY [red.self-modify-00]
- * fs.write    改同一个文件                                        → ASK  [def.fs-write]
- * ```
- *
- * 能力是**工具自己声明**的。一个通用写文件工具声明的是 `fs.write`，它压根不知道
- * 自己正在改的是判定逻辑——于是九条自改红线被一个最普通的工具整体绕过，
- * 降级成一个用户会顺手点掉的确认框。
- *
- * 同一份代码里的审计库红线写对了（挂在 `fs.write` / `fs.delete` 上），
- * 自改红线写错了。这不是疏忽的两种，是同一个教训只学了一半：
- * **红线要按"目标是什么"来写，不能按"调用方自称在做什么"来写。**
- */
-const SELF_MODIFY_GUARDED_CAPABILITIES = [
-  { capability: 'self.modify' as const, suffix: '', verb: '修改' },
-  { capability: 'fs.write' as const, suffix: '-fs-write', verb: '写入' },
-  { capability: 'fs.delete' as const, suffix: '-fs-delete', verb: '删除' },
-];
-
-const selfModifyRedLines = (appRoot: string): PolicyRule[] =>
-  SELF_MODIFY_PROTECTED.flatMap((p, i) => {
-    const target = `${appRoot === '/' ? '' : appRoot}/${p.glob}`;
-    const n = String(i).padStart(2, '0');
-
-    return SELF_MODIFY_GUARDED_CAPABILITIES.map(({ capability, suffix, verb }) => ({
-      id: `red.self-modify-${n}${suffix}`,
-      effect: 'deny' as const,
-      capability,
-      match: { target },
-      reason:
-        `${verb}${p.why}。这类文件改掉之后，后续改动就没有任何东西拦得住了` +
-        `（docs/07 §5）。只能由人手工进行。`,
-      immutable: true,
-    }));
-  });
 
 /**
  * 不可信上下文下的拒绝规则（ADR-0039，取代 ADR-0035 的注入降级）。
@@ -607,12 +567,23 @@ export const ssrfDenyRules = (): readonly PolicyRule[] =>
 
 // ── 判不了的命令 ────────────────────────────────────────────────
 
+/** 解释器们共用的一句理由：拆不开的不是参数，是它要跑的那段代码 */
+const INTERPRETER_REASON =
+  '它跑的是代码，而代码要动哪个文件只有跑起来才知道——' +
+  '按操作数拆不出主张，路径规则（含红线）因此一条也匹配不上';
+
 /**
- * 几个**结构性地判不了**的 bin（ADR-0026 决策三）。
+ * **结构性地判不了**的 bin（ADR-0026 决策三，ADR-0079 扩表）。
  *
  * 名单本身在 `command-claims.ts`（那里是唯一知道"哪些 bin 有画像"的地方），
  * 这里只把它翻译成规则——两处各写一份名单必然分叉，而分叉的表现是
  * 某个 bin 悄悄没人管了。
+ *
+ * ⚠️ ADR-0079 之后这份名单**同时是一道安全防线的一半**（另一半是它挡不住的那些）：
+ * ADR-0039 删掉 `ask` 之后，画像表外的 bin 从"问一次"变成了"直接放行"，
+ * 于是 `python3 -c` 一行就能绕过全部路径红线。解释器与原地编辑类因此进了这份名单。
+ * 每加一条，理由都要写在 `COMMAND_DENY_REASON` 里——deny 的理由是用户唯一
+ * 能据以判断"要不要放开它"的东西。
  *
  * 为什么是规则而不是在分析期直接抛错：抛错没有出口。用户完全可能就是想
  * `sudo apt install` 一下，那时他应该能在自己的配置里放开这一条
@@ -627,6 +598,29 @@ const COMMAND_DENY_REASON: Readonly<Record<string, string>> = {
   doas: '提权之后，本进程加的所有约束都不再作数',
   xargs: '它的参数来自标准输入，执行之前谁也不知道它会拿到什么',
   dd: '它的 if= / of= 是一套自成体系的参数语法，按普通操作数解出来的目标是错的',
+
+  // 解释器：跑的是代码，要动哪个文件只有跑起来才知道（ADR-0079）
+  python: INTERPRETER_REASON,
+  python3: INTERPRETER_REASON,
+  node: INTERPRETER_REASON,
+  deno: INTERPRETER_REASON,
+  bun: INTERPRETER_REASON,
+  perl: INTERPRETER_REASON,
+  ruby: INTERPRETER_REASON,
+  php: INTERPRETER_REASON,
+  pwsh: INTERPRETER_REASON,
+  powershell: INTERPRETER_REASON,
+  osascript: '它跑的是 AppleScript/JXA，能写文件，还能直接驱动别的应用的界面',
+
+  // 原地编辑 / 解包 / 同步：真正被写的那个东西不在操作数的位置上（ADR-0079）
+  sed: '它的 -i 写的是输入文件自己，而按操作数解出来的主张会说成"只是读了它"',
+  awk: '它的 print > "file" 藏在程序文本里，命令行上看不出会写哪个文件',
+  gawk: '它的 print > "file" 藏在程序文本里，命令行上看不出会写哪个文件',
+  tar: '解包写出的是归档里记着的那些路径，命令行上只看得见归档名',
+  unzip: '解包写出的是归档里记着的那些路径，命令行上只看得见归档名',
+  rsync: '它按自己的语义决定落点（尾斜杠、--delete、远端），按操作数解出来的目标是错的',
+  install: '它会按自己的语义改写目标路径与权限位',
+  truncate: '它按 -s 改写文件长度，"读"和"清空"在命令行上长得一样',
 };
 
 export const commandDenyRules = (): readonly PolicyRule[] =>
@@ -755,9 +749,22 @@ export const builtinLayers = (env: PolicyEnv): readonly RuleLayer[] => [
  * 只能整份交过来，不能这里传解析出来的 data、那里手写一个 home。
  * ADR-0012 ① 就是手写那一半造成的。
  */
-export const policyEnvFromPaths = (paths: XmPaths): PolicyEnv => ({
+/**
+ * 平台解析出的目录 → 红线所需的环境事实。
+ *
+ * `extraSourceRoots` 由调用方按**会话**给：工作目录是不是一份小明的检出，
+ * 只有开会话时才知道，而平台层的 `paths()` 是全应用一份的（ADR-0078）。
+ */
+export const policyEnvFromPaths = (
+  paths: XmPaths,
+  extraSourceRoots?: readonly string[],
+): PolicyEnv => ({
   home: paths.home,
-  appRoot: paths.appRoot,
+  sourceRoot: paths.sourceRoot,
+  ...(paths.installRoot === undefined ? {} : { installRoot: paths.installRoot }),
+  ...(extraSourceRoots === undefined || extraSourceRoots.length === 0
+    ? {}
+    : { extraSourceRoots }),
   dataDir: paths.data,
   configDir: paths.config,
 });

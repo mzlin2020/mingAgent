@@ -34,7 +34,7 @@ import { localExecutionWorld } from '@xm/tool-runtime';
 
 const env = (root: string): PolicyEnv => ({
   home: root,
-  appRoot: join(root, 'app'),
+  sourceRoot: join(root, 'app'),
   dataDir: join(root, 'data'),
   configDir: join(root, 'config'),
 });

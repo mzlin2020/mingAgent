@@ -20,7 +20,7 @@ import { builtinLayers, composeRules, evaluate, sensitiveReadRules } from '@xm/k
  */
 
 const HOME = '/home/ming';
-const ENV: PolicyEnv = { home: HOME, appRoot: '/repo', dataDir: '/home/ming/.xiaoming', configDir: '/home/ming/.config/xiaoming' };
+const ENV: PolicyEnv = { home: HOME, sourceRoot: '/repo', dataDir: '/home/ming/.xiaoming', configDir: '/home/ming/.config/xiaoming' };
 
 const ask = (target: string): PermissionRequest => ({
   requestId: newRequestId(),
@@ -160,7 +160,7 @@ describe('规则本身的形状', () => {
   });
 
   it('Windows 家目录下同样成立', () => {
-    const win: PolicyEnv = { home: 'C:\\Users\\ming', appRoot: 'C:\\repo', dataDir: 'C:\\data', configDir: 'C:\\config' };
+    const win: PolicyEnv = { home: 'C:\\Users\\ming', sourceRoot: 'C:\\repo', dataDir: 'C:\\data', configDir: 'C:\\config' };
     expect(
       evaluate({
         request: ask('C:/Users/ming/.ssh/id_rsa'),

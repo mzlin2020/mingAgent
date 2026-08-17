@@ -38,7 +38,7 @@ describe('M2-f Git 生产分发链路', () => {
     tools.register(gitCommitTool({ os: osFamily(), tempDir: join(tmpdir(), 'xm-git-tools-test') }));
     const env: PolicyEnv = {
       home: root,
-      appRoot: join(root, 'app'),
+      sourceRoot: join(root, 'app'),
       dataDir: join(root, 'data'),
       configDir: join(root, 'config'),
     };

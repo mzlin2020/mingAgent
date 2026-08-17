@@ -89,7 +89,7 @@ const fail = (msg) => {
 
 try {
   // 红线演练使用隔离的临时主目录，避免 smoke 依赖或触碰运行者的真实主目录。
-  const platform = nodePlatform({ appRoot: APP_ROOT, dataDir, home: workspace });
+  const platform = nodePlatform({ appPath: APP_ROOT, dataDir, home: workspace });
   const paths = platform.paths();
   const stores = await openStores(paths);
   const layers = builtinLayers(policyEnvFromPaths(paths));
@@ -833,7 +833,13 @@ try {
     dodRequests.push(requestCount(before));
   }
 
-  // 一条正常命令必须还能跑起来——全拦下不叫防住了，叫不能用了
+  /*
+   * 一条正常命令必须还能跑起来——全拦下不叫防住了，叫不能用了。
+   *
+   * 用 `git --version`：三平台都在、拆得开、不写任何东西。这里曾经跑
+   * `process.execPath -e "…"`，而 ADR-0079 之后解释器进了 deny 画像——
+   * 它已经不能代表"一条普通命令"，那一面由 kernel 与 runtime 的用例单独盯着。
+   */
   let shellRan = false;
   await runTurn(
     {
@@ -843,9 +849,7 @@ try {
         turns: [
           {
             chunks: [
-              ...toolCall(newCallId(), 'shell.exec', {
-                argv: [process.execPath, '-e', 'process.stdout.write("hello-xm")'],
-              }),
+              ...toolCall(newCallId(), 'shell.exec', { argv: ['git', '--version'] }),
               { kind: 'stop', reason: 'tool_use' },
             ],
           },
@@ -861,7 +865,7 @@ try {
     textInput('打个招呼'),
   );
   shellRan = seen.some(
-    (e) => e.type === 'tool.end' && e.payload.ok && JSON.stringify(e.payload.forModel).includes('hello-xm'),
+    (e) => e.type === 'tool.end' && e.payload.ok && JSON.stringify(e.payload.forModel).includes('git version'),
   );
 
   // ── 第五段：多模态最小反向演练 ──────────────────────────────

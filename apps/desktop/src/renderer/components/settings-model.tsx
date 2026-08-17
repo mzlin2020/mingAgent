@@ -155,7 +155,7 @@ function ProviderCard({
       <div className="grid gap-3 md:grid-cols-2">
         <Field
           label="ID"
-          hint={hasApiKey ? '已配置密钥后不能改 ID。要换名字请先移除再添加。' : undefined}
+          {...(hasApiKey ? { hint: '已配置密钥后不能改 ID。要换名字请先移除再添加。' } : {})}
         >
           <TextField
             value={provider.id}
@@ -165,7 +165,9 @@ function ProviderCard({
         </Field>
         <Field
           label="类型"
-          hint={isImplementedProviderKind(provider.kind) ? undefined : '这个类型尚未接入，保存后下一回合会回落到本地回显。'}
+          {...(isImplementedProviderKind(provider.kind)
+            ? {}
+            : { hint: '这个类型尚未接入，保存后下一回合会回落到本地回显。' })}
         >
           <select
             className="h-9 w-full rounded-control border border-border bg-surface px-2 text-body outline-none focus:border-accent"
@@ -255,9 +257,14 @@ function PriceEditor({
                 next[key === id ? nextId : key] = value;
               }
               setTexts((current) => {
-                if (current[id] === undefined) return current;
-                const { [id]: moved, ...rest } = current;
-                return { ...rest, [nextId]: moved };
+                const moved = current[id];
+                if (moved === undefined) return current;
+                const nextTexts: Record<string, { input: string; output: string }> = {};
+                for (const [key, value] of Object.entries(current)) {
+                  if (key !== id) nextTexts[key] = value;
+                }
+                nextTexts[nextId] = moved;
+                return nextTexts;
               });
               onChange(next);
             }}
@@ -279,8 +286,11 @@ function PriceEditor({
                 if (key !== id) next[key] = value;
               }
               setTexts((current) => {
-                const { [id]: _removed, ...rest } = current;
-                return rest;
+                const nextTexts: Record<string, { input: string; output: string }> = {};
+                for (const [key, value] of Object.entries(current)) {
+                  if (key !== id) nextTexts[key] = value;
+                }
+                return nextTexts;
               });
               onChange(next);
             }}

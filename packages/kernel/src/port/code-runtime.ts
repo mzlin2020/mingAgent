@@ -65,8 +65,16 @@ export interface CodeRuntimeInput {
   readonly source: string;
   /** 要装进客体域的绑定名，形如 `fs.read`。点号分段会被装成嵌套对象 */
   readonly bindings: readonly string[];
-  /** 绑定被调用时回到宿主。提供者负责把它折叠成客体域里的**同步**签名 */
-  call(request: CodeBindingCall): Promise<CodeBindingResult>;
+  /**
+   * 绑定被调用时回到宿主。提供者负责把它折叠成客体域里的**同步**签名。
+   *
+   * `signal` 由**提供者**给，作用域是这一次 `run()`：它在程序结束、超预算、被取消时
+   * 一律 abort（地基复审四 C2）。宿主侧的实现必须把它接到这次子调用的
+   * `ToolContext.signal` 上——否则一段被墙钟掐掉的程序，它派发出去的
+   * `shell.exec` 仍然会在宿主上跑完，副作用照做、事件照落，而模型已经收到
+   * "程序超时终止"了。**隔离层能停的只有客体域，宿主这边的活得靠这个信号停。**
+   */
+  call(request: CodeBindingCall, signal: AbortLike): Promise<CodeBindingResult>;
   /**
    * 客体域里 `Date.now()` 的取值（ADR-0069 §三.1）。
    *

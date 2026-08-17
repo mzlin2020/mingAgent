@@ -21,7 +21,7 @@ beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'xm-config-'));
   paths = {
     home: dir,
-    appRoot: dir,
+    sourceRoot: dir,
     data: join(dir, 'data'),
     config: join(dir, 'config'),
     cache: join(dir, 'cache'),

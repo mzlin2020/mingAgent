@@ -39,7 +39,7 @@ const judge = (
 
 const ENV: PolicyEnv = {
   home: '/home/ming',
-  appRoot: '/repo',
+  sourceRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
   configDir: '/home/ming/.config/xiaoming',
 };

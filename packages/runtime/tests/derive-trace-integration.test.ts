@@ -33,7 +33,7 @@ import {
  */
 describe('deriveTraces 反映一次真实 runTurn 的执行路径', () => {
   it('工具调用次数、成本、结束原因，从落库事件派生出的 trace 与实际运行完全吻合', async () => {
-    const platform = nodePlatform({ appRoot: '/opt/xiaoming' });
+    const platform = nodePlatform({ appPath: '/opt/xiaoming' });
     const paths = platform.paths();
     const layers = builtinLayers(policyEnvFromPaths(paths));
 

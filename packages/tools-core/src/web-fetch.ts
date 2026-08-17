@@ -2,7 +2,7 @@ import { Agent, fetch as undiciFetch } from 'undici';
 import { z } from 'zod';
 import type { ToolProgress } from '@xm/contracts';
 import type { RegisteredTool } from '@xm/kernel';
-import { defineTool } from '@xm/kernel';
+import { defineTool, pinnedHostKey } from '@xm/kernel';
 
 export const WEB_FETCH = 'web.fetch';
 
@@ -100,7 +100,13 @@ export const webFetchTool = (): RegisteredTool =>
         return;
       }
 
-      const hostname = extractHostname(input.url);
+      /*
+       * 查表的键走内核的 `pinnedHostKey()`——**网关写表用的是同一个函数**。
+       * 这里曾经自己算：`new URL(url).hostname` 再剥掉方括号，于是 IPv6 字面量
+       * （网关写 `[::1]`、这里查 `::1`）与带尾点的 FQDN（`example.com.`）永远查不到，
+       * 一律撞下面那句"内部错误"（地基复审四 B2）。
+       */
+      const hostname = pinnedHostKey(input.url);
       const pinned = hostname === undefined ? undefined : ctx.pinnedHosts?.get(hostname);
       if (pinned === undefined) {
         /*
@@ -207,16 +213,6 @@ export const webFetchTool = (): RegisteredTool =>
       }
     },
   });
-
-/** 从一个已经能通过 `normalizeHostTarget` 的 URL 里取出裸主机名（不含端口、不含方括号） */
-function extractHostname(url: string): string | undefined {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname.replace(/^\[|\]$/g, '');
-  } catch {
-    return undefined;
-  }
-}
 
 /** 剔除调用方不该控制的请求头，其余原样透传 */
 function sanitizeHeaders(headers: Record<string, string> | undefined): Record<string, string> {

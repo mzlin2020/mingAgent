@@ -110,7 +110,7 @@ describe('🔴 符号链接：判定必须落在链接指向的地方', () => {
   });
 
   it('🔴 没有网关时，同一条规则拦不住它 —— 这就是网关存在的全部理由', () => {
-    const ENV: PolicyEnv = { home: '/home/ming', appRoot: '/repo', dataDir: '/tmp/xm-data', configDir: '/tmp/xm-config' };
+    const ENV: PolicyEnv = { home: '/home/ming', sourceRoot: '/repo', dataDir: '/tmp/xm-data', configDir: '/tmp/xm-config' };
     const deny: PolicyRuleSet = [
       {
         id: 'user.no-secrets',

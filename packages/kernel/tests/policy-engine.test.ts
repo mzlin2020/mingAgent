@@ -42,7 +42,7 @@ const judge = (
  */
 const ENV: PolicyEnv = {
   home: '/home/ming',
-  appRoot: '/repo',
+  sourceRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
   configDir: '/home/ming/.config/xiaoming',
 };
@@ -368,7 +368,7 @@ describe('红线清单', () => {
      * 时，一个声明 `fs.write` 的普通写文件工具就能整体绕过它。
      * 代理一旦不成立，这条测试就会在一次**正确**的加固上报红。
      */
-    const nonSelfModify = RED_LINE_RULES.filter((r) => !r.id.startsWith('red.self-modify-'));
+    const nonSelfModify = RED_LINE_RULES.filter((r) => !r.id.startsWith('red.self-modify.'));
     // M1.5 新增数据/配置两类根目录 × read/write/delete，共六条不可覆盖边界。
     expect(nonSelfModify.length).toBeLessThanOrEqual(14);
   });
@@ -379,7 +379,7 @@ describe('红线清单', () => {
       rules: BUILTIN_RULES,
     });
     expect(v.effect).toBe('deny');
-    expect(v.ruleId).toMatch(/^red\.self-modify-/);
+    expect(v.ruleId).toMatch(/^red\.self-modify\./);
   });
 });
 

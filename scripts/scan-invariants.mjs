@@ -33,7 +33,7 @@ const dataDir = argOf('data');
 const sessionId = argOf('session');
 
 const platform = nodePlatform({
-  appRoot: fileURLToPath(new URL('..', import.meta.url)),
+  appPath: fileURLToPath(new URL('..', import.meta.url)),
   ...(dataDir === undefined ? {} : { dataDir }),
 });
 const stores = await openStores(platform.paths());

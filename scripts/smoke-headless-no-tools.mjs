@@ -16,7 +16,7 @@ if (profile.rows.some((row) => row.id === 'tools.builtin')) {
   throw new Error('无工具 profile 仍包含 tools.builtin');
 }
 
-const platform = nodePlatform({ appRoot: process.cwd(), dataDir: process.cwd() });
+const platform = nodePlatform({ appPath: process.cwd(), dataDir: process.cwd() });
 const paths = platform.paths();
 const runtime = await SessionRuntime.open({
   sessionId: newSessionId(),

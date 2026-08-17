@@ -97,7 +97,7 @@ beforeEach(async () => {
   await writeFile(join(dir, 'ok.txt'), 'fine\n');
   ENV = {
     home,
-    appRoot: join(dir, 'repo'),
+    sourceRoot: join(dir, 'repo'),
     dataDir: join(home, '.xiaoming'),
     configDir: join(home, '.config', 'xiaoming'),
   };
@@ -153,12 +153,12 @@ describe('🔴 已有的规则自动覆盖命令', () => {
   it.each([
     ['runtime data', (root: string) => ['cat', join(root, '.xiaoming', 'events.db')]],
     ['user config and secrets', (root: string) => ['cat', join(root, '.config', 'xiaoming', 'secrets.json')]],
-    ['security source', () => ['rm', join(ENV.appRoot, 'packages', 'runtime', 'src', 'turn.ts')]],
+    ['security source', () => ['rm', join(ENV.sourceRoot, 'packages', 'runtime', 'src', 'turn.ts')]],
   ])('analyzable commands cannot touch protected %s', async (_label, argvFor) => {
     const { exec } = await harness();
     const all = await exec(argvFor(home));
     expect(ended(all)[0]?.ok).toBe(false);
-    expect(decisions(all)[0]?.ruleId).toMatch(/^red\.(private-|self-modify-)/);
+    expect(decisions(all)[0]?.ruleId).toMatch(/^red\.(private-|self-modify\.)/);
     expect(started(all)).toHaveLength(0);
   });
 
@@ -248,10 +248,13 @@ describe('放行的路径也要真的通', () => {
     /*
      * 不能用 `echo`：它是 shell 内建，不是 PATH 上的可执行文件。
      * `shell.exec` 的契约是 `spawn(..., { shell: false })`（ADR-0026），
-     * Windows 上 `spawn('echo')` 直接 ENOENT——这不是实现 bug，是测试选错了命令。
-     * `process.execPath` 在任何跑 vitest 的环境里都在，三平台都能真的 spawn 起来。
+     * `spawn('echo')` 在 Windows 上直接 ENOENT——这不是实现 bug，是测试选错了命令。
+     *
+     * 这里曾经用 `process.execPath`（node），ADR-0079 之后它进了 deny 画像，
+     * 已经不能代表"一条普通命令"。`printf` 与本文件其余用例（`rm`/`cat`）同一档：
+     * 类 Unix 上一定在 PATH 里，拆得开，也不写任何东西。
      */
-    const all = await exec([process.execPath, '-e', "process.stdout.write('hello-xm')"]);
+    const all = await exec(['printf', 'hello-xm']);
     expect(ended(all)[0]?.ok).toBe(true);
     expect(JSON.stringify(ended(all)[0]?.forModel)).toContain('hello-xm');
     // 一条 permission 事件都没有 —— 放行不留痕，与 `fs.read` 这类一直如此的能力一致

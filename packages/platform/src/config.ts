@@ -32,7 +32,14 @@ import { tightenOnly } from '@xm/kernel';
 
 export interface LoadConfigOptions {
   readonly paths: XmPaths;
-  /** 项目级配置的查找起点。省略则不加载项目层 */
+  /**
+   * 项目级配置的查找起点。省略则不加载项目层。
+   *
+   * ⚠️ **桌面装配不传它**：项目层的锚点是会话的工作目录，而这个函数在启动时只跑一次，
+   * 那时一个会话都还没有。权限规则那一半改走 `loadProjectPermissionRules(cwd)`，
+   * 按会话加载（地基复审四 B1）。留着这个参数是给一次性场景用的
+   * （CLI 在一个确定的目录里跑、测试）。
+   */
   readonly cwd?: string;
 }
 
@@ -160,6 +167,40 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
     sources,
     problems,
   };
+}
+
+export interface LoadedProjectRules {
+  /** 找过的那个文件。没有也返回，供 UI 说"从哪找的" */
+  readonly file: string;
+  readonly loaded: boolean;
+  /** 已过 `tightenOnly()` —— 被丢掉的条目在 `problems` 里有对应记录 */
+  readonly rules: PolicyRuleSetType;
+  readonly problems: readonly ConfigProblem[];
+}
+
+/**
+ * 只加载**项目层的权限规则**（地基复审四 B1）。
+ *
+ * ── 为什么它必须与 `loadConfig()` 分开 ──
+ *
+ * 项目层的锚点是**会话的工作目录**，而工作目录是每个会话各自的（`session.created`
+ * 那一刻定下来）。`loadConfig()` 在应用启动时只跑一次，那时还没有任何会话，
+ * 于是它拿不到正确的 `cwd`——桌面装配过去传的是 `app.getPath('home')`，
+ * 结果是"项目层"恒等于家目录下那个多半不存在的 `~/.xiaoming/config.json`，
+ * 而用户真正打开的那个仓库里的 `.xiaoming/config.json` **从未被读过一次**。
+ *
+ * 与 ADR-0078 的 A1 是同一个形状：规则的机制是对的，锚点指着别的地方。
+ *
+ * 只取权限规则、不取整份配置，是因为剩下那些字段（模型、Provider、价格、
+ * 禁用工具…）在小明里是**进程级**的，没有"按会话换一份"的语义；
+ * 而权限规则本来就分层，且项目层只能收紧——那正是它该按工作区生效的理由。
+ */
+export async function loadProjectPermissionRules(cwd: string): Promise<LoadedProjectRules> {
+  const file = join(cwd, '.xiaoming', 'config.json');
+  const problems: ConfigProblem[] = [];
+  const layer = await readLayer(file, problems);
+  const rules = projectRules(rulesOf(layer, file, problems), file, problems);
+  return { file, loaded: layer !== undefined, rules, problems };
 }
 
 export interface PersistProviderConfigOptions {

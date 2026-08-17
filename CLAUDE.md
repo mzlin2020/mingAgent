@@ -28,6 +28,13 @@ M3「微内核化重构」是 2026-08-14 新增的里程碑，原 M3–M6 顺延
 `tools.presentation` 与 `permission.rules`。占用环是发送键旁 14px 投影，不进事件流。
 规划见 `docs/12-桌面端界面与设置.md`
 与 `docs/M3.5-阶段划分.md`，决策 ADR-0073～0077 已全部写完。
+**M4 之前插了一轮全量复审（地基复审四，2026-08-17）**，开出 16 项、已修 8 项：
+A1/A2/A3（自改红线的锚点与清单、拆不开的命令，ADR-0078/0079）与
+B1/B2/C1/C2/D1（项目层配置的锚点、`pinnedHosts` 的键、入参 JSON 的静默兜底、
+Code Mode 的运行域、工具并发调度，ADR-0080~0082）。两份修复记录在
+`docs/experience/复审四/`，其中**第二份的开头那条判据值得单独读**：
+一个契约做完的标志不是"接口和实现都在"，是"有一条测试跑过从调用方到效果的整条路"。
+剩下 8 项（C3/C4/D2/D4、长期运行三条、功能缺口）列在同一份记录末尾。
 **再往后才是 M4「能扩展」**：
 三方插件隔离（`docs/09` H1）、MCP 与污点传播（G2）、Skill、多 Provider 角色路由、`xm` CLI 产品化。
 后续里程碑仍必须按阶段逐段交付，每段独立可用、可测试，不跨阶段堆半成品。
@@ -90,7 +97,9 @@ pnpm exec vitest run packages/providers/tests/live.test.ts
 测试工程，但仍检查其余包与 desktop main/renderer。
 
 单项闸门也可以单独跑：`pnpm depcruise`、`pnpm size`、`pnpm check:file-size`、
-`pnpm check:paths`、`pnpm check:workflows`、`pnpm toolchain`、`pnpm check:invariants`。
+`pnpm check:paths`、`pnpm check:workflows`、`pnpm toolchain`、`pnpm check:invariants`、
+`pnpm check:redlines`（ADR-0078：自改红线的每条 glob 必须在仓库里匹配到真实文件——
+一次重命名就能让红线安静地保护一个不存在的路径，而别的闸门全都不会红）。
 M3 起新增 `pnpm check:determinism`：冻结 M0–M2 留下的时间/ID 直调，禁止数量继续增长；
 M3-b 已迁移到 `ctx.clock` / `ctx.ids`，清单为零。profile 接缝图用 `pnpm generate:seams` 更新，
 另外四张自省表（事件生产消费、扩展点挂载、工具目录、配置目录）用 `pnpm generate:docs` 更新；
@@ -161,7 +170,11 @@ M3-h 新增 `@xm/code-runtime`（Code Mode 的隔离提供者，与 `tools-core`
 所有工具入参 Zod `.strict()`；有副作用的工具必须声明 `capabilities` 与 `risk`；
 任何绕过 deny 判定的路径都要有 ADR。红线按**目标是什么**写，不能按**调用方自称在做什么**写
 （ADR-0017 的教训：自改红线只挂 `self.modify` 时，一个声明 `fs.write` 的普通写文件工具
-就能整体绕过它——所以那 27 条同时挂在三个能力上）。
+就能整体绕过它——所以那 31 条受保护路径同时挂在三个能力上）。
+**红线还有两个同样会静默失效的前提**（ADR-0078，地基复审四）：清单要**指着真实文件**
+（M3 搬家后三条指向已删除文件，`pnpm check:redlines` 现在盯着），
+锚点要**锚在真的那棵源码树上**（曾取 `app.getAppPath()` = 入口目录，
+于是整族红线在任何真实运行方式下都不命中）。改 `SELF_MODIFY_PROTECTED` 前先读 ADR-0078。
 
 **四、权限判定只有两个答案：`allow` 与 `deny`（ADR-0039）。** `evaluate()` 三步：
 target 规范化失败关闭(0) → 红线跨层最先判(1) → 分层求值，层内 deny 胜 allow(2) → 无匹配则放行(3)。
@@ -169,9 +182,14 @@ target 规范化失败关闭(0) → 红线跨层最先判(1) → 分层求值，
 审批 UI、三档模式、注入降级、会话授权全部移除。
 收紧的表达方式**只有一种**：往规则表里加 deny。想加一个"判完之后再修正一次"的后置步骤前，
 先读 ADR-0039 的背景——ADR-0034/0035/0036 三次真实体验问题全出在那种形状上。
+⚠️ 删掉 `ask` 有一处连带后果直到 2026-08-17 才被发现：**"无规则匹配"从"问一次"变成了"放行"**，
+于是 ADR-0026 那句"漏一条命令画像只是退回 ask"实际变成了"漏一条就是绕过全部路径红线"
+（`python3 -c` / `sed -i` 实测可改判权代码）。处置见 ADR-0079。
+**判定语义变了之后，要回头重算所有依赖旧语义的推理，编译器不会替你算。**
 
 **五、判定看到的路径必须就是工具打开的那个路径。**
-`tools-core/src/gateway.ts` 负责相对→绝对、`realpath.native`（解符号链接 + Windows 8.3 短名）、
+`tool-runtime/src/gateway.ts`（M3-a 从 `tools-core` 搬来）负责相对→绝对、
+`realpath.native`（解符号链接 + Windows 8.3 短名）、
 **把解析后的路径回写进 `input`**、以及"声明了路径能力却没声明 `pathInputs` 就当场失败关闭"。
 必须是 `.native`——JS 版的 `realpath` 解不了 8.3 短名，那正是 ADR-0018 的红线绕过。
 
@@ -196,11 +214,29 @@ target 规范化失败关闭(0) → 红线跨层最先判(1) → 分层求值，
 
 **八、密钥只从 SecretStore 来。** 配置层刻意**不接环境变量**——接上就等于给了一条
 "把 key 塞进 env"的合法路径，而 `shell.exec` 会把整个环境原样交给子进程。
-配置加载器支持：内置默认 < `${paths.config}/config.json` < 传入 cwd 的 `.xiaoming/config.json`；
-当前桌面装配只在启动时以 `app.getPath('home')` 加载一次，尚不会随会话工作区切换重载项目配置。
+配置加载器支持：内置默认 < `${paths.config}/config.json` < 项目层 `.xiaoming/config.json`。
+**分层从 ADR-0080 起分成两半**：`permission.rules` 的项目层**按会话工作目录**加载
+（`loadProjectPermissionRules(cwd)` + 桌面端 `session-policy.ts`，按会话缓存），
+其余字段按进程（启动时 `loadConfig({ paths })`，**不传 cwd**）——所以在
+`.xiaoming/config.json` 里写 `model` 不生效。这条是修出来的：装配以前传
+`cwd: app.getPath('home')`，于是**项目层从未生效过一次**，而 platform 的用例全绿，
+因为它们自己把 cwd 传对了（地基复审四 B1）。
 `permission.rules` 走分层而非合并（ADR-0023）。ADR-0039 之后 `config.json` 的
 `permission.rules` 是**唯一**的用户侧权限入口（`permission.tier` 已删），
 项目层只能收紧（`tightenOnly`）——那个文件躺在别人的仓库里。
+
+**九、工具调用不再一定是串行的（ADR-0082）。** 一次回复里的多个调用切成顺序执行的批次、
+批内并发（上限 8），入选条件是 `concurrency: 'parallel'` **且**资源声明里没有
+write / global / pty。后果有两个：同批的 `tool.start`/`tool.end` **会交错**（每一对仍然配对，
+但别再假定嵌套）；工具定义里的 `concurrency` / `resources()` 从此**有真实后果**——
+声明成 parallel 却会写文件的工具会被并发调度。ADR-0005 想要的路径冲突检测做不到，
+理由是 `resources(input)` 拿到的是网关规范化**之前**的入参。
+
+**十、Code Mode 的子调用受两条取消信号管（ADR-0081）。** `terminate()` 只杀得掉客体域；
+一段被墙钟掐掉的程序派发出去的 `shell.exec` 是宿主上的普通 Promise。所以
+`CodeRuntime.call(request, signal)` 的第二个参数是**这一次 run 的运行域**，
+接缝把它与 `deps.signal` 取并集接到 `ToolContext.signal` 上。写别的 `CodeRuntime`
+实现时这条必须照做，否则"模型看到的"与"机器上发生的"会静默分叉。
 
 ## 工作纪律
 

@@ -139,7 +139,7 @@ describe('reduce：污点由事件流算出', () => {
 describe('端到端：污点接上判定，docs/06 §9 的验收项', () => {
   const ENV: PolicyEnv = {
     home: '/home/ming',
-    appRoot: '/repo',
+    sourceRoot: '/repo',
     dataDir: '/home/ming/.local/share/xiaoming',
     configDir: '/home/ming/.config/xiaoming',
   };

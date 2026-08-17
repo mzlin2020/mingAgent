@@ -28,7 +28,7 @@ afterAll(() => {
 
 const pathsIn = (dir: string): Parameters<typeof openStores>[0] => ({
   home: dir,
-  appRoot: join(dir, 'app'),
+  sourceRoot: join(dir, 'app'),
   data: join(dir, 'data'),
   config: join(dir, 'config'),
   cache: join(dir, 'cache'),

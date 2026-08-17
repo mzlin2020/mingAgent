@@ -25,7 +25,7 @@ afterAll(() => {
 
 const paths = {
   home: ROOT,
-  appRoot: join(ROOT, 'app'),
+  sourceRoot: join(ROOT, 'app'),
   data: join(ROOT, 'data'),
   config: join(ROOT, 'config'),
   cache: join(ROOT, 'cache'),

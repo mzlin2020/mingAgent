@@ -53,7 +53,7 @@ beforeEach(async () => {
   project = await realNative(await mkdtemp(join(tmpdir(), 'xm-proj-')));
   paths = {
     home,
-    appRoot: '/repo',
+    sourceRoot: '/repo',
     data: join(home, 'data'),
     config: join(home, 'config'),
     cache: join(home, 'cache'),

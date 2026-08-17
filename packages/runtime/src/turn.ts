@@ -3,6 +3,7 @@ import type { TurnExtensionHost } from './turn-extension-host.js';
 import { createDefaultTurnExtensions } from './turn-plugins.js';
 import { streamOnce } from './turn-stream.js';
 import { createCodeModeSeam } from './turn-code.js';
+import { planCallBatches } from './turn-schedule.js';
 import { dispatchCall } from './turn-tools.js';
 import type { TurnDeps } from './turn-types.js';
 
@@ -80,10 +81,19 @@ async function driveTurnLoop(
         break;
       }
       if (afterStream.action === 'continue') continue;
-      for (const call of streamed.calls) {
+      /*
+       * 派发。批次之间串行、批次内部并发（ADR-0082）——只有"并行安全"的连续段
+       * 会被并到一批里，写、`shell.exec`、`run_code` 一律独占一批，
+       * 模型给出的先后关系因此一步没丢。
+       */
+      const dispatchOne = async (call: (typeof streamed.calls)[number]): Promise<void> => {
         // Code Mode 接缝按**每次调用**新建：它捕获父 callId，而那正是子调用挂靠的锚点
         const codeMode = createCodeModeSeam({ deps, extensions, turnId, parentCall: call });
         await dispatchCall(deps, extensions, turnId, call, codeMode);
+      };
+      for (const batch of planCallBatches(deps, streamed.calls)) {
+        if (batch.length === 1 && batch[0] !== undefined) await dispatchOne(batch[0]);
+        else await Promise.all(batch.map(dispatchOne));
       }
 
       /*

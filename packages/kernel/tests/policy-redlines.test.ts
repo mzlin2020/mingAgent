@@ -37,7 +37,7 @@ const judge = (
 
 const ENV: PolicyEnv = {
   home: '/home/ming',
-  appRoot: '/repo',
+  sourceRoot: '/repo',
   // 真实形态：env-paths 在 Linux 上给出的数据目录（ADR-0014）。刻意不写成 `~/.xiaoming`
   // ——运行时传进来的永远是展开后的绝对路径，拿 `~` 去测就是在测一个不存在的输入
   dataDir: '/home/ming/.local/share/xiaoming',
@@ -145,7 +145,7 @@ describe('红线：自我修改', () => {
     for (const target of protectedPaths) {
       const v = verdict('self.modify', target);
       expect(v.effect, target).toBe('deny');
-      expect(v.ruleId, target).toMatch(/^red\.self-modify-/);
+      expect(v.ruleId, target).toMatch(/^red\.self-modify\./);
     }
   });
 
@@ -179,7 +179,7 @@ describe('glob 在安全边界上的语义', () => {
 
     const winEnv: PolicyEnv = {
       home: 'C:/Users/ming',
-      appRoot: 'C:/repo',
+      sourceRoot: 'C:/repo',
       dataDir: 'C:/Users/ming/AppData/Roaming/xiaoming',
       configDir: 'C:/Users/ming/AppData/Roaming/xiaoming/config',
     };
@@ -283,7 +283,7 @@ describe('自改红线：按目标而不是按自报能力', () => {
     for (const cap of ['self.modify', 'fs.write', 'fs.delete'] as const) {
       const v = verdict(cap, path);
       expect(v.effect, `${cap} → ${path}`).toBe('deny');
-      expect(v.ruleId, `${cap} → ${path}`).toMatch(/^red\.self-modify-/);
+      expect(v.ruleId, `${cap} → ${path}`).toMatch(/^red\.self-modify\./);
     }
   });
 
@@ -364,7 +364,7 @@ describe('Windows 8.3 短文件名：一条真实的红线绕过路径', () => {
     const long = 'C:/Program Files/xiaoming/scripts/check-secrets.mjs';
     const short = 'C:/PROGRA~1/xiaoming/scripts/check-secrets.mjs';
 
-    const rules = builtinRules({ ...ENV, appRoot: 'C:/Program Files/xiaoming' });
+    const rules = builtinRules({ ...ENV, sourceRoot: 'C:/Program Files/xiaoming' });
     const ask = (target: string) =>
       judge({
         request: req('fs.write', target),
@@ -373,7 +373,7 @@ describe('Windows 8.3 短文件名：一条真实的红线绕过路径', () => {
       });
 
     expect(ask(long).effect, '长名必须命中红线').toBe('deny');
-    expect(ask(long).ruleId).toMatch(/^red\.self-modify-/);
+    expect(ask(long).ruleId).toMatch(/^red\.self-modify\./);
 
     // 短名同样是 deny，但走的是"判不了"这条路 —— 关键是**它不能是 allow/ask**
     const s = ask(short);

@@ -84,7 +84,7 @@ describe('M3-f 卡片投影：真实尺寸旧库回放', () => {
   it('🔴 几千条含畸形/旧版/已卸载工具的历史，全量投影一张都不崩', async () => {
     const stores = await openStores({
       home: ROOT,
-      appRoot: join(ROOT, 'app'),
+      sourceRoot: join(ROOT, 'app'),
       data: join(ROOT, 'data'),
       config: join(ROOT, 'config'),
       cache: join(ROOT, 'cache'),

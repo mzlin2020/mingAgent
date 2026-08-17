@@ -92,6 +92,11 @@
 | [0075](./0075-设置中心的信息架构与可写边界.md) | 设置中心：模态 + 左导航六节，不是第三主视图。`allow` 与 API key 由主进程拒绝（不靠 UI 隐藏）；红线只读投影 `{ target, capabilities, why }`；手写 allow 保存时保留。模型/呈现/权限下一回合生效，工作目录只影响新任务 | 🟢 Accepted | 2026-08-16 |
 | [0076](./0076-logging死配置的处置.md) | 删除从未被读取的 `logging.level` / `logging.redact`。`redact` 不可配是底座属性（ADR-0053）。旧 `config.json` 残留 `logging` 在校验前剥离，不让整份配置退回默认 | 🟢 Accepted | 2026-08-16 |
 | [0077](./0077-UI偏好的存放判据.md) | UI 偏好存放判据：能进 `localStorage` 当且仅当**既不进模型请求、也不参与任何判定**。详情栏宽/开、主题、Enter 行为走 `localStorage`；`tools.presentation` / `permission.rules` 必须进 `config.json`。划清与不变量一、配置分层的边界 | 🟢 Accepted | 2026-08-16 |
+| [0078](./0078-自改红线的锚点与受保护清单闸门.md) | 自改红线的**锚点**与**清单**各自补一道机制（地基复审四 A1/A2）：`appRoot` 拆成 `sourceRoot`（平台层从入口位置往上找标记认出来）/ `extraSourceRoots`（会话工作区里那份检出）/ `installRoot`（打包目录整棵树）；清单 18→31 条并覆盖 M3 搬家后的真实位置；规则 ID 改由 slug 派生；新增 `check-redline-targets` 闸门——每条 glob 必须在仓库里匹配到真实文件 | 🟢 Accepted | 2026-08-17 |
+| [0079](./0079-拆不开的命令的兜底.md) | 解释器（python/node/perl/pwsh…）与原地编辑类（sed/awk/tar/rsync/install/truncate）进 deny 画像。修正 ADR-0026 那句「漏一条表项只是退回 ask」——ADR-0039 删掉 `ask` 之后它实际变成了放行，一行 `python3 -c` 即可绕过全部路径红线且无还原点。**明确承认这是一张不完备的黑名单**，真正的隔离仍待 docs/09 C2 | 🟢 Accepted | 2026-08-17 |
+| [0080](./0080-项目层权限规则按会话工作区加载.md) | 项目层权限规则改成**按会话工作目录**加载（`loadProjectPermissionRules(cwd)` + 桌面端 `session-policy.ts`）。ADR-0023 的项目层此前从未生效过一次——装配传的 `cwd` 是家目录，而工作目录是每个会话各自的；`packages/platform` 的用例全绿，因为错的不是加载器而是调用方给的锚点。配置的分层从此分两半：权限按会话，其余按进程 | 🟢 Accepted | 2026-08-17 |
+| [0081](./0081-CodeMode的运行域与在途子调用的取消.md) | `CodeRuntime` 的绑定回调多一个**运行域信号**：程序正常结束/超时/被取消/隔离层死亡时它 abort，在途的宿主侧子调用跟着停，并等最多 1 秒让它们收尾。`terminate()` 只杀得掉客体域——修复前一段被墙钟掐掉的程序，它派发的 `sleep 10` 会一直跑完，审计落在 `tool.end` 之后甚至直接丢失，"模型看到的"与"机器上发生的"静默分叉 | 🟢 Accepted | 2026-08-17 |
+| [0082](./0082-工具并发调度只读并行写独占.md) | 工具并发调度终于落地，但**收窄** ADR-0005：只并行 `concurrency: 'parallel'` 且资源声明里没有 write/global/pty 的调用，批次之间串行、批内并发、上限 8。路径冲突检测做不到的真正原因是 `resources(input)` 拿到的是**网关规范化之前**的入参，`./a.ts` 与 `/work/a.ts` 看不出是同一个文件。代价：`tool.start`/`tool.end` 从此会交错 | 🟢 Accepted | 2026-08-17 |
 
 ## 什么时候要写 ADR
 

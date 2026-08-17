@@ -1,5 +1,5 @@
 import { app, safeStorage } from 'electron';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Profile } from '@xm/compose';
 import type {
   AnyEvent,
@@ -78,6 +78,7 @@ import {
 import type { ImageAttachment, ListSessionsResult, OrphanedSessionKind, SettingsResult, UpdateSettingsRequest } from '../shared/ipc.js';
 import { decodeImageAttachment } from './multimodal-input.js';
 import { assembleDesktopProfile } from './desktop-profile.js';
+import { createSessionPolicy } from './session-policy.js';
 import { keychainSecretStore } from './secrets.js';
 import { sessionListStatus } from './session-list-status.js';
 import { openProductionTools, type PtySessionEvent } from './production-tools.js';
@@ -232,10 +233,19 @@ const INSTALLED_PLUGIN_IDS: ReadonlySet<string> = new Set<string>();
 
 export async function startServices(): Promise<Services> {
   /*
-   * `appRoot` 从 Electron 拿，不在包里猜（ADR-0014）。它进红线：
-   * `red.self-modify-*` 全部相对它计算，猜错等于那一组红线保护了一个不存在的目录。
+   * 入口位置从 Electron 拿，不在包里猜（ADR-0014）。**但它不是自改红线的锚点**——
+   * `app.getAppPath()` 返回的是入口所在目录：开发时是 `apps/desktop`，打包后是
+   * `resources/app.asar`，两者都不是小明的源码树。照着它拼 glob，27 条自改红线
+   * 就锚在一个不存在的目录上，而所有用例喂的是合成路径，全绿（地基复审四 A1，ADR-0078）。
+   *
+   * 现在分两件事说：`appPath` 只是入口，源码树由 `findSourceRoot()` 从它往上找；
+   * 打包运行时另外把**安装目录整棵树**交出去——asar 里没有源码，
+   * 能改的只有可执行文件、原生模块与 asar 本身，而改掉任何一样，清单就都不作数了。
    */
-  const base = nodePlatform({ appRoot: app.getAppPath() });
+  const base = nodePlatform({
+    appPath: app.getAppPath(),
+    ...(app.isPackaged ? { installRoot: dirname(process.resourcesPath) } : {}),
+  });
 
   /*
    * 能力"往上抬"，不是"往下修"（ADR-0007 保险 2）。
@@ -272,22 +282,28 @@ export async function startServices(): Promise<Services> {
       ? keychainSecretStore({ file: join(paths.config, 'secrets.json') })
       : unavailableSecretStore('系统钥匙串不可用');
 
-  const loaded = await loadConfig({ paths, cwd: app.getPath('home') });
+  /*
+   * **不传 `cwd`**：项目层的锚点是会话的工作目录，而这里是启动，一个会话都还没有。
+   * 传 `app.getPath('home')` 的旧写法让"项目层"恒等于家目录下那个多半不存在的文件，
+   * 用户真正打开的那个仓库里的 `.xiaoming/config.json` 从未生效过（地基复审四 B1）。
+   * 权限规则那一半现在由 `sessionPolicy` 按会话加载。
+   */
+  const loaded = await loadConfig({ paths });
   let config: Config = loaded.config;
 
   /*
    * 规则层。顺序即优先级，后面的层胜（ADR-0023）。
    *
-   * 用户级可以放松也可以收紧；**项目级只能收紧**——`.xiaoming/config.json` 躺在
-   * 用户 clone 来的仓库里，而小明自己有 `fs.write`。被丢弃的条目进 `problems`，
-   * 变成一条用户看得见的 notice：不生效可以，不告诉他不行。
+   * 这里只有内置层与用户级：用户级可以放松也可以收紧。**项目级只能收紧**，
+   * 且它属于某一个工作目录，所以合在 `sessionPolicy.layersFor()` 里。
    */
   let userRules: PolicyRuleSet = loaded.permissionRules.user;
-  const projectRules = loaded.permissionRules.project;
-  let layers: readonly RuleLayer[] = composeRules({
-    env: policyEnv,
-    user: userRules,
-    project: projectRules,
+  let layers: readonly RuleLayer[] = composeRules({ env: policyEnv, user: userRules });
+
+  /** 会话级规则层：项目层权限规则（B1）+ 工作区里那份小明源码的自改红线（ADR-0078） */
+  const sessionPolicy = createSessionPolicy({
+    paths,
+    current: () => ({ layers, userRules }),
   });
 
   const tools = new ToolRegistry();
@@ -481,7 +497,8 @@ export async function startServices(): Promise<Services> {
       return runSubagentExploration({
         parentRuntime, store: stores.events, bus, parentTools: tools, executor, provider,
         model: provider.id === 'scripted' ? 'scripted-1' : ref.model,
-        layers,
+        // 子 Agent 跑在父会话的工作区里，规则层必须是父会话那一套（含项目层与工作区自改红线）
+        layers: await sessionPolicy.layersFor(parentRuntime),
         toolAvailability: { executor, platform: platform.capabilities(), disabledTools: config.tools.disabled },
         hostOs: platform.os, gateway, blobs: stores.blobs, prices: config.prices,
         pathCaseInsensitive: platform.os === 'windows',
@@ -601,7 +618,7 @@ export async function startServices(): Promise<Services> {
         platform: platform.capabilities(),
         disabledTools: config.tools.disabled,
       },
-      layers,
+      layers: await sessionPolicy.layersFor(runtime),
       executor,
       model: provider.id === 'scripted' ? 'scripted-1' : model,
       hostOs: platform.os,
@@ -1000,7 +1017,7 @@ export async function startServices(): Promise<Services> {
       const nextRules = nextUserRules(userRules, update.permissionDenies);
       let nextLayers: readonly RuleLayer[];
       try {
-        nextLayers = composeRules({ env: policyEnv, user: nextRules, project: projectRules });
+        nextLayers = composeRules({ env: policyEnv, user: nextRules });
       } catch (cause) {
         const error = new Error(cause instanceof Error ? cause.message : String(cause));
         error.name = 'settings.invalid';
@@ -1015,6 +1032,8 @@ export async function startServices(): Promise<Services> {
       config = next;
       userRules = nextRules;
       layers = nextLayers;
+      // 会话级规则层是按 layers/userRules 合出来的，规则一变就全部作废（ADR-0078 / B1）
+      sessionPolicy.invalidate();
       return snapshot();
     },
 

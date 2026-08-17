@@ -32,6 +32,8 @@ jobs:
       - name: 单文件规模纪律（docs/01 原则七，ADR-0032）
         run: node scripts/check-file-size.mjs
       - run: pnpm exec tsc -b
+      - name: 自改红线必须指着真实文件（ADR-0078）
+        run: node scripts/check-redline-targets.mjs
       - run: pnpm exec tsc -p tsconfig.tests.json
 
   lint:

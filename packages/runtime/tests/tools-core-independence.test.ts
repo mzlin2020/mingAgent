@@ -29,7 +29,7 @@ import { z } from 'zod';
  */
 describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032 #6）', () => {
   it('工具注册表一个工具都没有时，完整的一轮对话仍然能跑完（会话创建/落库/回放/流式全部正常）', async () => {
-    const platform = nodePlatform({ appRoot: '/opt/xiaoming' });
+    const platform = nodePlatform({ appPath: '/opt/xiaoming' });
     const paths = platform.paths();
     const layers = builtinLayers(policyEnvFromPaths(paths));
 
@@ -92,7 +92,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
   });
 
   it('模型试图调用一个不存在的工具：优雅降级为一条错误结果，不炸整个 turn', async () => {
-    const platform = nodePlatform({ appRoot: '/opt/xiaoming' });
+    const platform = nodePlatform({ appPath: '/opt/xiaoming' });
     const paths = platform.paths();
     const layers = builtinLayers(policyEnvFromPaths(paths));
 
@@ -152,7 +152,7 @@ describe('内核 + 装配层不依赖 packages/tools-core（原则二，ADR-0032
     expect(toolResultBlock?.type === 'tool_result' && toolResultBlock.isError).toBe(true);
   });
   it('disabled tools stay out of prompts and cannot bypass dispatch checks', async () => {
-    const platform = nodePlatform({ appRoot: '/opt/xiaoming' });
+    const platform = nodePlatform({ appPath: '/opt/xiaoming' });
     const paths = platform.paths();
     const store = new MemoryEventStore();
     const bus = new EventBus();

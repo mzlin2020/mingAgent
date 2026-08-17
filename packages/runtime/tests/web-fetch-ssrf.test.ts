@@ -90,7 +90,7 @@ const requests = (all: PersistedEvent[]) =>
   all.flatMap((e) => (e.type === 'permission.request' ? [e.payload] : []));
 
 beforeEach(() => {
-  ENV = { home: '/home/ming', appRoot: '/repo', dataDir: '/home/ming/.xiaoming', configDir: '/home/ming/.config/xiaoming' };
+  ENV = { home: '/home/ming', sourceRoot: '/repo', dataDir: '/home/ming/.xiaoming', configDir: '/home/ming/.config/xiaoming' };
 });
 
 describe('🔴 M1-d DoD：web.fetch 解析到保留网段一律被拦', () => {
@@ -249,5 +249,84 @@ describe('🔴 DNS 只解析一次：判定用的地址就是唯一被建连过�
     expect(calls).toEqual(['web-fetch-e2e-rebinding.invalid']); // 恰好一次
     expect(hits).toBe(1); // 真的连到了那台服务器，也只连了一次
     expect(ended(all)[0]?.ok).toBe(true);
+  });
+});
+
+/**
+ * 🔴 `pinnedHosts` 的键：网关写进去的与工具查出来的必须是同一个（地基复审四 B2）。
+ *
+ * 这两类 URL 在修复之前**从来没有成功过一次**——网关按 `normalizeHostTarget` 归一后的
+ * 主机名写表（`[::1]`、去掉尾点的 `example.com`），工具却按 `new URL().hostname` 再手工
+ * 剥方括号去查（`::1`、`example.com.`），于是必然落空，抛一句"内部错误：找不到已解析地址"。
+ *
+ * 判定链一条没错，错的是两侧各写了一份"同一个"算法——所以这两条用例走的是**完整链路**
+ * （真网关 → 真判定 → 真 TCP 连接），不是对着那个函数断言。
+ */
+describe('🔴 pinnedHosts 的键在网关与工具之间必须对得上', () => {
+  const allowLoopback = (target: string): PolicyRuleSet => [
+    {
+      id: 'user.allow-test-server',
+      effect: 'allow',
+      capability: 'net.fetch',
+      match: { target },
+      reason: '测试用例本机服务器',
+      immutable: false,
+    },
+  ];
+
+  const listen = async (host: string): Promise<{ server: Server; port: number }> => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('来自测试服务器');
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, host, resolve);
+    });
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('监听失败');
+    return { server, port: address.port };
+  };
+
+  const close = (server: Server): Promise<void> =>
+    new Promise<void>((resolve) => {
+      server.close(() => {
+        resolve();
+      });
+    });
+
+  it('带尾点的 FQDN：网关归一掉尾点，工具照样查得到，请求真的连通', async () => {
+    const { server, port } = await listen('127.0.0.1');
+    try {
+      const { exec } = await harness({
+        dnsLookup: () => Promise.resolve([{ address: '127.0.0.1', family: 4 }]),
+        userRules: allowLoopback('127.0.0.1*'),
+      });
+      // 尾点是合法写法（FQDN），归一之后与不带尾点是同一个目的地
+      const all = await exec(`http://web-fetch-e2e-dot.invalid.:${String(port)}/`);
+
+      expect(ended(all)[0]?.ok).toBe(true);
+      expect(JSON.stringify(ended(all)[0]?.forModel)).toContain('来自测试服务器');
+    } finally {
+      await close(server);
+    }
+  });
+
+  it('IPv6 字面量：网关写 [::1]，工具查 [::1]，请求真的连通', async () => {
+    const { server, port } = await listen('::1');
+    try {
+      const { exec } = await harness({
+        dnsLookup: () => Promise.resolve([{ address: '::1', family: 6 }]),
+        userRules: allowLoopback('[::1]*'),
+      });
+      const all = await exec(`http://[::1]:${String(port)}/`);
+
+      // 修复前这里是 tool.end.ok=false + 一句"内部错误：找不到已解析地址（pinnedHosts）"
+      expect(JSON.stringify(ended(all)[0]?.forModel)).not.toContain('pinnedHosts');
+      expect(ended(all)[0]?.ok).toBe(true);
+      expect(JSON.stringify(ended(all)[0]?.forModel)).toContain('来自测试服务器');
+    } finally {
+      await close(server);
+    }
   });
 });

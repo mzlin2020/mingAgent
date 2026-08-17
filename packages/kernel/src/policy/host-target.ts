@@ -121,6 +121,52 @@ export function normalizeHostTarget(raw: string): TargetNormalization {
   return { ok: true, value: keepPort ? `${host.value}:${port}` : host.value };
 }
 
+/**
+ * `pinnedHosts` 那张表的**键**（地基复审四 B2）。
+ *
+ * ── 为什么它必须是一个共用函数 ──
+ *
+ * 网关解析完 DNS 之后按主机名把地址写进 `ResolvedCall.pinnedHosts`，工具执行时按
+ * 主机名去查它、拿到唯一准建连的那个地址（`ToolContext.pinnedHosts`）。两边算键的
+ * 方式只要差一点，查表就落空——而落空的表现是工具抛"内部错误：找不到已解析地址"，
+ * 一句看起来像 bug、实际上是**整条 SSRF 判定链的接缝错位**的话。
+ *
+ * 实测差的就是那一点：网关写的是 `normalizeHostTarget` 归一后的主机
+ * （IPv6 带方括号 `[::1]`、FQDN 去掉尾点），工具查的是 `new URL(url).hostname`
+ * 再手工剥掉方括号（`::1`、`example.com.`）。于是
+ *
+ *   · `http://[::1]:8080/`     → 网关写 `[::1]`，工具查 `::1`      → 落空
+ *   · `http://example.com./`   → 网关写 `example.com`，工具查 `example.com.` → 落空
+ *
+ * 这两类 URL 因此**从来没有成功过一次**，而所有既有用例喂的都是普通域名。
+ * 与 ADR-0078 那道闸门同一个教训：两处各写一份"同一个"算法，迟早会不同——
+ * 所以这里只留一份，两边都调它。
+ *
+ * 返回 `undefined` 表示这个 URL 连词法归一都过不了；那时轮不到查表，
+ * 判定会在更早的地方失败关闭。
+ */
+export function pinnedHostKey(rawUrl: string): string | undefined {
+  const normalized = normalizeHostTarget(rawUrl);
+  return normalized.ok ? splitNormalizedHostPort(normalized.value).host : undefined;
+}
+
+/** 把 `normalizeHostTarget` 归一后的 `host[:port]` 拆开——IPv6 是 `[::1]:8080` 这种形状 */
+export function splitNormalizedHostPort(value: string): {
+  host: string;
+  port: string | undefined;
+} {
+  if (value.startsWith('[')) {
+    const close = value.indexOf(']');
+    const host = value.slice(0, close + 1);
+    const rest = value.slice(close + 1);
+    return { host, port: rest.startsWith(':') ? rest.slice(1) : undefined };
+  }
+  const idx = value.lastIndexOf(':');
+  return idx === -1
+    ? { host: value, port: undefined }
+    : { host: value.slice(0, idx), port: value.slice(idx + 1) };
+}
+
 type Split = { ok: true; host: string; port: string | undefined } | { ok: false; reason: string };
 
 function splitHostPort(authority: string): Split {

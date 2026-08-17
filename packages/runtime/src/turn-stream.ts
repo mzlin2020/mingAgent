@@ -9,6 +9,7 @@ import type {
 import { xmError } from '@xm/contracts';
 import { costOf, lookupPrice } from '@xm/kernel';
 import type { TurnExtensionHost } from './turn-extension-host.js';
+import { parseToolArgs } from './turn-args.js';
 import type { PendingCall, TurnDeps } from './turn-types.js';
 
 export interface StreamResult {
@@ -136,7 +137,18 @@ export async function streamOnce(
   for (const id of order) {
     const call = calls.get(id);
     if (call === undefined) continue;
-    blocks.push({ type: 'tool_use', id: call.callId, name: call.name, input: parseArgs(call.argsJson) });
+    /*
+     * 助手消息里那份 `input`。解不开时留 `{}` 是**协议要求**（各家 API 的 tool_use
+     * 入参必须是对象，回放这条消息时要原样发回去），不是兜底：这次调用一定会在
+     * `prepareCall` 的 ② 步被拒绝执行，原文与失败理由一起进 `tool.end`（C1）。
+     */
+    const args = parseToolArgs(call.argsJson);
+    blocks.push({
+      type: 'tool_use',
+      id: call.callId,
+      name: call.name,
+      input: args.ok ? args.value : {},
+    });
   }
   const message: Message = {
     id: messageId,
@@ -166,15 +178,6 @@ export async function streamOnce(
     ...(failure === undefined ? {} : { error: failure }),
   };
 }
-
-const parseArgs = (argsJson: string): unknown => {
-  if (argsJson.trim() === '') return {};
-  try {
-    return JSON.parse(argsJson) as unknown;
-  } catch {
-    return {};
-  }
-};
 
 const isPending = (call: PendingCall | undefined): call is PendingCall => call !== undefined;
 

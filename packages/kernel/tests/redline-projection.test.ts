@@ -3,7 +3,7 @@ import { projectRedLines, redLineRules } from '@xm/kernel';
 
 const ENV = {
   home: '/home/ming',
-  appRoot: '/repo',
+  sourceRoot: '/repo',
   dataDir: '/home/ming/.local/share/xiaoming',
   configDir: '/home/ming/.config/xiaoming',
 };
